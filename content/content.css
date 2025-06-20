@@ -18,23 +18,6 @@
   line-height: 1.5 !important;
   overflow: hidden !important;
   --chat-font-size: 15px;
-  min-width: 300px !important;
-  max-width: 800px !important;
-}
-
-.resize-handle {
-  position: absolute !important;
-  left: -5px !important;
-  top: 0 !important;
-  width: 10px !important;
-  height: 100% !important;
-  cursor: ew-resize !important;
-  z-index: 1000000 !important;
-  background: transparent !important;
-}
-
-.resize-handle:hover {
-  background: rgba(0, 123, 255, 0.2) !important;
 }
 
 #ai-sidebar.theme-light {
@@ -232,37 +215,35 @@
 
 .message {
   margin-bottom: 16px !important;
-  padding: 12px 16px !important;
+  padding: 12px 16px 8px 16px !important;
   border-radius: 12px !important;
   max-width: 90% !important;
   word-wrap: break-word !important;
   font-size: var(--chat-font-size, 15px) !important;
   line-height: 1.4 !important;
-  position: relative !important;
   display: flex !important;
   flex-direction: column !important;
 }
 
 .message-content {
   flex: 1 !important;
+  margin-bottom: 8px !important;
 }
 
 .copy-btn {
-  position: absolute !important;
-  top: 8px !important;
-  right: 8px !important;
+  align-self: flex-end !important;
   background: rgba(0, 0, 0, 0.1) !important;
   border: none !important;
   border-radius: 4px !important;
-  width: 24px !important;
-  height: 24px !important;
-  font-size: 12px !important;
+  padding: 4px 8px !important;
+  font-size: 10px !important;
   cursor: pointer !important;
-  opacity: 0 !important;
+  opacity: 0.7 !important;
   transition: opacity 0.2s !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
+  margin-top: 4px !important;
 }
 
 .message:hover .copy-btn {
@@ -368,6 +349,7 @@
 }
 
 #send-btn {
+  height:70px;
   background: #007bff !important;
   color: white !important;
   border: none !important;
@@ -377,7 +359,6 @@
   font-weight: 500 !important;
   cursor: pointer !important;
   transition: background-color 0.2s !important;
-  min-height: 44px !important;
   display: flex !important;
   flex-direction: column !important;
   justify-content: center !important;

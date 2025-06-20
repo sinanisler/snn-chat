@@ -41,7 +41,6 @@ class SNNChat {
       this.selectionPreview = this.sidebar.querySelector('#selection-preview');
       this.previewText = this.sidebar.querySelector('#preview-text');
       this.clearSelectionBtn = this.sidebar.querySelector('#clear-selection');
-      this.resizeHandle = this.sidebar.querySelector('#resize-handle');
       
     } catch (error) {
       console.error('Failed to inject sidebar:', error);
@@ -81,8 +80,6 @@ class SNNChat {
         this.applySettings();
       }
     });
-
-    this.setupResizeHandling();
   }
 
   setupSelectionMonitoring() {
@@ -319,7 +316,7 @@ class SNNChat {
     
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-btn';
-    copyBtn.innerHTML = '📋';
+    copyBtn.textContent = 'Copy';
     copyBtn.title = 'Copy message';
     copyBtn.addEventListener('click', () => this.copyToClipboard(content));
     
@@ -331,7 +328,21 @@ class SNNChat {
   }
 
   parseMarkdown(text) {
-    return text
+    // First escape any HTML to prevent injection
+    const escapeHtml = (unsafe) => {
+      return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    };
+    
+    // Escape HTML first
+    let escapedText = escapeHtml(text);
+    
+    // Then apply markdown parsing
+    return escapedText
       // Headers
       .replace(/^### (.*$)/gm, '<h3>$1</h3>')
       .replace(/^## (.*$)/gm, '<h2>$1</h2>')
@@ -342,7 +353,7 @@ class SNNChat {
       // Italic
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/_(.*?)_/g, '<em>$1</em>')
-      // Code blocks
+      // Code blocks (preserve content as-is)
       .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
       // Inline code
       .replace(/`(.*?)`/g, '<code>$1</code>')
@@ -473,60 +484,6 @@ class SNNChat {
     }
   }
 
-  setupResizeHandling() {
-    if (!this.resizeHandle) return;
-
-    let isResizing = false;
-    let startX = 0;
-    let startWidth = 0;
-
-    this.resizeHandle.addEventListener('mousedown', (e) => {
-      isResizing = true;
-      startX = e.clientX;
-      startWidth = parseInt(document.defaultView.getComputedStyle(this.sidebar).width, 10);
-      
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      
-      // Prevent text selection while dragging
-      document.body.style.userSelect = 'none';
-      e.preventDefault();
-    });
-
-    const handleMouseMove = (e) => {
-      if (!isResizing) return;
-      
-      const dx = startX - e.clientX;
-      const newWidth = Math.max(300, Math.min(800, startWidth + dx));
-      
-      this.sidebar.style.width = `${newWidth}px`;
-    };
-
-    const handleMouseUp = () => {
-      if (!isResizing) return;
-      
-      isResizing = false;
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.userSelect = '';
-      
-      // Save the new width to settings
-      this.saveCurrentWidth();
-    };
-  }
-
-  async saveCurrentWidth() {
-    try {
-      const currentWidth = parseInt(this.sidebar.style.width);
-      if (currentWidth && currentWidth >= 300 && currentWidth <= 800) {
-        const settings = await this.getSettings();
-        settings.sidebarWidth = currentWidth;
-        await chrome.storage.sync.set({ settings });
-      }
-    } catch (error) {
-      console.error('Failed to save width:', error);
-    }
-  }
 
   openSettings() {
     chrome.runtime.sendMessage({ action: 'openOptionsPage' });
