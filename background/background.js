@@ -1,5 +1,5 @@
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('AI Chat Sidebar extension installed');
+  console.log('SNN Chat extension installed');
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
