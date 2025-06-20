@@ -1,11 +1,11 @@
-# AI Chat Sidebar Chrome Extension
+# SNN Chat Chrome Extension
 
-A Chrome extension that provides an AI-powered chat sidebar with fixed top-right positioning and full height display.
+SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with fixed top-right positioning and full height display.
 
 ## Features
 
 - **Fixed Top-Right Sidebar**: Full-height sidebar positioned at the top-right of any webpage
-- **AI-Powered Chat**: Integrated with OpenAI's GPT models
+- **AI-Powered Chat**: Integrated with OpenAI and OpenRouter APIs supporting multiple models
 - **Context Awareness**: Automatically reads page content and selected text
 - **Keyboard Shortcuts**: Quick access with Ctrl+Shift+Y
 - **Settings Panel**: Configurable API key, model selection, and parameters
@@ -22,9 +22,10 @@ A Chrome extension that provides an AI-powered chat sidebar with fixed top-right
 ## Setup
 
 1. Click the extension icon or press `Ctrl+Shift+Y` to open the sidebar
-2. Click "Settings" to configure your OpenAI API key
-3. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
-4. Save your settings and start chatting!
+2. Click "Settings" to configure your API provider and key
+3. Choose between OpenAI or OpenRouter
+4. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys) or [OpenRouter](https://openrouter.ai/keys)
+5. Save your settings and start chatting!
 
 ## Usage
 
@@ -69,10 +70,12 @@ chrome-extension/
 
 The extension supports the following settings:
 
-- **API Key**: Your OpenAI API key (required)
-- **Model**: Choose between GPT-3.5 Turbo, GPT-4, or GPT-4 Turbo
-- **Max Tokens**: Maximum response length (100-2000)
+- **API Provider**: Choose between OpenAI or OpenRouter
+- **API Keys**: Your OpenAI or OpenRouter API key (required)
+- **Models**: Dynamically loaded from each provider (GPT, Claude, Gemini, Llama, etc.)
+- **Max Tokens**: Maximum response length (100-4000)
 - **Temperature**: Creativity level (0.0-1.0)
+- **Theme**: Light, Dark, or Auto (follows system preference)
 
 ## Key Features
 
