@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AI Chat Sidebar Settings</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 40px;
+      background: #f8f9fa;
+      min-height: 100vh;
+    }
+    
+    .container {
+      max-width: 700px;
+      margin: 0 auto;
+      background: white;
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    
+    h1 {
+      color: #333;
+      margin-bottom: 30px;
+      font-size: 28px;
+      font-weight: 600;
+    }
+    
+    .section {
+      margin-bottom: 40px;
+      padding-bottom: 30px;
+      border-bottom: 1px solid #e9ecef;
+    }
+    
+    .section:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+    }
+    
+    .section-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 20px;
+    }
+    
+    .api-provider {
+      background: #f8f9fa;
+      border: 2px solid #e9ecef;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      transition: border-color 0.2s;
+    }
+    
+    .api-provider.active {
+      border-color: #007bff;
+      background: #f0f8ff;
+    }
+    
+    .provider-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+    
+    .provider-radio {
+      margin-right: 12px;
+    }
+    
+    .provider-name {
+      font-weight: 600;
+      font-size: 16px;
+      color: #333;
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #555;
+    }
+    
+    input[type="text"], input[type="password"], select, textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+    }
+    
+    input[type="text"]:focus, input[type="password"]:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #007bff;
+    }
+    
+    .form-description {
+      font-size: 13px;
+      color: #666;
+      margin-top: 4px;
+    }
+    
+    .model-section {
+      margin-top: 15px;
+    }
+    
+    .model-loading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #666;
+      font-size: 14px;
+    }
+    
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #e0e0e0;
+      border-top: 2px solid #007bff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .model-error {
+      color: #dc3545;
+      font-size: 13px;
+      margin-top: 5px;
+    }
+    
+    .theme-options {
+      display: flex;
+      gap: 15px;
+      margin-top: 10px;
+    }
+    
+    .theme-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: white;
+    }
+    
+    .theme-option:hover {
+      border-color: #007bff;
+    }
+    
+    .theme-option.selected {
+      border-color: #007bff;
+      background: #f0f8ff;
+    }
+    
+    .theme-preview {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: 2px solid #ddd;
+    }
+    
+    .theme-preview.light {
+      background: linear-gradient(45deg, #ffffff 50%, #f8f9fa 50%);
+    }
+    
+    .theme-preview.dark {
+      background: linear-gradient(45deg, #212529 50%, #343a40 50%);
+    }
+    
+    .theme-preview.auto {
+      background: linear-gradient(45deg, #ffffff 25%, #212529 25%, #212529 50%, #ffffff 50%, #ffffff 75%, #212529 75%);
+    }
+    
+    .save-button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 14px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    
+    .save-button:hover {
+      background: #0056b3;
+    }
+    
+    .save-button:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+    
+    .status-message {
+      padding: 12px;
+      border-radius: 6px;
+      margin-top: 16px;
+      display: none;
+    }
+    
+    .status-message.success {
+      background: #d4edda;
+      border: 1px solid #c3e6cb;
+      color: #155724;
+    }
+    
+    .status-message.error {
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+    }
+    
+    .range-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .range-input {
+      flex: 1;
+    }
+    
+    .range-value {
+      min-width: 40px;
+      text-align: center;
+      font-weight: 500;
+      color: #333;
+    }
+    
+    .shortcuts-info {
+      background: #e3f2fd;
+      border: 1px solid #bbdefb;
+      padding: 20px;
+      border-radius: 8px;
+    }
+    
+    .shortcuts-info h3 {
+      margin: 0 0 15px 0;
+      color: #1565c0;
+      font-size: 18px;
+    }
+    
+    .shortcuts-info ul {
+      margin: 0;
+      padding-left: 20px;
+      color: #1565c0;
+    }
+    
+    .shortcuts-info li {
+      margin-bottom: 8px;
+    }
+    
+    .test-connection {
+      background: #28a745;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background-color 0.2s;
+    }
+    
+    .test-connection:hover {
+      background: #218838;
+    }
+    
+    .test-connection:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+    
+    .connection-status {
+      margin-top: 8px;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      display: none;
+    }
+    
+    .connection-status.success {
+      background: #d4edda;
+      border: 1px solid #c3e6cb;
+      color: #155724;
+    }
+    
+    .connection-status.error {
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Chat Sidebar Settings</h1>
+    
+    <form id="settings-form">
+      <!-- API Provider Section -->
+      <div class="section">
+        <div class="section-title">API Provider</div>
+        
+        <div class="api-provider" id="openai-provider">
+          <div class="provider-header">
+            <input type="radio" name="provider" value="openai" id="openai-radio" class="provider-radio" checked>
+            <label for="openai-radio" class="provider-name">OpenAI</label>
+          </div>
+          
+          <div class="form-group">
+            <label for="openai-key">API Key</label>
+            <input type="password" id="openai-key" placeholder="sk-...">
+            <div class="form-description">
+              Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>
+            </div>
+            <button type="button" class="test-connection" id="test-openai">Test Connection</button>
+            <div class="connection-status" id="openai-status"></div>
+          </div>
+          
+          <div class="model-section">
+            <label for="openai-model">Model</label>
+            <select id="openai-model">
+              <option value="">Loading models...</option>
+            </select>
+            <div class="model-loading" id="openai-loading" style="display: none;">
+              <div class="spinner"></div>
+              <span>Loading models...</span>
+            </div>
+            <div class="model-error" id="openai-error" style="display: none;"></div>
+          </div>
+        </div>
+        
+        <div class="api-provider" id="openrouter-provider">
+          <div class="provider-header">
+            <input type="radio" name="provider" value="openrouter" id="openrouter-radio" class="provider-radio">
+            <label for="openrouter-radio" class="provider-name">OpenRouter</label>
+          </div>
+          
+          <div class="form-group">
+            <label for="openrouter-key">API Key</label>
+            <input type="password" id="openrouter-key" placeholder="sk-or-...">
+            <div class="form-description">
+              Get your API key from <a href="https://openrouter.ai/keys" target="_blank">OpenRouter</a>
+            </div>
+            <button type="button" class="test-connection" id="test-openrouter">Test Connection</button>
+            <div class="connection-status" id="openrouter-status"></div>
+          </div>
+          
+          <div class="model-section">
+            <label for="openrouter-model">Model</label>
+            <select id="openrouter-model">
+              <option value="">Loading models...</option>
+            </select>
+            <div class="model-loading" id="openrouter-loading" style="display: none;">
+              <div class="spinner"></div>
+              <span>Loading models...</span>
+            </div>
+            <div class="model-error" id="openrouter-error" style="display: none;"></div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Chat Settings Section -->
+      <div class="section">
+        <div class="section-title">Chat Settings</div>
+        
+        <div class="form-group">
+          <label for="max-tokens">Max Response Length</label>
+          <div class="range-group">
+            <input type="range" id="max-tokens" class="range-input" min="100" max="4000" step="100" value="2000">
+            <span class="range-value" id="max-tokens-value">2000</span>
+          </div>
+          <div class="form-description">Maximum number of tokens in AI responses (100-4000)</div>
+        </div>
+        
+        <div class="form-group">
+          <label for="temperature">Creativity Level</label>
+          <div class="range-group">
+            <input type="range" id="temperature" class="range-input" min="0" max="1" step="0.1" value="0.7">
+            <span class="range-value" id="temperature-value">0.7</span>
+          </div>
+          <div class="form-description">Higher values make responses more creative but less predictable (0.0-1.0)</div>
+        </div>
+      </div>
+      
+      <!-- Appearance Section -->
+      <div class="section">
+        <div class="section-title">Appearance</div>
+        
+        <div class="form-group">
+          <label>Theme</label>
+          <div class="theme-options">
+            <div class="theme-option" data-theme="light">
+              <div class="theme-preview light"></div>
+              <span>Light</span>
+            </div>
+            <div class="theme-option" data-theme="dark">
+              <div class="theme-preview dark"></div>
+              <span>Dark</span>
+            </div>
+            <div class="theme-option selected" data-theme="auto">
+              <div class="theme-preview auto"></div>
+              <span>Auto</span>
+            </div>
+          </div>
+          <div class="form-description">Choose your preferred theme for the chat sidebar</div>
+        </div>
+      </div>
+      
+      <button type="submit" class="save-button">Save Settings</button>
+      
+      <div id="status-message" class="status-message"></div>
+    </form>
+    
+    <div class="shortcuts-info">
+      <h3>Keyboard Shortcuts</h3>
+      <ul>
+        <li><strong>Ctrl+Shift+Y</strong> - Toggle sidebar</li>
+        <li><strong>Ctrl+Enter</strong> - Send message (when typing)</li>
+        <li><strong>Select text</strong> - Shows selection preview in sidebar</li>
+      </ul>
+    </div>
+  </div>
+  
+  <script src="options.js"></script>
+</body>
+</html>
