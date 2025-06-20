@@ -7,6 +7,8 @@ class SNNChat {
     this.pageContent = '';
     this.chatHistory = [];
     this.isLoading = false;
+    this.currentDomain = window.location.hostname;
+    this.historyKey = `snn_chat_history_${this.currentDomain}`;
     
     this.init();
   }
@@ -16,7 +18,8 @@ class SNNChat {
     this.setupEventListeners();
     this.setupSelectionMonitoring();
     this.extractPageContent();
-    await this.applyTheme();
+    await this.loadChatHistory();
+    await this.applySettings();
   }
 
   async injectSidebar() {
@@ -59,10 +62,11 @@ class SNNChat {
     this.sendBtn?.addEventListener('click', () => this.sendMessage());
     
     this.userInput?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.sendMessage();
       }
+      // Shift+Enter allows new lines (default textarea behavior)
     });
 
     this.userInput?.addEventListener('input', () => {
@@ -73,7 +77,7 @@ class SNNChat {
       if (message.action === 'toggleSidebar') {
         this.toggleSidebar();
       } else if (message.action === 'settingsUpdated') {
-        this.applyTheme();
+        this.applySettings();
       }
     });
   }
@@ -217,6 +221,8 @@ class SNNChat {
         { role: 'assistant', content: response }
       );
       
+      await this.saveChatHistory();
+      
     } catch (error) {
       this.removeLoadingMessage();
       this.addMessageToChat('ai', 'Sorry, I encountered an error. Please check your API key in settings.');
@@ -323,22 +329,77 @@ class SNNChat {
     }
   }
 
-  clearChat() {
+  async clearChat() {
     if (!this.chatMessages) return;
     
     this.chatMessages.innerHTML = '';
     this.chatHistory = [];
     this.hideSelectionPreview();
+    await this.saveChatHistory();
   }
 
-  async applyTheme() {
+  async applySettings() {
     if (!this.sidebar) return;
     
     const settings = await this.getSettings();
-    const theme = settings.theme || 'auto';
     
+    // Apply theme
+    const theme = settings.theme || 'auto';
     this.sidebar.classList.remove('theme-light', 'theme-dark', 'theme-auto');
     this.sidebar.classList.add(`theme-${theme}`);
+    
+    // Apply font size
+    const fontSize = settings.fontSize || 15;
+    this.sidebar.style.setProperty('--chat-font-size', `${fontSize}px`);
+  }
+
+  async loadChatHistory() {
+    try {
+      const result = await chrome.storage.local.get([this.historyKey]);
+      const history = result[this.historyKey];
+      
+      if (history && history.messages) {
+        this.chatHistory = history.messages;
+        this.restoreChatMessages();
+      }
+    } catch (error) {
+      console.error('Failed to load chat history:', error);
+    }
+  }
+
+  async saveChatHistory() {
+    try {
+      const historyData = {
+        domain: this.currentDomain,
+        lastUpdated: Date.now(),
+        messages: this.chatHistory
+      };
+      
+      await chrome.storage.local.set({
+        [this.historyKey]: historyData
+      });
+    } catch (error) {
+      console.error('Failed to save chat history:', error);
+    }
+  }
+
+  restoreChatMessages() {
+    if (!this.chatMessages) return;
+    
+    this.chatMessages.innerHTML = '';
+    
+    for (let i = 0; i < this.chatHistory.length; i += 2) {
+      const userMessage = this.chatHistory[i];
+      const aiMessage = this.chatHistory[i + 1];
+      
+      if (userMessage && userMessage.role === 'user') {
+        this.addMessageToChat('user', userMessage.content);
+      }
+      
+      if (aiMessage && aiMessage.role === 'assistant') {
+        this.addMessageToChat('ai', aiMessage.content);
+      }
+    }
   }
 
   openSettings() {

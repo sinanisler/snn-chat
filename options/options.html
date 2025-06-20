@@ -307,6 +307,35 @@
       border: 1px solid #f5c6cb;
       color: #721c24;
     }
+    
+    .clear-history-btn {
+      background: #dc3545;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    
+    .clear-history-btn:hover {
+      background: #c82333;
+    }
+    
+    .clear-history-btn:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+    }
+    
+    #toggle-shortcut {
+      cursor: pointer;
+    }
+    
+    #toggle-shortcut:focus {
+      border-color: #28a745;
+      background: #f8fff9;
+    }
   </style>
 </head>
 <body>
@@ -382,12 +411,9 @@
         <div class="section-title">Chat Settings</div>
         
         <div class="form-group">
-          <label for="max-tokens">Max Response Length</label>
-          <div class="range-group">
-            <input type="range" id="max-tokens" class="range-input" min="100" max="4000" step="100" value="2000">
-            <span class="range-value" id="max-tokens-value">2000</span>
-          </div>
-          <div class="form-description">Maximum number of tokens in AI responses (100-4000)</div>
+          <label for="max-tokens">Max Response Length (Tokens)</label>
+          <input type="number" id="max-tokens" min="100" max="100000" step="100" value="2000" placeholder="2000">
+          <div class="form-description">Maximum number of tokens in AI responses (100-100000+)</div>
         </div>
         
         <div class="form-group">
@@ -397,6 +423,12 @@
             <span class="range-value" id="temperature-value">0.7</span>
           </div>
           <div class="form-description">Higher values make responses more creative but less predictable (0.0-1.0)</div>
+        </div>
+        
+        <div class="form-group">
+          <label for="font-size">Chat Font Size (px)</label>
+          <input type="number" id="font-size" min="10" max="24" step="1" value="15" placeholder="15">
+          <div class="form-description">Font size for chat messages (10-24px)</div>
         </div>
       </div>
       
@@ -421,6 +453,28 @@
             </div>
           </div>
           <div class="form-description">Choose your preferred theme for the chat sidebar</div>
+        </div>
+      </div>
+      
+      <!-- History & Data Section -->
+      <div class="section">
+        <div class="section-title">History & Data</div>
+        
+        <div class="form-group">
+          <label>Chat History</label>
+          <button type="button" class="clear-history-btn" id="clear-history">Clear All Chat History</button>
+          <div class="form-description">Remove all saved chat conversations from all websites</div>
+        </div>
+      </div>
+      
+      <!-- Keyboard Shortcuts Section -->
+      <div class="section">
+        <div class="section-title">Keyboard Shortcuts</div>
+        
+        <div class="form-group">
+          <label for="toggle-shortcut">Toggle Sidebar Shortcut</label>
+          <input type="text" id="toggle-shortcut" value="Ctrl+Shift+Y" placeholder="Ctrl+Shift+Y" readonly>
+          <div class="form-description">Click to record a new shortcut combination</div>
         </div>
       </div>
       

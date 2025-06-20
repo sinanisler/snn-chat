@@ -13,9 +13,11 @@ class OptionsManager {
     this.openrouterModelSelect = document.getElementById('openrouter-model');
     
     this.maxTokensInput = document.getElementById('max-tokens');
-    this.maxTokensValue = document.getElementById('max-tokens-value');
     this.temperatureInput = document.getElementById('temperature');
     this.temperatureValue = document.getElementById('temperature-value');
+    this.fontSizeInput = document.getElementById('font-size');
+    this.clearHistoryBtn = document.getElementById('clear-history');
+    this.toggleShortcutInput = document.getElementById('toggle-shortcut');
     
     this.themeOptions = document.querySelectorAll('.theme-option');
     this.selectedTheme = 'auto';
@@ -41,12 +43,16 @@ class OptionsManager {
       });
     });
     
-    this.maxTokensInput.addEventListener('input', () => {
-      this.maxTokensValue.textContent = this.maxTokensInput.value;
-    });
-    
     this.temperatureInput.addEventListener('input', () => {
       this.temperatureValue.textContent = this.temperatureInput.value;
+    });
+    
+    this.clearHistoryBtn.addEventListener('click', () => {
+      this.clearAllHistory();
+    });
+    
+    this.toggleShortcutInput.addEventListener('click', () => {
+      this.recordShortcut();
     });
     
     this.themeOptions.forEach(option => {
@@ -95,9 +101,10 @@ class OptionsManager {
       this.openrouterKeyInput.value = settings.openrouterKey || '';
       
       this.maxTokensInput.value = settings.maxTokens || 2000;
-      this.maxTokensValue.textContent = settings.maxTokens || 2000;
       this.temperatureInput.value = settings.temperature || 0.7;
       this.temperatureValue.textContent = settings.temperature || 0.7;
+      this.fontSizeInput.value = settings.fontSize || 15;
+      this.toggleShortcutInput.value = settings.toggleShortcut || 'Ctrl+Shift+Y';
       
       this.selectedTheme = settings.theme || 'auto';
       this.selectTheme(this.selectedTheme);
@@ -202,12 +209,7 @@ class OptionsManager {
       
       const data = await response.json();
       return data.data
-        .filter(model => !model.id.includes('free') && (
-          model.id.includes('gpt') || 
-          model.id.includes('claude') || 
-          model.id.includes('gemini') ||
-          model.id.includes('llama')
-        ))
+        .filter(model => !model.id.includes('free'))
         .sort((a, b) => a.name.localeCompare(b.name));
     }
   }
@@ -317,7 +319,9 @@ class OptionsManager {
         openrouterModel: this.openrouterModelSelect.value,
         maxTokens: parseInt(this.maxTokensInput.value),
         temperature: parseFloat(this.temperatureInput.value),
-        theme: this.selectedTheme
+        fontSize: parseInt(this.fontSizeInput.value),
+        theme: this.selectedTheme,
+        toggleShortcut: this.toggleShortcutInput.value
       };
       
       await chrome.storage.sync.set({ settings });
@@ -340,8 +344,59 @@ class OptionsManager {
       openrouterModel: '',
       maxTokens: 2000,
       temperature: 0.7,
-      theme: 'auto'
+      fontSize: 15,
+      theme: 'auto',
+      toggleShortcut: 'Ctrl+Shift+Y'
     };
+  }
+
+  async clearAllHistory() {
+    if (confirm('Are you sure you want to clear all chat history? This cannot be undone.')) {
+      try {
+        const keys = await new Promise(resolve => {
+          chrome.storage.local.get(null, resolve);
+        });
+        
+        const historyKeys = Object.keys(keys).filter(key => key.startsWith('snn_chat_history_'));
+        
+        if (historyKeys.length > 0) {
+          await chrome.storage.local.remove(historyKeys);
+          this.showStatus(`Cleared ${historyKeys.length} chat histories`, 'success');
+        } else {
+          this.showStatus('No chat history found', 'success');
+        }
+      } catch (error) {
+        console.error('Failed to clear history:', error);
+        this.showStatus('Failed to clear history', 'error');
+      }
+    }
+  }
+
+  recordShortcut() {
+    this.toggleShortcutInput.value = 'Press keys...';
+    this.toggleShortcutInput.focus();
+    
+    const handleKeyDown = (e) => {
+      e.preventDefault();
+      
+      const keys = [];
+      if (e.ctrlKey) keys.push('Ctrl');
+      if (e.altKey) keys.push('Alt');
+      if (e.shiftKey) keys.push('Shift');
+      if (e.metaKey) keys.push('Meta');
+      
+      if (e.key && !['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+        keys.push(e.key.toUpperCase());
+      }
+      
+      if (keys.length > 1) {
+        this.toggleShortcutInput.value = keys.join('+');
+        this.toggleShortcutInput.removeEventListener('keydown', handleKeyDown);
+        this.toggleShortcutInput.blur();
+      }
+    };
+    
+    this.toggleShortcutInput.addEventListener('keydown', handleKeyDown);
   }
   
   showStatus(message, type) {
