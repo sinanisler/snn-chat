@@ -23,8 +23,8 @@ class OptionsManager {
     this.init();
   }
   
-  init() {
-    this.loadSettings();
+  async init() {
+    await this.loadSettings();
     this.setupEventListeners();
     this.loadInitialModels();
   }
@@ -64,14 +64,20 @@ class OptionsManager {
     });
     
     this.openaiKeyInput.addEventListener('input', () => {
-      if (this.openaiKeyInput.value.trim()) {
+      const apiKey = this.openaiKeyInput.value.trim();
+      if (apiKey) {
         this.loadModels('openai');
+      } else {
+        this.clearModelSelect('openai');
       }
     });
     
     this.openrouterKeyInput.addEventListener('input', () => {
-      if (this.openrouterKeyInput.value.trim()) {
+      const apiKey = this.openrouterKeyInput.value.trim();
+      if (apiKey) {
         this.loadModels('openrouter');
+      } else {
+        this.clearModelSelect('openrouter');
       }
     });
   }
@@ -96,12 +102,8 @@ class OptionsManager {
       this.selectedTheme = settings.theme || 'auto';
       this.selectTheme(this.selectedTheme);
       
-      if (settings.openaiModel) {
-        this.setSelectedModel('openai', settings.openaiModel);
-      }
-      if (settings.openrouterModel) {
-        this.setSelectedModel('openrouter', settings.openrouterModel);
-      }
+      this.savedOpenaiModel = settings.openaiModel;
+      this.savedOpenrouterModel = settings.openrouterModel;
       
     } catch (error) {
       console.error('Failed to load settings:', error);
@@ -111,10 +113,16 @@ class OptionsManager {
   
   async loadInitialModels() {
     if (this.openaiKeyInput.value.trim()) {
-      this.loadModels('openai');
+      await this.loadModels('openai');
+      if (this.savedOpenaiModel) {
+        this.setSelectedModel('openai', this.savedOpenaiModel);
+      }
     }
     if (this.openrouterKeyInput.value.trim()) {
-      this.loadModels('openrouter');
+      await this.loadModels('openrouter');
+      if (this.savedOpenrouterModel) {
+        this.setSelectedModel('openrouter', this.savedOpenrouterModel);
+      }
     }
   }
   
@@ -232,6 +240,11 @@ class OptionsManager {
     if (option) {
       option.selected = true;
     }
+  }
+
+  clearModelSelect(provider) {
+    const selectEl = document.getElementById(`${provider}-model`);
+    selectEl.innerHTML = '<option value="">Select a model...</option>';
   }
   
   async testConnection(provider) {
