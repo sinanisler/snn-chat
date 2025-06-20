@@ -1,4 +1,4 @@
-class AISidebar {
+class SNNChat {
   constructor() {
     this.sidebar = null;
     this.isVisible = false;
@@ -348,8 +348,8 @@ class AISidebar {
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    new AISidebar();
+    new SNNChat();
   });
 } else {
-  new AISidebar();
+  new SNNChat();
 }
