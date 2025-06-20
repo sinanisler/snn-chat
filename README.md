@@ -102,9 +102,7 @@ The extension supports the following settings:
 
 To modify or enhance the extension:
 
-1. Make your changes to the relevant files
-2. Reload the extension in `chrome://extensions/`
-3. Test on various websites to ensure compatibility
+Any issues or bug reports - > https://github.com/sinanisler/SNN-Chat/issues
 
 ## Privacy & Security
 

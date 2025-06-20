@@ -2,7 +2,7 @@
   position: fixed !important;
   top: 0 !important;
   right: 0 !important;
-  width: 400px !important;
+  width: var(--sidebar-width, 400px) !important;
   height: 100vh !important;
   background: var(--sidebar-bg, #ffffff) !important;
   color: var(--sidebar-text, #333333) !important;
@@ -197,6 +197,68 @@
 
 .clear-selection:hover {
   background: rgba(0, 0, 0, 0.1) !important;
+}
+
+.model-indicator {
+  background: var(--sidebar-header-bg, #f8f9fa) !important;
+  border-bottom: 1px solid var(--sidebar-header-border, #e0e0e0) !important;
+  padding: 8px 20px !important;
+  flex-shrink: 0 !important;
+}
+
+.model-info {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+}
+
+.model-name {
+  color: var(--sidebar-text, #333) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  opacity: 0.8 !important;
+}
+
+.model-settings-btn {
+  background: none !important;
+  border: none !important;
+  color: var(--sidebar-text, #333) !important;
+  font-size: 14px !important;
+  cursor: pointer !important;
+  padding: 4px 6px !important;
+  border-radius: 4px !important;
+  transition: background-color 0.2s !important;
+  opacity: 0.7 !important;
+}
+
+.model-settings-btn:hover {
+  background: rgba(0, 0, 0, 0.1) !important;
+  opacity: 1 !important;
+}
+
+.page-context-indicator {
+  background: var(--sidebar-preview-bg, #e3f2fd) !important;
+  border-bottom: 1px solid var(--sidebar-preview-border, #bbdefb) !important;
+  padding: 8px 20px !important;
+  flex-shrink: 0 !important;
+  display: block !important;
+}
+
+.page-context-indicator.hidden {
+  display: none !important;
+}
+
+.context-header {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+.context-text {
+  color: var(--sidebar-preview-text, #1565c0) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  opacity: 0.9 !important;
 }
 
 .chat-container {

@@ -41,6 +41,10 @@ class SNNChat {
       this.selectionPreview = this.sidebar.querySelector('#selection-preview');
       this.previewText = this.sidebar.querySelector('#preview-text');
       this.clearSelectionBtn = this.sidebar.querySelector('#clear-selection');
+      this.modelIndicator = this.sidebar.querySelector('#model-indicator');
+      this.currentModelSpan = this.sidebar.querySelector('#current-model');
+      this.modelSettingsBtn = this.sidebar.querySelector('#model-settings-btn');
+      this.pageContextIndicator = this.sidebar.querySelector('#page-context-indicator');
       
     } catch (error) {
       console.error('Failed to inject sidebar:', error);
@@ -58,6 +62,7 @@ class SNNChat {
     clearBtn?.addEventListener('click', () => this.clearChat());
     settingsBtn?.addEventListener('click', () => this.openSettings());
     this.clearSelectionBtn?.addEventListener('click', () => this.clearSelection());
+    this.modelSettingsBtn?.addEventListener('click', () => this.openSettings());
     
     this.sendBtn?.addEventListener('click', () => this.sendMessage());
     
@@ -119,9 +124,11 @@ class SNNChat {
       this.selectedText = text;
       this.preservedSelection = text;
       this.showSelectionPreview(text);
+      this.hidePageContextIndicator();
     } else if (!this.preservedSelection) {
       this.selectedText = '';
       this.hideSelectionPreview();
+      this.showPageContextIndicator();
     }
   }
 
@@ -142,11 +149,22 @@ class SNNChat {
     this.selectedText = '';
     this.preservedSelection = '';
     this.hideSelectionPreview();
+    this.showPageContextIndicator();
     
     const selection = window.getSelection();
     if (selection) {
       selection.removeAllRanges();
     }
+  }
+  
+  showPageContextIndicator() {
+    if (!this.pageContextIndicator) return;
+    this.pageContextIndicator.classList.remove('hidden');
+  }
+  
+  hidePageContextIndicator() {
+    if (!this.pageContextIndicator) return;
+    this.pageContextIndicator.classList.add('hidden');
   }
 
   extractPageContent() {
@@ -432,7 +450,27 @@ class SNNChat {
     
     // Apply sidebar width
     const sidebarWidth = settings.sidebarWidth || 400;
-    this.sidebar.style.width = `${sidebarWidth}px`;
+    this.sidebar.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
+    
+    // Update model indicator
+    this.updateModelIndicator(settings);
+  }
+  
+  updateModelIndicator(settings) {
+    if (!this.currentModelSpan) return;
+    
+    const provider = settings.provider || 'openai';
+    const model = provider === 'openai' ? 
+      (settings.openaiModel || 'gpt-4o-mini') : 
+      (settings.openrouterModel || 'openai/gpt-4o-mini');
+    
+    // Format model name for display
+    let displayName = model;
+    if (model.includes('/')) {
+      displayName = model.split('/').pop(); // Get part after last slash
+    }
+    
+    this.currentModelSpan.textContent = displayName;
   }
 
   async loadChatHistory() {
