@@ -16,8 +16,10 @@ class OptionsManager {
     this.temperatureInput = document.getElementById('temperature');
     this.temperatureValue = document.getElementById('temperature-value');
     this.fontSizeInput = document.getElementById('font-size');
+    this.sidebarWidthInput = document.getElementById('sidebar-width');
     this.clearHistoryBtn = document.getElementById('clear-history');
     this.toggleShortcutInput = document.getElementById('toggle-shortcut');
+    this.resetShortcutBtn = document.getElementById('reset-shortcut');
     
     this.themeOptions = document.querySelectorAll('.theme-option');
     this.selectedTheme = 'auto';
@@ -53,6 +55,10 @@ class OptionsManager {
     
     this.toggleShortcutInput.addEventListener('click', () => {
       this.recordShortcut();
+    });
+    
+    this.resetShortcutBtn.addEventListener('click', () => {
+      this.resetShortcut();
     });
     
     this.themeOptions.forEach(option => {
@@ -104,6 +110,7 @@ class OptionsManager {
       this.temperatureInput.value = settings.temperature || 0.7;
       this.temperatureValue.textContent = settings.temperature || 0.7;
       this.fontSizeInput.value = settings.fontSize || 15;
+      this.sidebarWidthInput.value = settings.sidebarWidth || 400;
       this.toggleShortcutInput.value = settings.toggleShortcut || 'Ctrl+Shift+Y';
       
       this.selectedTheme = settings.theme || 'auto';
@@ -320,6 +327,7 @@ class OptionsManager {
         maxTokens: parseInt(this.maxTokensInput.value),
         temperature: parseFloat(this.temperatureInput.value),
         fontSize: parseInt(this.fontSizeInput.value),
+        sidebarWidth: parseInt(this.sidebarWidthInput.value),
         theme: this.selectedTheme,
         toggleShortcut: this.toggleShortcutInput.value
       };
@@ -345,6 +353,7 @@ class OptionsManager {
       maxTokens: 2000,
       temperature: 0.7,
       fontSize: 15,
+      sidebarWidth: 400,
       theme: 'auto',
       toggleShortcut: 'Ctrl+Shift+Y'
     };
@@ -378,6 +387,7 @@ class OptionsManager {
     
     const handleKeyDown = (e) => {
       e.preventDefault();
+      e.stopPropagation();
       
       const keys = [];
       if (e.ctrlKey) keys.push('Ctrl');
@@ -385,18 +395,54 @@ class OptionsManager {
       if (e.shiftKey) keys.push('Shift');
       if (e.metaKey) keys.push('Meta');
       
+      let mainKey = '';
       if (e.key && !['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
-        keys.push(e.key.toUpperCase());
+        // Handle special keys
+        if (e.key === ' ') {
+          mainKey = 'Space';
+        } else if (e.key === '+') {
+          mainKey = 'Plus';
+        } else if (e.key.length === 1) {
+          mainKey = e.key.toUpperCase();
+        } else {
+          mainKey = e.key;
+        }
+        keys.push(mainKey);
       }
       
-      if (keys.length > 1) {
+      // Require at least one modifier + one main key
+      const modifierCount = keys.filter(k => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(k)).length;
+      if (modifierCount > 0 && keys.length > 1) {
         this.toggleShortcutInput.value = keys.join('+');
+        this.toggleShortcutInput.removeEventListener('keydown', handleKeyDown);
+        this.toggleShortcutInput.blur();
+      } else if (keys.length === 1 && !['Ctrl', 'Alt', 'Shift', 'Meta'].includes(keys[0])) {
+        // Single key without modifier - show error
+        this.toggleShortcutInput.value = 'Need modifier key (Ctrl/Alt/Shift)';
+        setTimeout(() => {
+          this.toggleShortcutInput.value = this.originalShortcut || 'Ctrl+Shift+Y';
+        }, 1500);
         this.toggleShortcutInput.removeEventListener('keydown', handleKeyDown);
         this.toggleShortcutInput.blur();
       }
     };
     
+    this.originalShortcut = this.toggleShortcutInput.value;
     this.toggleShortcutInput.addEventListener('keydown', handleKeyDown);
+    
+    // Cancel on blur
+    const handleBlur = () => {
+      this.toggleShortcutInput.removeEventListener('keydown', handleKeyDown);
+      this.toggleShortcutInput.removeEventListener('blur', handleBlur);
+      if (this.toggleShortcutInput.value === 'Press keys...') {
+        this.toggleShortcutInput.value = this.originalShortcut || 'Ctrl+Shift+Y';
+      }
+    };
+    this.toggleShortcutInput.addEventListener('blur', handleBlur);
+  }
+
+  resetShortcut() {
+    this.toggleShortcutInput.value = 'Ctrl+Shift+Y';
   }
   
   showStatus(message, type) {
