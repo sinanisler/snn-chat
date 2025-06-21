@@ -1525,11 +1525,58 @@ class SNNChat {
   
   filterHistories(searchTerm) {
     const items = this.historyList.querySelectorAll('.history-item');
+    const domainHeaders = this.historyList.querySelectorAll('.domain-header');
+    
+    // If no search term, show everything
+    if (!searchTerm.trim()) {
+      items.forEach(item => item.style.display = 'block');
+      domainHeaders.forEach(header => header.style.display = 'block');
+      return;
+    }
+    
+    const lowerSearchTerm = searchTerm.toLowerCase();
+    
+    // Track which domains have visible items
+    const visibleDomains = new Set();
+    
     items.forEach(item => {
-      const domain = item.querySelector('.history-domain').textContent.toLowerCase();
+      // Get the domain from the closest domain header
+      let domain = '';
+      const domainHeader = item.previousElementSibling;
+      if (domainHeader && domainHeader.classList.contains('domain-header')) {
+        domain = domainHeader.querySelector('h4')?.textContent.toLowerCase() || '';
+      } else {
+        // Find the previous domain header
+        let prevElement = item.previousElementSibling;
+        while (prevElement) {
+          if (prevElement.classList.contains('domain-header')) {
+            domain = prevElement.querySelector('h4')?.textContent.toLowerCase() || '';
+            break;
+          }
+          prevElement = prevElement.previousElementSibling;
+        }
+      }
+      
+      const sessionTitle = item.querySelector('.session-title')?.textContent.toLowerCase() || '';
       const preview = item.querySelector('.history-preview')?.textContent.toLowerCase() || '';
-      const matches = domain.includes(searchTerm.toLowerCase()) || preview.includes(searchTerm.toLowerCase());
+      const stats = item.querySelector('.history-stats')?.textContent.toLowerCase() || '';
+      
+      const matches = domain.includes(lowerSearchTerm) || 
+                     sessionTitle.includes(lowerSearchTerm) || 
+                     preview.includes(lowerSearchTerm) ||
+                     stats.includes(lowerSearchTerm);
+      
       item.style.display = matches ? 'block' : 'none';
+      
+      if (matches) {
+        visibleDomains.add(domain);
+      }
+    });
+    
+    // Show/hide domain headers based on whether they have visible items
+    domainHeaders.forEach(header => {
+      const domain = header.querySelector('h4')?.textContent.toLowerCase() || '';
+      header.style.display = visibleDomains.has(domain) ? 'block' : 'none';
     });
   }
   

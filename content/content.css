@@ -746,6 +746,10 @@
   padding-bottom: 2px  ;
 }
 
+[type="range"]{
+  height:10px;
+}
+
 .input-group {
   margin-bottom: 5px  ;
   display:;
@@ -753,7 +757,7 @@
 
 .input-group label {
   display: block  ;
-  margin-bottom: 6px  ;
+  margin-bottom: 0px  ;
   font-size: 14px  ;
   font-weight: 500  ;
   color: var(--sidebar-text, #333)  ;
