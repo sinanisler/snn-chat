@@ -271,25 +271,56 @@ class SNNChat {
     const settings = await this.getSettings();
     this.currentShortcut = settings.shortcut || 'Ctrl+Shift+Y';
     
-    // Set up custom shortcut listener
-    document.addEventListener('keydown', (e) => {
+    console.log('Setting up custom shortcut:', this.currentShortcut);
+    
+    // Remove existing listener if it exists
+    if (this.shortcutKeydownHandler) {
+      document.removeEventListener('keydown', this.shortcutKeydownHandler);
+    }
+    
+    // Create new shortcut handler
+    this.shortcutKeydownHandler = (e) => {
+      // Skip if we're in an input field
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+        return;
+      }
+      
       const pressedKeys = [];
       if (e.ctrlKey) pressedKeys.push('Ctrl');
       if (e.shiftKey) pressedKeys.push('Shift');
       if (e.altKey) pressedKeys.push('Alt');
       if (e.metaKey) pressedKeys.push('Cmd');
       
-      // Only add the main key if it's not a modifier
+      // Only add the main key if it's not a modifier - use code instead of key for more reliable detection
       if (!['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-        pressedKeys.push(e.key.toUpperCase());
+        // Use e.code for physical key detection, or fallback to e.key
+        let keyToAdd = '';
+        if (e.code && e.code.startsWith('Key')) {
+          // For letter keys like KeyQ, KeyA, etc.
+          keyToAdd = e.code.substring(3); // Remove 'Key' prefix
+        } else if (e.code && e.code.startsWith('Digit')) {
+          // For number keys like Digit1, Digit2, etc.
+          keyToAdd = e.code.substring(5); // Remove 'Digit' prefix
+        } else {
+          // Fallback to e.key for other keys
+          keyToAdd = e.key.toUpperCase();
+        }
+        pressedKeys.push(keyToAdd);
       }
       
       const currentPressedShortcut = pressedKeys.join('+');
+      console.log('Pressed:', currentPressedShortcut, 'Expected:', this.currentShortcut);
+      
       if (currentPressedShortcut === this.currentShortcut) {
+        console.log('Shortcut matched! Toggling sidebar...');
         e.preventDefault();
+        e.stopPropagation();
         this.toggleSidebar();
       }
-    });
+    };
+    
+    // Add new listener
+    document.addEventListener('keydown', this.shortcutKeydownHandler);
   }
 
   handleTextSelection() {
@@ -904,8 +935,9 @@ class SNNChat {
     // Update model indicator
     this.updateModelIndicator(settings);
     
-    // Update custom shortcut
-    this.currentShortcut = settings.shortcut || 'Ctrl+Shift+Y';
+    // Update custom shortcut - always recreate the listener 
+    console.log('Applying settings, current shortcut:', this.currentShortcut, 'new shortcut:', settings.shortcut);
+    await this.setupCustomShortcut();
   }
   
   updateModelIndicator(settings) {
@@ -1757,8 +1789,13 @@ class SNNChat {
     const key2 = this.sidebar.querySelector('#shortcut-key2')?.value || '';
     const key3 = this.sidebar.querySelector('#shortcut-key3')?.value || '';
     
+    console.log('Building shortcut from selects:', { key1, key2, key3 });
+    
     const keys = [key1, key2, key3].filter(key => key !== '');
-    return keys.length > 0 ? keys.join('+') : 'Ctrl+Shift+Y';
+    const shortcut = keys.length > 0 ? keys.join('+') : 'Ctrl+Shift+Y';
+    
+    console.log('Built shortcut:', shortcut);
+    return shortcut;
   }
   
   resetShortcut() {
