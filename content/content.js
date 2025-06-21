@@ -1,5 +1,11 @@
 class SNNChat {
   constructor() {
+    // Check if extension context is valid before proceeding
+    if (!chrome?.runtime?.id) {
+      console.log('Extension context invalid, skipping initialization');
+      return;
+    }
+    
     this.sidebar = null;
     this.isVisible = false;
     this.selectedText = '';
@@ -141,7 +147,16 @@ class SNNChat {
     if (document.getElementById('ai-sidebar')) return;
 
     try {
+      // Check if chrome.runtime is available
+      if (!chrome?.runtime?.getURL) {
+        throw new Error('Extension context not available');
+      }
+      
       const sidebarHTML = await fetch(chrome.runtime.getURL('sidebar/sidebar.html'));
+      if (!sidebarHTML.ok) {
+        throw new Error(`Failed to fetch sidebar HTML: ${sidebarHTML.status}`);
+      }
+      
       const htmlContent = await sidebarHTML.text();
       
       const tempDiv = document.createElement('div');
@@ -168,6 +183,8 @@ class SNNChat {
       
     } catch (error) {
       console.error('Failed to inject sidebar:', error);
+      // Don't continue if sidebar injection fails
+      return;
     }
   }
 
@@ -203,13 +220,20 @@ class SNNChat {
       this.adjustTextareaHeight();
     });
 
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-      if (message.action === 'toggleSidebar') {
-        this.toggleSidebar();
-      } else if (message.action === 'settingsUpdated') {
-        this.applySettings();
+    // Safe chrome.runtime listener with error handling
+    try {
+      if (chrome?.runtime?.onMessage) {
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+          if (message.action === 'toggleSidebar') {
+            this.toggleSidebar();
+          } else if (message.action === 'settingsUpdated') {
+            this.applySettings();
+          }
+        });
       }
-    });
+    } catch (error) {
+      console.log('Extension context not available for message listener');
+    }
   }
 
   setupSelectionMonitoring() {
@@ -652,11 +676,26 @@ class SNNChat {
   }
 
   async getSettings() {
-    return new Promise((resolve) => {
-      chrome.storage.sync.get(['settings'], (result) => {
-        resolve(result.settings || {});
+    try {
+      if (!chrome?.storage?.sync) {
+        console.log('Chrome storage not available, using defaults');
+        return {};
+      }
+      
+      return new Promise((resolve) => {
+        chrome.storage.sync.get(['settings'], (result) => {
+          if (chrome.runtime.lastError) {
+            console.log('Storage error:', chrome.runtime.lastError);
+            resolve({});
+          } else {
+            resolve(result.settings || {});
+          }
+        });
       });
-    });
+    } catch (error) {
+      console.log('Failed to access settings:', error);
+      return {};
+    }
   }
 
   addMessageToChat(sender, content, pageContext = null, tokenUsage = null) {
@@ -861,7 +900,17 @@ class SNNChat {
 
   async loadChatHistory() {
     try {
+      if (!chrome?.storage?.local) {
+        console.log('Chrome storage not available for history');
+        return;
+      }
+      
       const result = await chrome.storage.local.get([this.historyKey]);
+      if (chrome.runtime.lastError) {
+        console.log('History load error:', chrome.runtime.lastError);
+        return;
+      }
+      
       const history = result[this.historyKey];
       
       if (history && history.messages) {
@@ -869,12 +918,17 @@ class SNNChat {
         this.restoreChatMessages();
       }
     } catch (error) {
-      console.error('Failed to load chat history:', error);
+      console.log('Failed to load chat history:', error);
     }
   }
 
   async saveChatHistory() {
     try {
+      if (!chrome?.storage?.local) {
+        console.log('Chrome storage not available for saving history');
+        return;
+      }
+      
       const historyData = {
         domain: this.currentDomain,
         lastUpdated: Date.now(),
@@ -884,8 +938,12 @@ class SNNChat {
       await chrome.storage.local.set({
         [this.historyKey]: historyData
       });
+      
+      if (chrome.runtime.lastError) {
+        console.log('History save error:', chrome.runtime.lastError);
+      }
     } catch (error) {
-      console.error('Failed to save chat history:', error);
+      console.log('Failed to save chat history:', error);
     }
   }
 
@@ -1062,7 +1120,19 @@ class SNNChat {
   
   async loadAllChatHistories() {
     try {
+      if (!chrome?.storage?.local) {
+        console.log('Chrome storage not available for loading histories');
+        this.allHistoryKeys = [];
+        return;
+      }
+      
       const result = await chrome.storage.local.get(null);
+      if (chrome.runtime.lastError) {
+        console.log('All histories load error:', chrome.runtime.lastError);
+        this.allHistoryKeys = [];
+        return;
+      }
+      
       this.allHistoryKeys = [];
       
       for (const key in result) {
@@ -1080,7 +1150,8 @@ class SNNChat {
       // Sort by last updated (newest first)
       this.allHistoryKeys.sort((a, b) => b.lastUpdated - a.lastUpdated);
     } catch (error) {
-      console.error('Failed to load chat histories:', error);
+      console.log('Failed to load chat histories:', error);
+      this.allHistoryKeys = [];
     }
   }
   
@@ -1202,7 +1273,17 @@ class SNNChat {
     }
     
     try {
+      if (!chrome?.storage?.local) {
+        this.showToast('Storage not available');
+        return;
+      }
+      
       await chrome.storage.local.remove([historyKey]);
+      if (chrome.runtime.lastError) {
+        console.log('History delete error:', chrome.runtime.lastError);
+        this.showToast('Failed to delete history');
+        return;
+      }
       
       // If we're currently viewing this history, clear it
       if (this.historyKey === historyKey) {
@@ -1216,7 +1297,7 @@ class SNNChat {
       
       this.showToast(`Deleted ${domain} chat history`);
     } catch (error) {
-      console.error('Failed to delete history:', error);
+      console.log('Failed to delete history:', error);
       this.showToast('Failed to delete history');
     }
   }
@@ -1266,8 +1347,20 @@ class SNNChat {
     }
     
     try {
+      if (!chrome?.storage?.local) {
+        this.showToast('Storage not available');
+        return;
+      }
+      
       const keysToRemove = this.allHistoryKeys.map(item => item.key);
-      await chrome.storage.local.remove(keysToRemove);
+      if (keysToRemove.length > 0) {
+        await chrome.storage.local.remove(keysToRemove);
+        if (chrome.runtime.lastError) {
+          console.log('Clear all history error:', chrome.runtime.lastError);
+          this.showToast('Failed to clear history');
+          return;
+        }
+      }
       
       this.allHistoryKeys = [];
       this.chatHistory = [];
@@ -1276,7 +1369,7 @@ class SNNChat {
       this.populateHistoryList();
       this.showToast('All chat history cleared');
     } catch (error) {
-      console.error('Failed to clear all history:', error);
+      console.log('Failed to clear all history:', error);
       this.showToast('Failed to clear history');
     }
   }
@@ -1344,7 +1437,7 @@ class SNNChat {
           if (this.savedOpenaiModel) {
             this.setSelectedModel('openai', this.savedOpenaiModel);
           }
-        }).catch(err => console.log('OpenAI models load failed:', err))
+        }).catch(err => {/* Silent fail */})
       );
     }
     
@@ -1354,7 +1447,7 @@ class SNNChat {
           if (this.savedOpenrouterModel) {
             this.setSelectedModel('openrouter', this.savedOpenrouterModel);
           }
-        }).catch(err => console.log('OpenRouter models load failed:', err))
+        }).catch(err => {/* Silent fail */})
       );
     }
     
@@ -1587,14 +1680,28 @@ class SNNChat {
         sidebarWidth: parseInt(this.sidebar.querySelector('#sidebar-width')?.value) || 400
       };
       
-      await chrome.storage.sync.set({ settings });
+      if (chrome?.storage?.sync) {
+        await chrome.storage.sync.set({ settings });
+        if (chrome.runtime.lastError) {
+          console.log('Settings save error:', chrome.runtime.lastError);
+          this.showToast('Failed to save settings');
+          return;
+        }
+      }
+      
       await this.applySettings();
       
       this.closeSettingsOverlay();
       this.showToast('Settings saved successfully!');
       
       // Notify background script about settings update
-      chrome.runtime.sendMessage({ action: 'settingsUpdated' });
+      try {
+        if (chrome?.runtime?.sendMessage) {
+          chrome.runtime.sendMessage({ action: 'settingsUpdated' });
+        }
+      } catch (error) {
+        console.log('Failed to notify background script:', error);
+      }
     } catch (error) {
       console.error('Failed to save settings:', error);
       this.showToast('Failed to save settings');
@@ -1606,10 +1713,13 @@ class SNNChat {
   }
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
+// Initialize SNNChat only if we have a valid extension context
+if (chrome?.runtime?.id) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      new SNNChat();
+    });
+  } else {
     new SNNChat();
-  });
-} else {
-  new SNNChat();
+  }
 }
