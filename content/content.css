@@ -878,39 +878,42 @@
   line-height: 1.4 !important;
 }
 
-/* Shortcut Input Styles */
-.shortcut-input-container {
+/* Shortcut Selects Styles */
+.shortcut-selects-container {
   display: flex !important;
   gap: 8px !important;
   align-items: center !important;
 }
 
-.shortcut-input-container input {
+.shortcut-selects-container select {
   flex: 1 !important;
-  font-family: monospace !important;
-  font-weight: 500 !important;
+  max-width: 80px !important;
+  font-size: 13px !important;
+  padding: 6px 8px !important;
   text-align: center !important;
-  background: var(--sidebar-preview-bg, #f0f0f0) !important;
-  cursor: pointer !important;
+  font-weight: 500 !important;
 }
 
-.shortcut-input-container input:focus {
-  background: var(--sidebar-input-bg, #ffffff) !important;
-  border-color: var(--sidebar-input-focus, #007bff) !important;
+.shortcut-plus {
+  color: var(--sidebar-button-text, #666) !important;
+  font-weight: bold !important;
+  font-size: 14px !important;
+  opacity: 0.7 !important;
 }
 
-.shortcut-input-container .btn {
-  padding: 8px 12px !important;
-  font-size: 12px !important;
+.shortcut-selects-container .btn {
+  padding: 6px 10px !important;
+  font-size: 11px !important;
   border-radius: 4px !important;
   border: 1px solid var(--sidebar-input-border, #e0e0e0) !important;
   background: var(--sidebar-button-bg, #f8f9fa) !important;
   color: var(--sidebar-button-text, #666) !important;
   cursor: pointer !important;
   transition: all 0.2s !important;
+  margin-left: 8px !important;
 }
 
-.shortcut-input-container .btn:hover {
+.shortcut-selects-container .btn:hover {
   background: var(--sidebar-input-border, #e9ecef) !important;
   border-color: var(--sidebar-input-border, #ced4da) !important;
 }

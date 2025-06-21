@@ -273,8 +273,6 @@ class SNNChat {
     
     // Set up custom shortcut listener
     document.addEventListener('keydown', (e) => {
-      if (this.isCapturingShortcut) return; // Don't interfere with shortcut capture
-      
       const pressedKeys = [];
       if (e.ctrlKey) pressedKeys.push('Ctrl');
       if (e.shiftKey) pressedKeys.push('Shift');
@@ -1017,7 +1015,9 @@ class SNNChat {
     const openrouterKeyInput = this.sidebar.querySelector('#openrouter-key');
     const testOpenaiBtn = this.sidebar.querySelector('#test-openai');
     const testOpenrouterBtn = this.sidebar.querySelector('#test-openrouter');
-    const shortcutInput = this.sidebar.querySelector('#shortcut-input');
+    const shortcutKey1 = this.sidebar.querySelector('#shortcut-key1');
+    const shortcutKey2 = this.sidebar.querySelector('#shortcut-key2');
+    const shortcutKey3 = this.sidebar.querySelector('#shortcut-key3');
     const resetShortcutBtn = this.sidebar.querySelector('#reset-shortcut');
     
     closeSettingsBtn?.addEventListener('click', () => this.closeSettingsOverlay());
@@ -1063,8 +1063,6 @@ class SNNChat {
     testOpenrouterBtn?.addEventListener('click', () => this.testConnection('openrouter'));
     
     // Shortcut customization
-    shortcutInput?.addEventListener('focus', () => this.startShortcutCapture());
-    shortcutInput?.addEventListener('blur', () => this.stopShortcutCapture());
     resetShortcutBtn?.addEventListener('click', () => this.resetShortcut());
     
     // Update value displays for sliders
@@ -1426,7 +1424,9 @@ class SNNChat {
     const fontSizeValue = this.sidebar.querySelector('#font-size-value');
     const sidebarWidth = this.sidebar.querySelector('#sidebar-width');
     const sidebarWidthValue = this.sidebar.querySelector('#sidebar-width-value');
-    const shortcutInput = this.sidebar.querySelector('#shortcut-input');
+    const shortcutKey1 = this.sidebar.querySelector('#shortcut-key1');
+    const shortcutKey2 = this.sidebar.querySelector('#shortcut-key2');
+    const shortcutKey3 = this.sidebar.querySelector('#shortcut-key3');
     
     // Set radio button for provider
     const providerRadio = this.sidebar.querySelector(`input[name="provider"][value="${provider}"]`);
@@ -1452,9 +1452,13 @@ class SNNChat {
       sidebarWidth.value = settings.sidebarWidth || 400;
       if (sidebarWidthValue) sidebarWidthValue.textContent = (settings.sidebarWidth || 400) + 'px';
     }
-    if (shortcutInput) {
-      shortcutInput.value = settings.shortcut || 'Ctrl+Shift+Y';
-    }
+    
+    // Load shortcut settings
+    const shortcut = settings.shortcut || 'Ctrl+Shift+Y';
+    const shortcutKeys = shortcut.split('+');
+    if (shortcutKey1 && shortcutKeys[0]) shortcutKey1.value = shortcutKeys[0];
+    if (shortcutKey2 && shortcutKeys[1]) shortcutKey2.value = shortcutKeys[1];
+    if (shortcutKey3 && shortcutKeys[2]) shortcutKey3.value = shortcutKeys[2];
     
     // Store saved model selections
     this.savedOpenaiModel = settings.openaiModel;
@@ -1713,7 +1717,7 @@ class SNNChat {
         theme: this.sidebar.querySelector('#theme-select')?.value || 'auto',
         fontSize: parseInt(this.sidebar.querySelector('#font-size')?.value) || 15,
         sidebarWidth: parseInt(this.sidebar.querySelector('#sidebar-width')?.value) || 400,
-        shortcut: this.sidebar.querySelector('#shortcut-input')?.value || 'Ctrl+Shift+Y'
+        shortcut: this.buildShortcutFromSelects()
       };
       
       if (chrome?.storage?.sync) {
@@ -1748,57 +1752,24 @@ class SNNChat {
     this.openSettingsOverlay();
   }
   
-  startShortcutCapture() {
-    if (!this.shortcutInput) return;
+  buildShortcutFromSelects() {
+    const key1 = this.sidebar.querySelector('#shortcut-key1')?.value || '';
+    const key2 = this.sidebar.querySelector('#shortcut-key2')?.value || '';
+    const key3 = this.sidebar.querySelector('#shortcut-key3')?.value || '';
     
-    this.shortcutInput.placeholder = 'Press keys...';
-    this.capturedKeys = [];
-    this.isCapturingShortcut = true;
-    
-    this.shortcutKeyHandler = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      
-      if (e.type === 'keydown') {
-        const keys = [];
-        if (e.ctrlKey) keys.push('Ctrl');
-        if (e.shiftKey) keys.push('Shift');
-        if (e.altKey) keys.push('Alt');
-        if (e.metaKey) keys.push('Cmd');
-        
-        // Only add the main key if it's not a modifier
-        if (!['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
-          keys.push(e.key.toUpperCase());
-        }
-        
-        if (keys.length >= 2 && keys.length <= 3) {
-          this.shortcutInput.value = keys.join('+');
-          this.capturedKeys = keys;
-        }
-      }
-    };
-    
-    document.addEventListener('keydown', this.shortcutKeyHandler, true);
-  }
-  
-  stopShortcutCapture() {
-    if (!this.isCapturingShortcut) return;
-    
-    this.isCapturingShortcut = false;
-    if (this.shortcutKeyHandler) {
-      document.removeEventListener('keydown', this.shortcutKeyHandler, true);
-      this.shortcutKeyHandler = null;
-    }
-    
-    if (!this.shortcutInput.value) {
-      this.shortcutInput.placeholder = 'Press keys...';
-    }
+    const keys = [key1, key2, key3].filter(key => key !== '');
+    return keys.length > 0 ? keys.join('+') : 'Ctrl+Shift+Y';
   }
   
   resetShortcut() {
-    if (!this.shortcutInput) return;
+    const shortcutKey1 = this.sidebar.querySelector('#shortcut-key1');
+    const shortcutKey2 = this.sidebar.querySelector('#shortcut-key2');
+    const shortcutKey3 = this.sidebar.querySelector('#shortcut-key3');
     
-    this.shortcutInput.value = 'Ctrl+Shift+Y';
+    if (shortcutKey1) shortcutKey1.value = 'Ctrl';
+    if (shortcutKey2) shortcutKey2.value = 'Shift';
+    if (shortcutKey3) shortcutKey3.value = 'Y';
+    
     this.showToast('Shortcut reset to default');
   }
 }
