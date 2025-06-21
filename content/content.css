@@ -322,7 +322,7 @@
   max-width: 100% !important;
   word-wrap: break-word !important;
   font-size: var(--chat-font-size, 15px) !important;
-  line-height: 1.4 !important;
+  line-height: 1.2 !important;
   display: flex !important;
   flex-direction: column !important;
 }
@@ -876,6 +876,43 @@
   color: var(--sidebar-button-text, #666) !important;
   margin-top: 4px !important;
   line-height: 1.4 !important;
+}
+
+/* Shortcut Input Styles */
+.shortcut-input-container {
+  display: flex !important;
+  gap: 8px !important;
+  align-items: center !important;
+}
+
+.shortcut-input-container input {
+  flex: 1 !important;
+  font-family: monospace !important;
+  font-weight: 500 !important;
+  text-align: center !important;
+  background: var(--sidebar-preview-bg, #f0f0f0) !important;
+  cursor: pointer !important;
+}
+
+.shortcut-input-container input:focus {
+  background: var(--sidebar-input-bg, #ffffff) !important;
+  border-color: var(--sidebar-input-focus, #007bff) !important;
+}
+
+.shortcut-input-container .btn {
+  padding: 8px 12px !important;
+  font-size: 12px !important;
+  border-radius: 4px !important;
+  border: 1px solid var(--sidebar-input-border, #e0e0e0) !important;
+  background: var(--sidebar-button-bg, #f8f9fa) !important;
+  color: var(--sidebar-button-text, #666) !important;
+  cursor: pointer !important;
+  transition: all 0.2s !important;
+}
+
+.shortcut-input-container .btn:hover {
+  background: var(--sidebar-input-border, #e9ecef) !important;
+  border-color: var(--sidebar-input-border, #ced4da) !important;
 }
 
 /* Loading states */

@@ -25,6 +25,7 @@ class SNNChat {
     this.setupEventListeners();
     this.setupSelectionMonitoring();
     this.setupPageNavigationDetection();
+    this.setupCustomShortcut();
     this.extractPageContent();
     await this.loadChatHistory();
     await this.applySettings();
@@ -261,6 +262,34 @@ class SNNChat {
         selectionTimeout = setTimeout(() => {
           this.handleTextSelection();
         }, 100);
+      }
+    });
+  }
+
+  async setupCustomShortcut() {
+    // Get saved shortcut from settings
+    const settings = await this.getSettings();
+    this.currentShortcut = settings.shortcut || 'Ctrl+Shift+Y';
+    
+    // Set up custom shortcut listener
+    document.addEventListener('keydown', (e) => {
+      if (this.isCapturingShortcut) return; // Don't interfere with shortcut capture
+      
+      const pressedKeys = [];
+      if (e.ctrlKey) pressedKeys.push('Ctrl');
+      if (e.shiftKey) pressedKeys.push('Shift');
+      if (e.altKey) pressedKeys.push('Alt');
+      if (e.metaKey) pressedKeys.push('Cmd');
+      
+      // Only add the main key if it's not a modifier
+      if (!['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+        pressedKeys.push(e.key.toUpperCase());
+      }
+      
+      const currentPressedShortcut = pressedKeys.join('+');
+      if (currentPressedShortcut === this.currentShortcut) {
+        e.preventDefault();
+        this.toggleSidebar();
       }
     });
   }
@@ -737,11 +766,12 @@ class SNNChat {
     }
     
     // Add token usage indicator for AI messages
-    if (sender === 'ai' && tokenUsage && tokenUsage.total_tokens > 0) {
+    if (sender === 'ai' && tokenUsage && (tokenUsage.prompt_tokens > 0 || tokenUsage.completion_tokens > 0)) {
+      const totalTokens = (tokenUsage.prompt_tokens || 0) + (tokenUsage.completion_tokens || 0);
       const tokenInfo = document.createElement('div');
       tokenInfo.className = 'token-usage';
-      tokenInfo.textContent = `${tokenUsage.total_tokens.toLocaleString()} tokens`;
-      tokenInfo.title = `Prompt: ${tokenUsage.prompt_tokens} tokens, Completion: ${tokenUsage.completion_tokens} tokens`;
+      tokenInfo.textContent = `${totalTokens.toLocaleString()} tokens`;
+      tokenInfo.title = `Prompt: ${tokenUsage.prompt_tokens || 0} tokens, Completion: ${tokenUsage.completion_tokens || 0} tokens`;
       messageDiv.appendChild(tokenInfo);
     }
     
@@ -875,6 +905,9 @@ class SNNChat {
     
     // Update model indicator
     this.updateModelIndicator(settings);
+    
+    // Update custom shortcut
+    this.currentShortcut = settings.shortcut || 'Ctrl+Shift+Y';
   }
   
   updateModelIndicator(settings) {
@@ -984,6 +1017,8 @@ class SNNChat {
     const openrouterKeyInput = this.sidebar.querySelector('#openrouter-key');
     const testOpenaiBtn = this.sidebar.querySelector('#test-openai');
     const testOpenrouterBtn = this.sidebar.querySelector('#test-openrouter');
+    const shortcutInput = this.sidebar.querySelector('#shortcut-input');
+    const resetShortcutBtn = this.sidebar.querySelector('#reset-shortcut');
     
     closeSettingsBtn?.addEventListener('click', () => this.closeSettingsOverlay());
     saveSettingsBtn?.addEventListener('click', () => this.saveSettings());
@@ -1026,6 +1061,11 @@ class SNNChat {
     // Test connection buttons
     testOpenaiBtn?.addEventListener('click', () => this.testConnection('openai'));
     testOpenrouterBtn?.addEventListener('click', () => this.testConnection('openrouter'));
+    
+    // Shortcut customization
+    shortcutInput?.addEventListener('focus', () => this.startShortcutCapture());
+    shortcutInput?.addEventListener('blur', () => this.stopShortcutCapture());
+    resetShortcutBtn?.addEventListener('click', () => this.resetShortcut());
     
     // Update value displays for sliders
     temperatureSlider?.addEventListener('input', (e) => {
@@ -1386,6 +1426,7 @@ class SNNChat {
     const fontSizeValue = this.sidebar.querySelector('#font-size-value');
     const sidebarWidth = this.sidebar.querySelector('#sidebar-width');
     const sidebarWidthValue = this.sidebar.querySelector('#sidebar-width-value');
+    const shortcutInput = this.sidebar.querySelector('#shortcut-input');
     
     // Set radio button for provider
     const providerRadio = this.sidebar.querySelector(`input[name="provider"][value="${provider}"]`);
@@ -1410,6 +1451,9 @@ class SNNChat {
     if (sidebarWidth) {
       sidebarWidth.value = settings.sidebarWidth || 400;
       if (sidebarWidthValue) sidebarWidthValue.textContent = (settings.sidebarWidth || 400) + 'px';
+    }
+    if (shortcutInput) {
+      shortcutInput.value = settings.shortcut || 'Ctrl+Shift+Y';
     }
     
     // Store saved model selections
@@ -1668,7 +1712,8 @@ class SNNChat {
         systemPrompt: this.sidebar.querySelector('#system-prompt')?.value.trim() || '',
         theme: this.sidebar.querySelector('#theme-select')?.value || 'auto',
         fontSize: parseInt(this.sidebar.querySelector('#font-size')?.value) || 15,
-        sidebarWidth: parseInt(this.sidebar.querySelector('#sidebar-width')?.value) || 400
+        sidebarWidth: parseInt(this.sidebar.querySelector('#sidebar-width')?.value) || 400,
+        shortcut: this.sidebar.querySelector('#shortcut-input')?.value || 'Ctrl+Shift+Y'
       };
       
       if (chrome?.storage?.sync) {
@@ -1701,6 +1746,60 @@ class SNNChat {
   
   openSettings() {
     this.openSettingsOverlay();
+  }
+  
+  startShortcutCapture() {
+    if (!this.shortcutInput) return;
+    
+    this.shortcutInput.placeholder = 'Press keys...';
+    this.capturedKeys = [];
+    this.isCapturingShortcut = true;
+    
+    this.shortcutKeyHandler = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (e.type === 'keydown') {
+        const keys = [];
+        if (e.ctrlKey) keys.push('Ctrl');
+        if (e.shiftKey) keys.push('Shift');
+        if (e.altKey) keys.push('Alt');
+        if (e.metaKey) keys.push('Cmd');
+        
+        // Only add the main key if it's not a modifier
+        if (!['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+          keys.push(e.key.toUpperCase());
+        }
+        
+        if (keys.length >= 2 && keys.length <= 3) {
+          this.shortcutInput.value = keys.join('+');
+          this.capturedKeys = keys;
+        }
+      }
+    };
+    
+    document.addEventListener('keydown', this.shortcutKeyHandler, true);
+  }
+  
+  stopShortcutCapture() {
+    if (!this.isCapturingShortcut) return;
+    
+    this.isCapturingShortcut = false;
+    if (this.shortcutKeyHandler) {
+      document.removeEventListener('keydown', this.shortcutKeyHandler, true);
+      this.shortcutKeyHandler = null;
+    }
+    
+    if (!this.shortcutInput.value) {
+      this.shortcutInput.placeholder = 'Press keys...';
+    }
+  }
+  
+  resetShortcut() {
+    if (!this.shortcutInput) return;
+    
+    this.shortcutInput.value = 'Ctrl+Shift+Y';
+    this.showToast('Shortcut reset to default');
   }
 }
 
