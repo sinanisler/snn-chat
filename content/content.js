@@ -740,11 +740,7 @@ class SNNChat {
     if (sender === 'ai' && tokenUsage && tokenUsage.total_tokens > 0) {
       const tokenInfo = document.createElement('div');
       tokenInfo.className = 'token-usage';
-      tokenInfo.innerHTML = `
-        <span class="token-icon">🎯</span>
-        <span class="token-count">${tokenUsage.total_tokens.toLocaleString()} tokens</span>
-        <span class="token-details">(${tokenUsage.prompt_tokens}+${tokenUsage.completion_tokens})</span>
-      `;
+      tokenInfo.textContent = `${tokenUsage.total_tokens.toLocaleString()} tokens`;
       tokenInfo.title = `Prompt: ${tokenUsage.prompt_tokens} tokens, Completion: ${tokenUsage.completion_tokens} tokens`;
       messageDiv.appendChild(tokenInfo);
     }
@@ -1458,15 +1454,12 @@ class SNNChat {
   }
   
   async loadModels(provider) {
-    const loadingEl = this.sidebar.querySelector(`#${provider}-loading`);
     const errorEl = this.sidebar.querySelector(`#${provider}-error`);
     const selectEl = this.sidebar.querySelector(`#${provider}-model`);
     
-    if (!loadingEl || !errorEl || !selectEl) return;
+    if (!errorEl || !selectEl) return;
     
-    loadingEl.style.display = 'flex';
     errorEl.style.display = 'none';
-    selectEl.innerHTML = '<option value="">Loading models...</option>';
     
     try {
       const apiKey = this.sidebar.querySelector(`#${provider}-key`)?.value.trim();
@@ -1482,8 +1475,6 @@ class SNNChat {
       errorEl.textContent = `Failed to load models: ${error.message}`;
       errorEl.style.display = 'block';
       selectEl.innerHTML = '<option value="">Failed to load models</option>';
-    } finally {
-      loadingEl.style.display = 'none';
     }
   }
   
