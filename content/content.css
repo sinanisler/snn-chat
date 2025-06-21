@@ -1116,3 +1116,32 @@
   90% { opacity: 1; transform: translateY(0); }
   100% { opacity: 0; transform: translateY(-10px); }
 }
+
+/* Token Usage Display */
+.token-usage {
+  background: rgba(76, 175, 80, 0.1) !important;
+  border: 1px solid rgba(76, 175, 80, 0.2) !important;
+  border-radius: 4px !important;
+  padding: 4px 8px !important;
+  margin-top: 6px !important;
+  font-size: 10px !important;
+  color: #2e7d32 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  width: fit-content !important;
+  cursor: help !important;
+}
+
+.token-usage .token-icon {
+  font-size: 10px !important;
+}
+
+.token-usage .token-count {
+  font-weight: 600 !important;
+}
+
+.token-usage .token-details {
+  opacity: 0.7 !important;
+  font-size: 9px !important;
+}

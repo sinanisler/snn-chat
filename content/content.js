@@ -68,6 +68,47 @@ class SNNChat {
       originalReplaceState.apply(history, args);
       setTimeout(checkForChanges, 100);
     };
+    
+    // Set up content observer for dynamic content
+    this.setupContentObserver();
+  }
+  
+  setupContentObserver() {
+    // Observe DOM changes to re-extract content when it changes significantly
+    const observer = new MutationObserver((mutations) => {
+      let significantChange = false;
+      
+      mutations.forEach((mutation) => {
+        // Check if significant content was added
+        if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              const text = node.textContent?.trim();
+              if (text && text.length > 50) {
+                significantChange = true;
+                break;
+              }
+            }
+          }
+        }
+      });
+      
+      if (significantChange) {
+        // Debounce content extraction
+        clearTimeout(this.contentUpdateTimeout);
+        this.contentUpdateTimeout = setTimeout(() => {
+          this.extractPageContent();
+        }, 2000);
+      }
+    });
+    
+    // Start observing
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: false,
+      characterData: false
+    });
   }
   
   addPageChangeNotification() {
@@ -255,12 +296,43 @@ class SNNChat {
     const title = document.title;
     const url = window.location.href;
     
-    const textElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td, th, span, div');
-    const textContent = Array.from(textElements)
-      .map(el => el.textContent?.trim())
-      .filter(text => text && text.length > 10)
-      .join(' ')
-      .substring(0, 3000);
+    // Wait for dynamic content to load, then extract
+    setTimeout(() => {
+      this.performContentExtraction(title, url);
+    }, 1000);
+    
+    // Also try immediate extraction for fast sites
+    this.performContentExtraction(title, url);
+  }
+  
+  performContentExtraction(title, url) {
+    let textContent = '';
+    const hostname = window.location.hostname.toLowerCase();
+    
+    // Site-specific selectors for better content extraction
+    if (hostname.includes('linkedin.com')) {
+      textContent = this.extractLinkedInContent();
+    } else if (hostname.includes('twitter.com') || hostname.includes('x.com')) {
+      textContent = this.extractTwitterContent();
+    } else if (hostname.includes('facebook.com')) {
+      textContent = this.extractFacebookContent();
+    } else if (hostname.includes('reddit.com')) {
+      textContent = this.extractRedditContent();
+    } else if (hostname.includes('github.com')) {
+      textContent = this.extractGitHubContent();
+    } else {
+      textContent = this.extractGenericContent();
+    }
+    
+    // Fallback to generic extraction if site-specific failed
+    if (textContent.length < 100) {
+      textContent = this.extractGenericContent();
+    }
+    
+    // Final fallback - try to get any visible text
+    if (textContent.length < 50) {
+      textContent = this.extractVisibleText();
+    }
     
     this.pageContent = `Page: ${title}\nURL: ${url}\nContent: ${textContent}`;
     this.currentPageTitle = title;
@@ -268,6 +340,143 @@ class SNNChat {
     
     // Update the page context indicator with the current page title
     this.updatePageContextIndicator();
+  }
+  
+  extractLinkedInContent() {
+    const selectors = [
+      'main [data-view-name] span[dir="ltr"]',
+      '.feed-shared-update-v2__description span[dir="ltr"]',
+      '[data-view-name="profile-card"] h1',
+      '.feed-shared-text span',
+      'article span[dir="ltr"]',
+      '.msg-s-message-list__event span',
+      '.profile-section-card__text'
+    ];
+    
+    return this.extractBySelectors(selectors);
+  }
+  
+  extractTwitterContent() {
+    const selectors = [
+      '[data-testid="tweetText"] span',
+      '[data-testid="card.layoutLarge.detail"] span',
+      '[data-testid="UserName"] span',
+      '[data-testid="UserDescription"] span',
+      'article [lang] span',
+      '[data-testid="reply"] span',
+      '[role="article"] span[dir]'
+    ];
+    
+    return this.extractBySelectors(selectors);
+  }
+  
+  extractFacebookContent() {
+    const selectors = [
+      '[data-ad-preview="message"] span',
+      '[data-testid="post_message"] span',
+      '[role="article"] span[dir]',
+      '.userContent span',
+      '[data-testid="story-subtitle"] span',
+      '.story_body_container span'
+    ];
+    
+    return this.extractBySelectors(selectors);
+  }
+  
+  extractRedditContent() {
+    const selectors = [
+      '.Post p',
+      '[data-test-id="post-content"] p',
+      '.usertext-body p',
+      '.title a',
+      '.RichTextJSON-root p',
+      '[data-click-id="text"] p'
+    ];
+    
+    return this.extractBySelectors(selectors);
+  }
+  
+  extractGitHubContent() {
+    const selectors = [
+      '.markdown-body p',
+      '.js-navigation-item .text-bold',
+      '.repository-description',
+      '.readme .markdown-body',
+      '.commit-message',
+      '.js-issue-title'
+    ];
+    
+    return this.extractBySelectors(selectors);
+  }
+  
+  extractBySelectors(selectors) {
+    let content = '';
+    
+    for (const selector of selectors) {
+      const elements = document.querySelectorAll(selector);
+      const selectorContent = Array.from(elements)
+        .map(el => el.textContent?.trim())
+        .filter(text => text && text.length > 10 && !text.includes('undefined'))
+        .slice(0, 10) // Limit per selector
+        .join(' ');
+      
+      if (selectorContent) {
+        content += selectorContent + ' ';
+      }
+      
+      if (content.length > 2500) break;
+    }
+    
+    return content.substring(0, 3000);
+  }
+  
+  extractGenericContent() {
+    const selectors = [
+      'main p', 'article p', '.content p', '#content p',
+      'main h1, main h2, main h3', 'article h1, article h2, article h3',
+      '.post-content', '.entry-content', '.article-content',
+      '[role="main"] p', '[role="article"] p'
+    ];
+    
+    return this.extractBySelectors(selectors);
+  }
+  
+  extractVisibleText() {
+    // Last resort - get any visible text that's substantial
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: function(node) {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          
+          const style = window.getComputedStyle(parent);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return NodeFilter.FILTER_REJECT;
+          }
+          
+          const text = node.textContent.trim();
+          if (text.length < 10) return NodeFilter.FILTER_REJECT;
+          
+          // Skip script, style, nav, header, footer content
+          const tagName = parent.tagName.toLowerCase();
+          if (['script', 'style', 'nav', 'header', 'footer', 'aside'].includes(tagName)) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+    
+    const textNodes = [];
+    let node;
+    while (node = walker.nextNode()) {
+      textNodes.push(node.textContent.trim());
+    }
+    
+    return textNodes.slice(0, 20).join(' ').substring(0, 3000);
   }
   
   updatePageContextIndicator() {
@@ -278,7 +487,13 @@ class SNNChat {
       const truncatedTitle = this.currentPageTitle.length > 50 ? 
         this.currentPageTitle.substring(0, 50) + '...' : 
         this.currentPageTitle;
-      contextText.textContent = `Reading: ${truncatedTitle}`;
+      
+      // Show content extraction status
+      const contentLength = this.pageContent ? this.pageContent.length : 0;
+      const contentStatus = contentLength > 500 ? '✓' : contentLength > 100 ? '⚠' : '⚡';
+      
+      contextText.textContent = `${contentStatus} Reading: ${truncatedTitle}`;
+      contextText.title = `Extracted ${contentLength} characters of content`;
     }
   }
 
@@ -338,7 +553,7 @@ class SNNChat {
       const response = await this.callAPI(message, context);
       
       this.removeLoadingMessage();
-      this.addMessageToChat('ai', response);
+      this.addMessageToChat('ai', response, null, this.lastTokenUsage);
       
       // Store page context with user message in history
       this.chatHistory.push(
@@ -347,7 +562,11 @@ class SNNChat {
           content: message,
           pageContext: currentPageContext
         },
-        { role: 'assistant', content: response }
+        { 
+          role: 'assistant', 
+          content: response,
+          tokenUsage: this.lastTokenUsage
+        }
       );
       
       await this.saveChatHistory();
@@ -421,6 +640,14 @@ class SNNChat {
     }
 
     const data = await response.json();
+    
+    // Store token usage for display
+    this.lastTokenUsage = {
+      prompt_tokens: data.usage?.prompt_tokens || 0,
+      completion_tokens: data.usage?.completion_tokens || 0,
+      total_tokens: data.usage?.total_tokens || 0
+    };
+    
     return data.choices[0]?.message?.content || 'No response received';
   }
 
@@ -432,7 +659,7 @@ class SNNChat {
     });
   }
 
-  addMessageToChat(sender, content, pageContext = null) {
+  addMessageToChat(sender, content, pageContext = null, tokenUsage = null) {
     if (!this.chatMessages) return;
 
     const messageDiv = document.createElement('div');
@@ -468,6 +695,19 @@ class SNNChat {
       messageContent.innerHTML = this.parseMarkdown(content);
     } else {
       messageContent.textContent = content;
+    }
+    
+    // Add token usage indicator for AI messages
+    if (sender === 'ai' && tokenUsage && tokenUsage.total_tokens > 0) {
+      const tokenInfo = document.createElement('div');
+      tokenInfo.className = 'token-usage';
+      tokenInfo.innerHTML = `
+        <span class="token-icon">🎯</span>
+        <span class="token-count">${tokenUsage.total_tokens.toLocaleString()} tokens</span>
+        <span class="token-details">(${tokenUsage.prompt_tokens}+${tokenUsage.completion_tokens})</span>
+      `;
+      tokenInfo.title = `Prompt: ${tokenUsage.prompt_tokens} tokens, Completion: ${tokenUsage.completion_tokens} tokens`;
+      messageDiv.appendChild(tokenInfo);
     }
     
     const copyBtn = document.createElement('button');
@@ -664,7 +904,7 @@ class SNNChat {
       }
       
       if (aiMessage && aiMessage.role === 'assistant') {
-        this.addMessageToChat('ai', aiMessage.content);
+        this.addMessageToChat('ai', aiMessage.content, null, aiMessage.tokenUsage);
       }
     }
   }
