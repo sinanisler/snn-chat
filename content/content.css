@@ -136,18 +136,18 @@
   background: var(--sidebar-header-bg, #f8f9fa) !important;
   border-bottom: 1px solid var(--sidebar-header-border, #e0e0e0) !important;
   padding: 8px 20px !important;
-  height: 30px !important;
+  height: 36px !important;
   display: flex !important;
   justify-content: space-between !important;
   align-items: center !important;
   flex-shrink: 0 !important;
 }
 
-.sidebar-header h3 {
-  margin: 0 !important;
-  font-size: 16px !important;
-  font-weight: 600 !important;
-  color: var(--sidebar-text, #333) !important;
+.sidebar-header .model-indicator {
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  flex: 1 !important;
 }
 
 #close-sidebar {
@@ -225,40 +225,55 @@
 }
 
 .model-indicator {
-  background: var(--sidebar-header-bg, #f8f9fa) !important;
-  border-bottom: 1px solid var(--sidebar-header-border, #e0e0e0) !important;
-  padding: 8px 20px !important;
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
   flex-shrink: 0 !important;
 }
 
 .model-info {
   display: flex !important;
-  justify-content: space-between !important;
+  justify-content: flex-start !important;
   align-items: center !important;
+  gap: 6px !important;
+}
+
+.model-prefix {
+  font-size: 16px !important;
+  opacity: 0.8 !important;
 }
 
 .model-name {
   color: var(--sidebar-text, #333) !important;
-  font-size: 12px !important;
-  font-weight: 500 !important;
-  opacity: 0.8 !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  opacity: 0.9 !important;
+  flex: 1 !important;
 }
 
 .model-settings-btn {
   background: none !important;
-  border: none !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
   color: var(--sidebar-text, #333) !important;
   font-size: 14px !important;
   cursor: pointer !important;
   padding: 4px 6px !important;
-  border-radius: 4px !important;
-  transition: background-color 0.2s !important;
+  border-radius: 6px !important;
+  transition: all 0.2s !important;
   opacity: 0.7 !important;
+  font-weight: 500 !important;
+  min-width: 28px !important;
+  height: 24px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
 }
 
 .model-settings-btn:hover {
   background: rgba(0, 0, 0, 0.1) !important;
+  border-color: rgba(0, 0, 0, 0.2) !important;
   opacity: 1 !important;
+  transform: scale(1.05) !important;
 }
 
 .page-context-indicator {
