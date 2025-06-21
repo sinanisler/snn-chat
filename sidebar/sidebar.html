@@ -29,6 +29,7 @@
   
   <div class="input-container">
     <div class="input-actions">
+      <button id="new-chat-btn">New Chat</button>
       <button id="clear-context">Clear</button>
       <button id="history-btn">History</button>
       <button id="settings-btn">Settings</button>
@@ -115,6 +116,11 @@
           <div class="input-group">
             <label for="temperature">Temperature: <span id="temperature-value">0.7</span></label>
             <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.7">
+          </div>
+          <div class="input-group">
+            <label for="content-limit">Page Content Limit (characters):</label>
+            <input type="number" id="content-limit" min="1000" max="1000000" value="5000" placeholder="Content extraction limit (1000-50000)">
+            <small class="form-description">Maximum characters to extract from each page (default: 5000)</small>
           </div>
           <div class="input-group">
             <textarea id="system-prompt" placeholder="System prompt (optional - customize AI behavior)" rows="3"></textarea>

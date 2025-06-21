@@ -14,7 +14,8 @@ class SNNChat {
     this.chatHistory = [];
     this.isLoading = false;
     this.currentDomain = window.location.hostname;
-    this.historyKey = `snn_chat_history_${this.currentDomain}`;
+    this.currentSessionId = this.generateSessionId();
+    this.historyKey = `snn_chat_history_${this.currentDomain}_${this.currentSessionId}`;
     this.allHistoryKeys = [];
     
     this.init();
@@ -27,7 +28,7 @@ class SNNChat {
     this.setupPageNavigationDetection();
     this.setupCustomShortcut();
     this.extractPageContent();
-    await this.loadChatHistory();
+    await this.loadMostRecentSession();
     await this.applySettings();
   }
   
@@ -193,11 +194,13 @@ class SNNChat {
     if (!this.sidebar) return;
 
     const closeBtn = this.sidebar.querySelector('#close-sidebar');
+    const newChatBtn = this.sidebar.querySelector('#new-chat-btn');
     const clearBtn = this.sidebar.querySelector('#clear-context');
     const settingsBtn = this.sidebar.querySelector('#settings-btn');
     const historyBtn = this.sidebar.querySelector('#history-btn');
 
     closeBtn?.addEventListener('click', () => this.hideSidebar());
+    newChatBtn?.addEventListener('click', () => this.createNewSession());
     clearBtn?.addEventListener('click', () => this.clearChat());
     settingsBtn?.addEventListener('click', () => this.openSettingsOverlay());
     historyBtn?.addEventListener('click', () => this.openHistoryOverlay());
@@ -379,41 +382,41 @@ class SNNChat {
     const url = window.location.href;
     
     // Wait for dynamic content to load, then extract
-    setTimeout(() => {
-      this.performContentExtraction(title, url);
+    setTimeout(async () => {
+      await this.performContentExtraction(title, url);
     }, 1000);
     
     // Also try immediate extraction for fast sites
     this.performContentExtraction(title, url);
   }
   
-  performContentExtraction(title, url) {
+  async performContentExtraction(title, url) {
     let textContent = '';
     const hostname = window.location.hostname.toLowerCase();
     
     // Site-specific selectors for better content extraction
     if (hostname.includes('linkedin.com')) {
-      textContent = this.extractLinkedInContent();
+      textContent = await this.extractLinkedInContent();
     } else if (hostname.includes('twitter.com') || hostname.includes('x.com')) {
-      textContent = this.extractTwitterContent();
+      textContent = await this.extractTwitterContent();
     } else if (hostname.includes('facebook.com')) {
-      textContent = this.extractFacebookContent();
+      textContent = await this.extractFacebookContent();
     } else if (hostname.includes('reddit.com')) {
-      textContent = this.extractRedditContent();
+      textContent = await this.extractRedditContent();
     } else if (hostname.includes('github.com')) {
-      textContent = this.extractGitHubContent();
+      textContent = await this.extractGitHubContent();
     } else {
-      textContent = this.extractGenericContent();
+      textContent = await this.extractGenericContent();
     }
     
     // Fallback to generic extraction if site-specific failed
     if (textContent.length < 100) {
-      textContent = this.extractGenericContent();
+      textContent = await this.extractGenericContent();
     }
     
     // Final fallback - try to get any visible text
     if (textContent.length < 50) {
-      textContent = this.extractVisibleText();
+      textContent = await this.extractVisibleText();
     }
     
     this.pageContent = `Page: ${title}\nURL: ${url}\nContent: ${textContent}`;
@@ -424,7 +427,7 @@ class SNNChat {
     this.updatePageContextIndicator();
   }
   
-  extractLinkedInContent() {
+  async extractLinkedInContent() {
     const selectors = [
       'main [data-view-name] span[dir="ltr"]',
       '.feed-shared-update-v2__description span[dir="ltr"]',
@@ -435,10 +438,10 @@ class SNNChat {
       '.profile-section-card__text'
     ];
     
-    return this.extractBySelectors(selectors);
+    return await this.extractBySelectors(selectors);
   }
   
-  extractTwitterContent() {
+  async extractTwitterContent() {
     const selectors = [
       '[data-testid="tweetText"] span',
       '[data-testid="card.layoutLarge.detail"] span',
@@ -449,10 +452,10 @@ class SNNChat {
       '[role="article"] span[dir]'
     ];
     
-    return this.extractBySelectors(selectors);
+    return await this.extractBySelectors(selectors);
   }
   
-  extractFacebookContent() {
+  async extractFacebookContent() {
     const selectors = [
       '[data-ad-preview="message"] span',
       '[data-testid="post_message"] span',
@@ -462,10 +465,10 @@ class SNNChat {
       '.story_body_container span'
     ];
     
-    return this.extractBySelectors(selectors);
+    return await this.extractBySelectors(selectors);
   }
   
-  extractRedditContent() {
+  async extractRedditContent() {
     const selectors = [
       '.Post p',
       '[data-test-id="post-content"] p',
@@ -475,10 +478,10 @@ class SNNChat {
       '[data-click-id="text"] p'
     ];
     
-    return this.extractBySelectors(selectors);
+    return await this.extractBySelectors(selectors);
   }
   
-  extractGitHubContent() {
+  async extractGitHubContent() {
     const selectors = [
       '.markdown-body p',
       '.js-navigation-item .text-bold',
@@ -488,11 +491,13 @@ class SNNChat {
       '.js-issue-title'
     ];
     
-    return this.extractBySelectors(selectors);
+    return await this.extractBySelectors(selectors);
   }
   
-  extractBySelectors(selectors) {
+  async extractBySelectors(selectors) {
     let content = '';
+    const settings = await this.getSettings();
+    const contentLimit = settings.contentLimit || 5000;
     
     for (const selector of selectors) {
       const elements = document.querySelectorAll(selector);
@@ -506,13 +511,13 @@ class SNNChat {
         content += selectorContent + ' ';
       }
       
-      if (content.length > 2500) break;
+      if (content.length > contentLimit * 0.8) break;
     }
     
-    return content.substring(0, 3000);
+    return content.substring(0, contentLimit);
   }
   
-  extractGenericContent() {
+  async extractGenericContent() {
     const selectors = [
       'main p', 'article p', '.content p', '#content p',
       'main h1, main h2, main h3', 'article h1, article h2, article h3',
@@ -520,11 +525,14 @@ class SNNChat {
       '[role="main"] p', '[role="article"] p'
     ];
     
-    return this.extractBySelectors(selectors);
+    return await this.extractBySelectors(selectors);
   }
   
-  extractVisibleText() {
+  async extractVisibleText() {
     // Last resort - get any visible text that's substantial
+    const settings = await this.getSettings();
+    const contentLimit = settings.contentLimit || 5000;
+    
     const walker = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
@@ -558,7 +566,7 @@ class SNNChat {
       textNodes.push(node.textContent.trim());
     }
     
-    return textNodes.slice(0, 20).join(' ').substring(0, 3000);
+    return textNodes.slice(0, Math.max(20, Math.floor(contentLimit / 150))).join(' ').substring(0, contentLimit);
   }
   
   updatePageContextIndicator() {
@@ -1203,9 +1211,24 @@ class SNNChat {
       
       for (const key in result) {
         if (key.startsWith('snn_chat_history_') && result[key].messages && result[key].messages.length > 0) {
+          // Extract domain and session ID from key
+          const keyParts = key.replace('snn_chat_history_', '').split('_');
+          let domain, sessionId;
+          
+          if (keyParts.length >= 2) {
+            // New format: domain_sessionId
+            sessionId = keyParts.pop();
+            domain = keyParts.join('_');
+          } else {
+            // Old format: just domain
+            domain = keyParts[0];
+            sessionId = 'legacy';
+          }
+          
           this.allHistoryKeys.push({
             key: key,
-            domain: result[key].domain || key.replace('snn_chat_history_', ''),
+            domain: domain,
+            sessionId: sessionId,
             lastUpdated: result[key].lastUpdated || 0,
             messageCount: result[key].messages.length,
             data: result[key]
@@ -1243,81 +1266,84 @@ class SNNChat {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'history-scroll-container';
     
+    // Group sessions by domain
+    const sessionsByDomain = {};
     this.allHistoryKeys.forEach(historyItem => {
-      const item = document.createElement('div');
-      item.className = 'history-item';
-      if (historyItem.key === this.historyKey) {
-        item.classList.add('current');
+      if (!sessionsByDomain[historyItem.domain]) {
+        sessionsByDomain[historyItem.domain] = [];
       }
+      sessionsByDomain[historyItem.domain].push(historyItem);
+    });
+    
+    // Create sections for each domain
+    Object.keys(sessionsByDomain).forEach(domain => {
+      const sessions = sessionsByDomain[domain];
       
-      const domain = document.createElement('div');
-      domain.className = 'history-domain';
-      domain.textContent = historyItem.domain;
+      // Domain header
+      const domainHeader = document.createElement('div');
+      domainHeader.className = 'domain-header';
+      domainHeader.innerHTML = `
+        <h4>${domain}</h4>
+        <span class="session-count">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
+      `;
+      scrollContainer.appendChild(domainHeader);
       
-      const stats = document.createElement('div');
-      stats.className = 'history-stats';
-      const messageCount = Math.floor(historyItem.messageCount / 2); // Divide by 2 since we store user + AI pairs
-      stats.innerHTML = `<span class="message-count">${messageCount} conversations</span> • <span class="last-updated">${this.formatDate(historyItem.lastUpdated)}</span>`;
+      // Sessions for this domain
+      sessions.forEach(historyItem => {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        if (historyItem.key === this.historyKey) {
+          item.classList.add('current');
+        }
+        
+        const sessionHeader = document.createElement('div');
+        sessionHeader.className = 'session-header';
+        
+        const sessionTitle = document.createElement('div');
+        sessionTitle.className = 'session-title';
+        const sessionDate = new Date(parseInt(historyItem.sessionId.split('_')[0]) || historyItem.lastUpdated);
+        sessionTitle.textContent = `Chat - ${sessionDate.toLocaleDateString()} ${sessionDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+        sessionHeader.appendChild(sessionTitle);
       
-      // Add preview of last message and page context info
-      if (historyItem.data.messages && historyItem.data.messages.length > 0) {
-        const lastMessage = historyItem.data.messages[historyItem.data.messages.length - 2]; // Get user message, not AI response
-        if (lastMessage && lastMessage.role === 'user') {
-          const preview = document.createElement('div');
-          preview.className = 'history-preview';
-          const truncatedContent = lastMessage.content.length > 80 ? 
-            lastMessage.content.substring(0, 80) + '...' : 
-            lastMessage.content;
-          preview.textContent = `"${truncatedContent}"`;
-          item.appendChild(preview);
-          
-          // Add page context info if available
-          if (lastMessage.pageContext && lastMessage.pageContext.title) {
-            const pageInfo = document.createElement('div');
-            pageInfo.className = 'history-page-info';
-            const truncatedTitle = lastMessage.pageContext.title.length > 50 ? 
-              lastMessage.pageContext.title.substring(0, 50) + '...' : 
-              lastMessage.pageContext.title;
-            pageInfo.innerHTML = `<span class="page-icon">📄</span> Last on: ${truncatedTitle}`;
-            item.appendChild(pageInfo);
+        const stats = document.createElement('div');
+        stats.className = 'history-stats';
+        const messageCount = Math.floor(historyItem.messageCount / 2); // Divide by 2 since we store user + AI pairs
+        stats.innerHTML = `<span class="message-count">${messageCount} messages</span> • <span class="last-updated">${this.formatDate(historyItem.lastUpdated)}</span>`;
+        
+        item.appendChild(sessionHeader);
+        item.appendChild(stats);
+      
+        // Add preview of last message and page context info
+        if (historyItem.data.messages && historyItem.data.messages.length > 0) {
+          const lastMessage = historyItem.data.messages[historyItem.data.messages.length - 2]; // Get user message, not AI response
+          if (lastMessage && lastMessage.role === 'user') {
+            const preview = document.createElement('div');
+            preview.className = 'history-preview';
+            const truncatedContent = lastMessage.content.length > 60 ? 
+              lastMessage.content.substring(0, 60) + '...' : 
+              lastMessage.content;
+            preview.textContent = `"${truncatedContent}"`;
+            item.appendChild(preview);
           }
         }
         
-        // Show all unique pages visited in this chat
-        const uniquePages = new Set();
-        historyItem.data.messages
-          .filter(msg => msg.role === 'user' && msg.pageContext && msg.pageContext.title)
-          .forEach(msg => {
-            uniquePages.add(msg.pageContext.title);
-          });
+        // Add delete button for individual session
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'history-delete-btn';
+        deleteBtn.textContent = '×';
+        deleteBtn.title = 'Delete this session';
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.deleteIndividualHistory(historyItem.key, `${historyItem.domain} session`);
+        });
+        item.appendChild(deleteBtn);
         
-        if (uniquePages.size > 1) {
-          const pagesInfo = document.createElement('div');
-          pagesInfo.className = 'history-pages-count';
-          pagesInfo.textContent = `📚 ${uniquePages.size} different pages`;
-          item.appendChild(pagesInfo);
-        }
-      }
-      
-      item.appendChild(domain);
-      item.appendChild(stats);
-      
-      // Add delete button for individual history
-      const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'history-delete-btn';
-      deleteBtn.textContent = '×';
-      deleteBtn.title = 'Delete this history';
-      deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.deleteIndividualHistory(historyItem.key, historyItem.domain);
+        item.addEventListener('click', () => {
+          this.switchToSession(historyItem.key, historyItem.domain, historyItem.sessionId);
+        });
+        
+        scrollContainer.appendChild(item);
       });
-      item.appendChild(deleteBtn);
-      
-      item.addEventListener('click', () => {
-        this.switchToHistory(historyItem.key, historyItem.domain);
-      });
-      
-      scrollContainer.appendChild(item);
     });
     
     this.historyList.appendChild(scrollContainer);
@@ -1384,27 +1410,34 @@ class SNNChat {
     return date.toLocaleDateString();
   }
   
-  async switchToHistory(historyKey, domain) {
+  async switchToSession(historyKey, domain, sessionId) {
     try {
       // Save current chat history
       await this.saveChatHistory();
       
-      // Switch to new history
+      // Switch to new session
       this.currentDomain = domain;
+      this.currentSessionId = sessionId;
       this.historyKey = historyKey;
       
-      // Load new history
+      // Load new session
       await this.loadChatHistory();
       
-      // Update page content for new domain (if available)
+      // Update page content for current domain
       this.extractPageContent();
       
       this.closeHistoryOverlay();
-      this.showToast(`Switched to ${domain} chat history`);
+      this.showToast(`Switched to chat session`);
     } catch (error) {
-      console.error('Failed to switch history:', error);
-      this.showToast('Failed to switch history');
+      console.error('Failed to switch session:', error);
+      this.showToast('Failed to switch session');
     }
+  }
+  
+  // Keep for backward compatibility
+  async switchToHistory(historyKey, domain) {
+    const sessionId = historyKey.split('_').pop();
+    await this.switchToSession(historyKey, domain, sessionId);
   }
   
   async clearAllHistory() {
@@ -1450,6 +1483,7 @@ class SNNChat {
     const maxTokens = this.sidebar.querySelector('#max-tokens');
     const temperature = this.sidebar.querySelector('#temperature');
     const temperatureValue = this.sidebar.querySelector('#temperature-value');
+    const contentLimit = this.sidebar.querySelector('#content-limit');
     const systemPrompt = this.sidebar.querySelector('#system-prompt');
     const themeSelect = this.sidebar.querySelector('#theme-select');
     const fontSize = this.sidebar.querySelector('#font-size');
@@ -1474,6 +1508,7 @@ class SNNChat {
       temperature.value = settings.temperature || 0.7;
       if (temperatureValue) temperatureValue.textContent = settings.temperature || 0.7;
     }
+    if (contentLimit) contentLimit.value = settings.contentLimit || 5000;
     if (systemPrompt) systemPrompt.value = settings.systemPrompt || '';
     if (themeSelect) themeSelect.value = settings.theme || 'auto';
     if (fontSize) {
@@ -1745,6 +1780,7 @@ class SNNChat {
         openrouterModel: this.sidebar.querySelector('#openrouter-model')?.value || 'openai/gpt-4o-mini',
         maxTokens: parseInt(this.sidebar.querySelector('#max-tokens')?.value) || 2000,
         temperature: parseFloat(this.sidebar.querySelector('#temperature')?.value) || 0.7,
+        contentLimit: parseInt(this.sidebar.querySelector('#content-limit')?.value) || 5000,
         systemPrompt: this.sidebar.querySelector('#system-prompt')?.value.trim() || '',
         theme: this.sidebar.querySelector('#theme-select')?.value || 'auto',
         fontSize: parseInt(this.sidebar.querySelector('#font-size')?.value) || 15,
@@ -1782,6 +1818,74 @@ class SNNChat {
   
   openSettings() {
     this.openSettingsOverlay();
+  }
+  
+  generateSessionId() {
+    return Date.now().toString() + '_' + Math.random().toString(36).substring(2, 8);
+  }
+  
+  async loadMostRecentSession() {
+    // First, try to find the most recent session for this domain
+    try {
+      if (!chrome?.storage?.local) {
+        console.log('Chrome storage not available for session loading');
+        return;
+      }
+      
+      const result = await chrome.storage.local.get(null);
+      if (chrome.runtime.lastError) {
+        console.log('Session load error:', chrome.runtime.lastError);
+        return;
+      }
+      
+      // Find all sessions for this domain
+      const domainSessions = [];
+      for (const key in result) {
+        if (key.startsWith(`snn_chat_history_${this.currentDomain}_`) && result[key].messages && result[key].messages.length > 0) {
+          domainSessions.push({
+            key: key,
+            sessionId: key.split('_').pop(),
+            lastUpdated: result[key].lastUpdated || 0,
+            data: result[key]
+          });
+        }
+      }
+      
+      if (domainSessions.length > 0) {
+        // Sort by last updated and get the most recent
+        domainSessions.sort((a, b) => b.lastUpdated - a.lastUpdated);
+        const mostRecent = domainSessions[0];
+        
+        // Use the most recent session
+        this.currentSessionId = mostRecent.sessionId;
+        this.historyKey = mostRecent.key;
+        this.chatHistory = mostRecent.data.messages;
+        this.restoreChatMessages();
+      }
+      // If no existing sessions, we keep the new session ID generated in constructor
+      
+    } catch (error) {
+      console.log('Failed to load most recent session:', error);
+    }
+  }
+  
+  async createNewSession() {
+    // Save current session if it has messages
+    if (this.chatHistory.length > 0) {
+      await this.saveChatHistory();
+    }
+    
+    // Create new session
+    this.currentSessionId = this.generateSessionId();
+    this.historyKey = `snn_chat_history_${this.currentDomain}_${this.currentSessionId}`;
+    this.chatHistory = [];
+    
+    // Clear chat UI
+    if (this.chatMessages) {
+      this.chatMessages.innerHTML = '';
+    }
+    
+    this.showToast('New chat session started');
   }
   
   buildShortcutFromSelects() {

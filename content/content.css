@@ -1180,3 +1180,43 @@
   align-self: flex-start !important;
   opacity: 0.8 !important;
 }
+/* Domain and Session Headers */
+.domain-header {
+  background: var(--sidebar-header-bg, #f8f9fa) \!important;
+  border: 1px solid var(--sidebar-header-border, #e0e0e0) \!important;
+  border-radius: 6px \!important;
+  padding: 8px 12px \!important;
+  margin: 12px 0 8px 0 \!important;
+  display: flex \!important;
+  justify-content: space-between \!important;
+  align-items: center \!important;
+}
+
+.domain-header h4 {
+  margin: 0 \!important;
+  font-size: 14px \!important;
+  font-weight: 600 \!important;
+  color: var(--sidebar-text, #333) \!important;
+}
+
+.session-count {
+  font-size: 11px \!important;
+  color: var(--sidebar-button-text, #666) \!important;
+  background: rgba(0, 123, 255, 0.1) \!important;
+  padding: 2px 6px \!important;
+  border-radius: 10px \!important;
+  font-weight: 500 \!important;
+}
+
+.session-header {
+  display: flex \!important;
+  justify-content: space-between \!important;
+  align-items: center \!important;
+  margin-bottom: 4px \!important;
+}
+
+.session-title {
+  font-size: 13px \!important;
+  font-weight: 500 \!important;
+  color: var(--sidebar-text, #333) \!important;
+}
