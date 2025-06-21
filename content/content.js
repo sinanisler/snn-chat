@@ -497,21 +497,21 @@ class SNNChat {
   async extractBySelectors(selectors) {
     let content = '';
     const settings = await this.getSettings();
-    const contentLimit = settings.contentLimit || 5000;
+    const contentLimit = settings.contentLimit || 15000; // Increased default
     
     for (const selector of selectors) {
       const elements = document.querySelectorAll(selector);
       const selectorContent = Array.from(elements)
         .map(el => el.textContent?.trim())
         .filter(text => text && text.length > 10 && !text.includes('undefined'))
-        .slice(0, 10) // Limit per selector
+        .slice(0, 50) // Increased from 10 to 50 elements per selector
         .join(' ');
       
       if (selectorContent) {
         content += selectorContent + ' ';
       }
       
-      if (content.length > contentLimit * 0.8) break;
+      if (content.length > contentLimit) break; // Use full limit instead of 80%
     }
     
     return content.substring(0, contentLimit);
@@ -531,7 +531,7 @@ class SNNChat {
   async extractVisibleText() {
     // Last resort - get any visible text that's substantial
     const settings = await this.getSettings();
-    const contentLimit = settings.contentLimit || 5000;
+    const contentLimit = settings.contentLimit || 15000; // Increased default
     
     const walker = document.createTreeWalker(
       document.body,
@@ -547,7 +547,7 @@ class SNNChat {
           }
           
           const text = node.textContent.trim();
-          if (text.length < 10) return NodeFilter.FILTER_REJECT;
+          if (text.length < 5) return NodeFilter.FILTER_REJECT; // Reduced from 10 to 5
           
           // Skip script, style, nav, header, footer content
           const tagName = parent.tagName.toLowerCase();
@@ -562,11 +562,14 @@ class SNNChat {
     
     const textNodes = [];
     let node;
-    while (node = walker.nextNode()) {
-      textNodes.push(node.textContent.trim());
+    let totalLength = 0;
+    while ((node = walker.nextNode()) && totalLength < contentLimit) {
+      const text = node.textContent.trim();
+      textNodes.push(text);
+      totalLength += text.length;
     }
     
-    return textNodes.slice(0, Math.max(20, Math.floor(contentLimit / 150))).join(' ').substring(0, contentLimit);
+    return textNodes.join(' ').substring(0, contentLimit);
   }
   
   updatePageContextIndicator() {
@@ -686,7 +689,7 @@ class SNNChat {
       (settings.openrouterModel || 'openai/gpt-4o-mini');
 
     // Build system prompt
-    let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant.';
+    let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant focused on providing context-aware responses based on the current webpage and user requests. Always consider the page content when answering questions.';
     if (context) {
       systemPrompt += ` The user is viewing a webpage. Here's the context:\n\n${context}`;
     }
@@ -1141,6 +1144,9 @@ class SNNChat {
           this.closeSettingsOverlay();
         } else if (this.historyOverlay?.classList.contains('visible')) {
           this.closeHistoryOverlay();
+        } else if (this.isVisible) {
+          // Close the sidebar itself if no overlays are open
+          this.hideSidebar();
         }
       }
       
@@ -1508,8 +1514,8 @@ class SNNChat {
       temperature.value = settings.temperature || 0.7;
       if (temperatureValue) temperatureValue.textContent = settings.temperature || 0.7;
     }
-    if (contentLimit) contentLimit.value = settings.contentLimit || 5000;
-    if (systemPrompt) systemPrompt.value = settings.systemPrompt || '';
+    if (contentLimit) contentLimit.value = settings.contentLimit || 15000;
+    if (systemPrompt) systemPrompt.value = settings.systemPrompt || 'You are a helpful AI assistant focused on providing context-aware responses based on the current webpage and user requests. Always consider the page content when answering questions.';
     if (themeSelect) themeSelect.value = settings.theme || 'auto';
     if (fontSize) {
       fontSize.value = settings.fontSize || 15;

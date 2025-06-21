@@ -648,13 +648,20 @@
 .overlay-body {
   padding: 10px !important;
   overflow-y: auto !important;
+  overflow-x: hidden !important; /* Hide horizontal scrollbar */
   flex: 1 !important;
   max-height: calc(100vh - 60px) !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
 
 /* History Overlay Styles */
 .history-list {
   margin-bottom: 20px !important;
+  flex: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
 }
 
 .history-item {
@@ -1000,8 +1007,9 @@
 }
 
 .history-scroll-container {
-  max-height: 400px !important;
+  height: calc(100% - 120px) !important; /* 100% minus search input, actions, and padding */
   overflow-y: auto !important;
+  overflow-x: hidden !important; /* Hide horizontal scrollbar */
 }
 
 .history-item {

@@ -119,11 +119,11 @@
           </div>
           <div class="input-group">
             <label for="content-limit">Page Content Limit (characters):</label>
-            <input type="number" id="content-limit" min="1000" max="1000000" value="5000" placeholder="Content extraction limit (1000-50000)">
-            <small class="form-description">Maximum characters to extract from each page (default: 5000)</small>
+            <input type="number" id="content-limit" min="1000" max="1000000" value="15000" placeholder="Content extraction limit (1000-100000)">
+            <small class="form-description">Maximum characters to extract from each page (default: 15000)</small>
           </div>
           <div class="input-group">
-            <textarea id="system-prompt" placeholder="System prompt (optional - customize AI behavior)" rows="3"></textarea>
+            <textarea id="system-prompt" placeholder="System prompt (optional - customize AI behavior)" rows="3">You are a helpful AI assistant focused on providing context-aware responses based on the current webpage and user requests. Always consider the page content when answering questions.</textarea>
           </div>
         </div>
         
