@@ -1228,10 +1228,12 @@ class SNNChat {
     const shortcutKey2 = this.sidebar.querySelector('#shortcut-key2');
     const shortcutKey3 = this.sidebar.querySelector('#shortcut-key3');
     const resetShortcutBtn = this.sidebar.querySelector('#reset-shortcut');
+    const exportChatHistoryBtn = this.sidebar.querySelector('#export-chat-history');
     
     closeSettingsBtn?.addEventListener('click', () => this.closeSettingsOverlay());
     saveSettingsBtn?.addEventListener('click', () => this.saveSettings());
     clearAllHistorySettingsBtn?.addEventListener('click', () => this.clearAllHistory());
+    exportChatHistoryBtn?.addEventListener('click', () => this.exportChatHistory());
     
     // Provider radio button changes
     providerRadios.forEach(radio => {
@@ -1642,6 +1644,106 @@ class SNNChat {
     } catch (error) {
       console.log('Failed to clear all history:', error);
       this.showToast('Failed to clear history');
+    }
+  }
+
+  async exportChatHistory() {
+    try {
+      if (!chrome?.storage?.local) {
+        this.showToast('Storage not available');
+        return;
+      }
+      
+      // Get all items from local storage
+      const result = await chrome.storage.local.get(null);
+      if (chrome.runtime.lastError) {
+        console.log('Export histories load error:', chrome.runtime.lastError);
+        this.showToast('Failed to load chat histories');
+        return;
+      }
+      
+      const allChatHistories = [];
+      
+      // Filter through all storage keys to find chat histories
+      for (const key in result) {
+        if (key.startsWith('snn_chat_history_') && result[key].messages && result[key].messages.length > 0) {
+          // Extract domain and session ID from key
+          const keyParts = key.replace('snn_chat_history_', '').split('_');
+          let domain, sessionId;
+          
+          if (keyParts.length >= 2) {
+            // New format: domain_sessionId
+            sessionId = keyParts.pop();
+            domain = keyParts.join('_');
+          } else {
+            // Old format: just domain
+            domain = keyParts[0];
+            sessionId = 'legacy';
+          }
+          
+          allChatHistories.push({
+            domain: domain,
+            sessionId: sessionId,
+            lastUpdated: result[key].lastUpdated || 0,
+            messageCount: result[key].messages.length,
+            messages: result[key].messages
+          });
+        }
+      }
+      
+      if (allChatHistories.length === 0) {
+        this.showToast('No chat history to export');
+        return;
+      }
+      
+      // Sort by domain, then by last updated
+      allChatHistories.sort((a, b) => {
+        if (a.domain !== b.domain) {
+          return a.domain.localeCompare(b.domain);
+        }
+        return b.lastUpdated - a.lastUpdated;
+      });
+      
+      // Generate export content
+      let exportContent = `SNN Chat - Chat History Export\n`;
+      exportContent += `Generated: ${new Date().toLocaleString()}\n`;
+      exportContent += `Total Sessions: ${allChatHistories.length}\n`;
+      exportContent += `Total Messages: ${allChatHistories.reduce((sum, session) => sum + session.messageCount, 0)}\n\n`;
+      exportContent += `${'='.repeat(80)}\n\n`;
+      
+      allChatHistories.forEach((session, index) => {
+        exportContent += `Session ${index + 1}/${allChatHistories.length}\n`;
+        exportContent += `Domain: ${session.domain}\n`;
+        exportContent += `Session ID: ${session.sessionId}\n`;
+        exportContent += `Last Updated: ${session.lastUpdated ? new Date(session.lastUpdated).toLocaleString() : 'Unknown'}\n`;
+        exportContent += `Messages: ${session.messageCount}\n`;
+        exportContent += `${'-'.repeat(60)}\n\n`;
+        
+        session.messages.forEach((message, msgIndex) => {
+          const timestamp = message.timestamp ? new Date(message.timestamp).toLocaleString() : 'Unknown time';
+          exportContent += `[${msgIndex + 1}] ${message.role.toUpperCase()} (${timestamp})\n`;
+          exportContent += `${message.content}\n\n`;
+        });
+        
+        exportContent += `${'-'.repeat(60)}\n\n`;
+      });
+      
+      // Create and download file
+      const blob = new Blob([exportContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `snn-chat-history-${new Date().toISOString().split('T')[0]}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      this.showToast(`Exported ${allChatHistories.length} chat sessions`);
+      
+    } catch (error) {
+      console.log('Failed to export chat history:', error);
+      this.showToast('Failed to export chat history');
     }
   }
   
