@@ -2,6 +2,9 @@
 
 SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with fixed top-right positioning and full height display.
 
+![image](https://github.com/user-attachments/assets/c33d9a0b-50d8-44b3-9a51-caa5646a288f)
+
+
 ## Features
 
 - **Fixed Top-Right Sidebar**: Full-height sidebar positioned at the top-right of any webpage
