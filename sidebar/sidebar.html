@@ -31,11 +31,135 @@
   <div class="input-container">
     <div class="input-actions">
       <button id="clear-context">Clear</button>
+      <button id="history-btn">History</button>
       <button id="settings-btn">Settings</button>
     </div>
     <div class="input-wrapper">
       <textarea id="user-input" placeholder="Ask anything..."></textarea>
       <button id="send-btn">Send<br><small>Enter</small></button>
+    </div>
+  </div>
+  
+  <!-- History Management Overlay -->
+  <div class="overlay" id="history-overlay">
+    <div class="overlay-content">
+      <div class="overlay-header">
+        <h3>Chat History</h3>
+        <button class="overlay-close" id="close-history-overlay">×</button>
+      </div>
+      <div class="overlay-body">
+        <div class="history-list" id="history-list">
+          <!-- History items will be populated here -->
+        </div>
+        <div class="history-actions">
+          <button id="clear-all-history" class="danger-btn">Clear All History</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Settings Overlay -->
+  <div class="overlay" id="settings-overlay">
+    <div class="overlay-content">
+      <div class="overlay-header">
+        <h3>Settings</h3>
+        <button class="overlay-close" id="close-settings-overlay">×</button>
+      </div>
+      <div class="overlay-body">
+        <div class="settings-section">
+          <h4>API Provider</h4>
+          <div class="radio-group">
+            <div class="radio-option">
+              <input type="radio" id="provider-openai" name="provider" value="openai" checked>
+              <label for="provider-openai">OpenAI</label>
+            </div>
+            <div class="radio-option">
+              <input type="radio" id="provider-openrouter" name="provider" value="openrouter">
+              <label for="provider-openrouter">OpenRouter</label>
+            </div>
+          </div>
+        </div>
+        
+        <div class="settings-section provider-section active" id="openai-section">
+          <div class="input-group">
+            <input type="text" id="openai-key" placeholder="OpenAI API Key (sk-...)" class="api-key-input">
+          </div>
+          <div class="input-group">
+            <select id="openai-model">
+              <option value="">Select a model...</option>
+            </select>
+            <div class="model-loading" id="openai-loading" style="display: none;">
+              <div class="spinner"></div>
+              <span>Loading models...</span>
+            </div>
+            <div class="model-error" id="openai-error" style="display: none;"></div>
+            <button type="button" class="test-connection" id="test-openai">Test Connection</button>
+            <div class="connection-status" id="openai-status"></div>
+          </div>
+        </div>
+        
+        <div class="settings-section provider-section" id="openrouter-section">
+          <div class="input-group">
+            <input type="text" id="openrouter-key" placeholder="OpenRouter API Key (sk-or-...)" class="api-key-input">
+          </div>
+          <div class="input-group">
+            <select id="openrouter-model">
+              <option value="">Select a model...</option>
+            </select>
+            <div class="model-loading" id="openrouter-loading" style="display: none;">
+              <div class="spinner"></div>
+              <span>Loading models...</span>
+            </div>
+            <div class="model-error" id="openrouter-error" style="display: none;"></div>
+            <button type="button" class="test-connection" id="test-openrouter">Test Connection</button>
+            <div class="connection-status" id="openrouter-status"></div>
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <h4>Chat Settings</h4>
+          <div class="input-group">
+            <input type="number" id="max-tokens" min="100" max="4000" value="2000" placeholder="Max Tokens (100-4000)">
+          </div>
+          <div class="input-group">
+            <label for="temperature">Temperature: <span id="temperature-value">0.7</span></label>
+            <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.7">
+          </div>
+          <div class="input-group">
+            <textarea id="system-prompt" placeholder="System prompt (optional - customize AI behavior)" rows="3"></textarea>
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <h4>Appearance</h4>
+          <div class="input-group">
+            <select id="theme-select">
+              <option value="auto">Theme: Auto</option>
+              <option value="light">Theme: Light</option>
+              <option value="dark">Theme: Dark</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <label for="font-size">Font Size: <span id="font-size-value">15px</span></label>
+            <input type="range" id="font-size" min="12" max="20" value="15">
+          </div>
+          <div class="input-group">
+            <label for="sidebar-width">Width: <span id="sidebar-width-value">400px</span></label>
+            <input type="range" id="sidebar-width" min="300" max="600" value="400">
+          </div>
+        </div>
+        
+        <div class="settings-section">
+          <h4>History & Data</h4>
+          <div class="input-group">
+            <button type="button" class="danger-btn" id="clear-all-history-settings">Clear All Chat History</button>
+          </div>
+        </div>
+        
+        <div class="settings-actions">
+          <button id="save-settings" class="primary-btn">Save Settings</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
