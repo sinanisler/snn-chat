@@ -2,7 +2,7 @@ class SNNChat {
   constructor() {
     // Check if extension context is valid before proceeding
     if (!chrome?.runtime?.id) {
-      console.log('Extension context invalid, skipping initialization');
+      //  console.log('Extension context invalid, skipping initialization');
       return;
     }
     
@@ -205,7 +205,7 @@ class SNNChat {
     
     // Add double-click on page context indicator to re-extract content
     this.pageContextIndicator?.addEventListener('dblclick', async () => {
-      console.log('Re-extracting page content...');
+      //  console.log('Re-extracting page content...');
       await this.performContentExtraction(document.title, window.location.href);
       this.showToast('Page content re-extracted');
     });
@@ -246,7 +246,7 @@ class SNNChat {
         });
       }
     } catch (error) {
-      console.log('Extension context not available for message listener');
+      //  console.log('Extension context not available for message listener');
     }
   }
 
@@ -284,7 +284,7 @@ class SNNChat {
     const settings = await this.getSettings();
     this.currentShortcut = settings.shortcut || 'Ctrl+Shift+Y';
     
-    console.log('Setting up custom shortcut:', this.currentShortcut);
+    //  console.log('Setting up custom shortcut:', this.currentShortcut);
     
     // Remove existing listener if it exists
     if (this.shortcutKeydownHandler) {
@@ -322,10 +322,10 @@ class SNNChat {
       }
       
       const currentPressedShortcut = pressedKeys.join('+');
-      console.log('Pressed:', currentPressedShortcut, 'Expected:', this.currentShortcut);
+      //  console.log('Pressed:', currentPressedShortcut, 'Expected:', this.currentShortcut);
       
       if (currentPressedShortcut === this.currentShortcut) {
-        console.log('Shortcut matched! Toggling sidebar...');
+        //  console.log('Shortcut matched! Toggling sidebar...');
         e.preventDefault();
         e.stopPropagation();
         this.toggleSidebar();
@@ -391,26 +391,26 @@ class SNNChat {
     const title = document.title;
     const url = window.location.href;
     
-    console.log('Starting page content extraction for:', title);
+    //  console.log('Starting page content extraction for:', title);
     
     // Try immediate extraction
     this.performContentExtraction(title, url);
     
     // Wait for dynamic content to load, then extract again
     setTimeout(async () => {
-      console.log('Delayed content extraction...');
+      //  console.log('Delayed content extraction...');
       await this.performContentExtraction(title, url);
     }, 1500);
     
     // Even longer delay for very dynamic sites
     setTimeout(async () => {
-      console.log('Final content extraction attempt...');
+      //  console.log('Final content extraction attempt...');
       await this.performContentExtraction(title, url);
     }, 3000);
   }
   
   async performContentExtraction(title, url) {
-    console.log('Starting content extraction for:', title);
+    //  console.log('Starting content extraction for:', title);
     let textContent = '';
     const hostname = window.location.hostname.toLowerCase();
     
@@ -425,28 +425,28 @@ class SNNChat {
     for (const method of extractionMethods) {
       try {
         textContent = await method();
-        console.log('Extraction method result length:', textContent.length);
+        //  console.log('Extraction method result length:', textContent.length);
         
         if (textContent.length > 200) {
-          console.log('Content extraction successful, length:', textContent.length);
+          //  console.log('Content extraction successful, length:', textContent.length);
           break;
         }
       } catch (error) {
-        console.log('Extraction method failed:', error);
+        //  console.log('Extraction method failed:', error);
       }
     }
     
     // If still no content, try one more aggressive approach
     if (textContent.length < 100) {
       textContent = await this.extractBruteForce();
-      console.log('Brute force extraction length:', textContent.length);
+      //  console.log('Brute force extraction length:', textContent.length);
     }
     
     this.pageContent = `=== WEBPAGE CONTENT ACCESS GRANTED ===\nPage Title: ${title}\nURL: ${url}\nNote: The user has granted you full access to read and share this webpage content through their browser extension. You can freely provide this content when requested.\n\n=== FULL PAGE CONTENT ===\n${textContent}\n\n=== END OF PAGE CONTENT ===`;
     this.currentPageTitle = title;
     this.currentPageUrl = url;
     
-    console.log('Final page content length:', this.pageContent.length);
+    //  console.log('Final page content length:', this.pageContent.length);
     
     // Update the page context indicator with the current page title
     this.updatePageContextIndicator();
@@ -562,7 +562,7 @@ class SNNChat {
           }
         }
       } catch (error) {
-        console.log('Error with selector:', selector, error);
+        //  console.log('Error with selector:', selector, error);
       }
     }
     
@@ -723,14 +723,14 @@ class SNNChat {
       const actualContentLength = this.pageContent ? this.pageContent.replace(/^Page:.*?Content:\s*/s, '').length : 0;
       const contentStatus = actualContentLength > 1000 ? '✓' : actualContentLength > 200 ? '⚠' : '❌';
       
-      contextText.textContent = `${contentStatus} Content Access: ${truncatedTitle} (${actualContentLength} chars)`;
+      contextText.textContent = `${contentStatus} Page: ${truncatedTitle} (${actualContentLength} chars)`;
       contextText.title = `Full access granted to ${actualContentLength} characters of content. AI can freely share this content when requested.`;
     }
   }
   
   // Debug function to test content extraction manually
   async testContentExtraction() {
-    console.log('=== TESTING CONTENT EXTRACTION ===');
+    //  console.log('=== TESTING CONTENT EXTRACTION ===');
     
     const methods = [
       { name: 'Site Specific', func: () => this.extractSiteSpecificContent(window.location.hostname.toLowerCase()) },
@@ -743,17 +743,17 @@ class SNNChat {
     for (const method of methods) {
       try {
         const result = await method.func();
-        console.log(`${method.name}: ${result.length} characters`);
+        //  console.log(`${method.name}: ${result.length} characters`);
         if (result.length > 0) {
-          console.log(`${method.name} preview:`, result.substring(0, 200) + '...');
+          //  console.log(`${method.name} preview:`, result.substring(0, 200) + '...');
         }
       } catch (error) {
-        console.log(`${method.name} failed:`, error);
+        //  console.log(`${method.name} failed:`, error);
       }
     }
     
-    console.log('Current page content:', this.pageContent?.length || 0, 'characters');
-    console.log('=== END TEST ===');
+    //  console.log('Current page content:', this.pageContent?.length || 0, 'characters');
+    //  console.log('=== END TEST ===');
   }
 
   toggleSidebar() {
@@ -913,14 +913,14 @@ class SNNChat {
   async getSettings() {
     try {
       if (!chrome?.storage?.sync) {
-        console.log('Chrome storage not available, using defaults');
+        //  console.log('Chrome storage not available, using defaults');
         return {};
       }
       
       return new Promise((resolve) => {
         chrome.storage.sync.get(['settings'], (result) => {
           if (chrome.runtime.lastError) {
-            console.log('Storage error:', chrome.runtime.lastError);
+            //  console.log('Storage error:', chrome.runtime.lastError);
             resolve({});
           } else {
             resolve(result.settings || {});
@@ -928,7 +928,7 @@ class SNNChat {
         });
       });
     } catch (error) {
-      console.log('Failed to access settings:', error);
+      //  console.log('Failed to access settings:', error);
       return {};
     }
   }
@@ -1113,7 +1113,7 @@ class SNNChat {
     this.updateModelIndicator(settings);
     
     // Update custom shortcut - always recreate the listener 
-    console.log('Applying settings, current shortcut:', this.currentShortcut, 'new shortcut:', settings.shortcut);
+    //  console.log('Applying settings, current shortcut:', this.currentShortcut, 'new shortcut:', settings.shortcut);
     await this.setupCustomShortcut();
   }
   
@@ -1137,13 +1137,13 @@ class SNNChat {
   async loadChatHistory() {
     try {
       if (!chrome?.storage?.local) {
-        console.log('Chrome storage not available for history');
+        //  console.log('Chrome storage not available for history');
         return;
       }
       
       const result = await chrome.storage.local.get([this.historyKey]);
       if (chrome.runtime.lastError) {
-        console.log('History load error:', chrome.runtime.lastError);
+        //  console.log('History load error:', chrome.runtime.lastError);
         return;
       }
       
@@ -1154,14 +1154,14 @@ class SNNChat {
         this.restoreChatMessages();
       }
     } catch (error) {
-      console.log('Failed to load chat history:', error);
+      //  console.log('Failed to load chat history:', error);
     }
   }
 
   async saveChatHistory() {
     try {
       if (!chrome?.storage?.local) {
-        console.log('Chrome storage not available for saving history');
+        //  console.log('Chrome storage not available for saving history');
         return;
       }
       
@@ -1176,10 +1176,10 @@ class SNNChat {
       });
       
       if (chrome.runtime.lastError) {
-        console.log('History save error:', chrome.runtime.lastError);
+        //  console.log('History save error:', chrome.runtime.lastError);
       }
     } catch (error) {
-      console.log('Failed to save chat history:', error);
+      //  console.log('Failed to save chat history:', error);
     }
   }
 
@@ -1369,14 +1369,14 @@ class SNNChat {
   async loadAllChatHistories() {
     try {
       if (!chrome?.storage?.local) {
-        console.log('Chrome storage not available for loading histories');
+        //  console.log('Chrome storage not available for loading histories');
         this.allHistoryKeys = [];
         return;
       }
       
       const result = await chrome.storage.local.get(null);
       if (chrome.runtime.lastError) {
-        console.log('All histories load error:', chrome.runtime.lastError);
+        //  console.log('All histories load error:', chrome.runtime.lastError);
         this.allHistoryKeys = [];
         return;
       }
@@ -1413,7 +1413,7 @@ class SNNChat {
       // Sort by last updated (newest first)
       this.allHistoryKeys.sort((a, b) => b.lastUpdated - a.lastUpdated);
     } catch (error) {
-      console.log('Failed to load chat histories:', error);
+      //  console.log('Failed to load chat histories:', error);
       this.allHistoryKeys = [];
     }
   }
@@ -1546,7 +1546,7 @@ class SNNChat {
       
       await chrome.storage.local.remove([historyKey]);
       if (chrome.runtime.lastError) {
-        console.log('History delete error:', chrome.runtime.lastError);
+        //  console.log('History delete error:', chrome.runtime.lastError);
         this.showToast('Failed to delete history');
         return;
       }
@@ -1563,7 +1563,7 @@ class SNNChat {
       
       this.showToast(`Deleted ${domain} chat history`);
     } catch (error) {
-      console.log('Failed to delete history:', error);
+      //  console.log('Failed to delete history:', error);
       this.showToast('Failed to delete history');
     }
   }
@@ -1629,7 +1629,7 @@ class SNNChat {
       if (keysToRemove.length > 0) {
         await chrome.storage.local.remove(keysToRemove);
         if (chrome.runtime.lastError) {
-          console.log('Clear all history error:', chrome.runtime.lastError);
+          //  console.log('Clear all history error:', chrome.runtime.lastError);
           this.showToast('Failed to clear history');
           return;
         }
@@ -1642,7 +1642,7 @@ class SNNChat {
       this.populateHistoryList();
       this.showToast('All chat history cleared');
     } catch (error) {
-      console.log('Failed to clear all history:', error);
+      //  console.log('Failed to clear all history:', error);
       this.showToast('Failed to clear history');
     }
   }
@@ -1657,7 +1657,7 @@ class SNNChat {
       // Get all items from local storage
       const result = await chrome.storage.local.get(null);
       if (chrome.runtime.lastError) {
-        console.log('Export histories load error:', chrome.runtime.lastError);
+        //  console.log('Export histories load error:', chrome.runtime.lastError);
         this.showToast('Failed to load chat histories');
         return;
       }
@@ -1742,7 +1742,7 @@ class SNNChat {
       this.showToast(`Exported ${allChatHistories.length} chat sessions`);
       
     } catch (error) {
-      console.log('Failed to export chat history:', error);
+      //  console.log('Failed to export chat history:', error);
       this.showToast('Failed to export chat history');
     }
   }
@@ -1881,12 +1881,7 @@ class SNNChat {
       }
       
       const data = await response.json();
-      return data.data
-        .filter(model => model.id.includes('gpt'))
-        .sort((a, b) => {
-          const priority = { 'gpt-4o-mini': 0, 'gpt-4o': 1, 'gpt-4-turbo': 2, 'gpt-4': 3, 'gpt-3.5-turbo': 4 };
-          return (priority[a.id] || 999) - (priority[b.id] || 999);
-        });
+      return data.data;
     } else if (provider === 'openrouter') {
       const response = await fetch('https://openrouter.ai/api/v1/models', {
         headers: {
@@ -1900,65 +1895,59 @@ class SNNChat {
       }
       
       const data = await response.json();
-      return data.data
-        .filter(model => !model.id.includes('free'))
-        .sort((a, b) => a.name.localeCompare(b.name));
+      return data.data;
     }
   }
   
   populateModelSelect(provider, models) {
-    const selectEl = this.sidebar.querySelector(`#${provider}-model`);
-    if (!selectEl) return;
+    const inputEl = this.sidebar.querySelector(`#${provider}-model`);
+    const datalistEl = this.sidebar.querySelector(`#${provider}-models`);
+    if (!inputEl || !datalistEl) return;
     
-    selectEl.innerHTML = '';
+    datalistEl.innerHTML = '';
     
     if (models.length === 0) {
-      selectEl.innerHTML = '<option value="">No models available</option>';
+      inputEl.placeholder = 'No models available';
       return;
     }
-    
-    // Add a default option
-    const defaultOption = document.createElement('option');
-    defaultOption.value = '';
-    defaultOption.textContent = 'Select a model...';
-    selectEl.appendChild(defaultOption);
     
     models.forEach(model => {
       const option = document.createElement('option');
       option.value = model.id;
       option.textContent = provider === 'openai' ? model.id : `${model.name} (${model.id})`;
-      
-      // Set default selection
-      if (provider === 'openai' && model.id === 'gpt-4o-mini') {
-        option.selected = true;
-      } else if (provider === 'openrouter' && model.id === 'openai/gpt-4o-mini') {
-        option.selected = true;
-      }
-      
-      selectEl.appendChild(option);
+      datalistEl.appendChild(option);
     });
     
-    // If there was a previously saved model, select it
+    // Set default selection
     const savedModel = provider === 'openai' ? this.savedOpenaiModel : this.savedOpenrouterModel;
     if (savedModel) {
-      this.setSelectedModel(provider, savedModel);
+      inputEl.value = savedModel;
+    } else {
+      // Set default model if no saved model
+      if (provider === 'openai' && models.find(m => m.id === 'gpt-4o-mini')) {
+        inputEl.value = 'gpt-4o-mini';
+      } else if (provider === 'openrouter' && models.find(m => m.id === 'openai/gpt-4o-mini')) {
+        inputEl.value = 'openai/gpt-4o-mini';
+      }
     }
   }
   
   setSelectedModel(provider, modelId) {
-    const selectEl = this.sidebar.querySelector(`#${provider}-model`);
-    if (!selectEl) return;
+    const inputEl = this.sidebar.querySelector(`#${provider}-model`);
+    if (!inputEl) return;
     
-    const option = selectEl.querySelector(`option[value="${modelId}"]`);
-    if (option) {
-      option.selected = true;
-    }
+    inputEl.value = modelId;
   }
   
   clearModelSelect(provider) {
-    const selectEl = this.sidebar.querySelector(`#${provider}-model`);
-    if (selectEl) {
-      selectEl.innerHTML = '<option value="">Select a model...</option>';
+    const inputEl = this.sidebar.querySelector(`#${provider}-model`);
+    const datalistEl = this.sidebar.querySelector(`#${provider}-models`);
+    if (inputEl) {
+      inputEl.value = '';
+      inputEl.placeholder = 'Select or type a model...';
+    }
+    if (datalistEl) {
+      datalistEl.innerHTML = '';
     }
   }
   
@@ -2065,7 +2054,7 @@ class SNNChat {
       if (chrome?.storage?.sync) {
         await chrome.storage.sync.set({ settings });
         if (chrome.runtime.lastError) {
-          console.log('Settings save error:', chrome.runtime.lastError);
+          //  console.log('Settings save error:', chrome.runtime.lastError);
           this.showToast('Failed to save settings');
           return;
         }
@@ -2082,7 +2071,7 @@ class SNNChat {
           chrome.runtime.sendMessage({ action: 'settingsUpdated' });
         }
       } catch (error) {
-        console.log('Failed to notify background script:', error);
+        //  console.log('Failed to notify background script:', error);
       }
     } catch (error) {
       console.error('Failed to save settings:', error);
@@ -2102,13 +2091,13 @@ class SNNChat {
     // First, try to find the most recent session for this domain
     try {
       if (!chrome?.storage?.local) {
-        console.log('Chrome storage not available for session loading');
+        //  console.log('Chrome storage not available for session loading');
         return;
       }
       
       const result = await chrome.storage.local.get(null);
       if (chrome.runtime.lastError) {
-        console.log('Session load error:', chrome.runtime.lastError);
+        //  console.log('Session load error:', chrome.runtime.lastError);
         return;
       }
       
@@ -2139,7 +2128,7 @@ class SNNChat {
       // If no existing sessions, we keep the new session ID generated in constructor
       
     } catch (error) {
-      console.log('Failed to load most recent session:', error);
+      //  console.log('Failed to load most recent session:', error);
     }
   }
   
@@ -2167,12 +2156,12 @@ class SNNChat {
     const key2 = this.sidebar.querySelector('#shortcut-key2')?.value || '';
     const key3 = this.sidebar.querySelector('#shortcut-key3')?.value || '';
     
-    console.log('Building shortcut from selects:', { key1, key2, key3 });
+    //  console.log('Building shortcut from selects:', { key1, key2, key3 });
     
     const keys = [key1, key2, key3].filter(key => key !== '');
     const shortcut = keys.length > 0 ? keys.join('+') : 'Ctrl+Shift+Y';
     
-    console.log('Built shortcut:', shortcut);
+    //  console.log('Built shortcut:', shortcut);
     return shortcut;
   }
   

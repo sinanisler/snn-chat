@@ -85,9 +85,8 @@
             <input type="text" id="openai-key" placeholder="OpenAI API Key (sk-...)" class="api-key-input">
           </div>
           <div class="input-group">
-            <select id="openai-model">
-              <option value="">Select a model...</option>
-            </select>
+            <input type="text" id="openai-model" placeholder="Select or type a model..." list="openai-models">
+            <datalist id="openai-models"></datalist>
             <div class="model-error" id="openai-error" style="display: none;"></div>
             <button type="button" class="test-connection" id="test-openai">Test Connection</button>
             <div class="connection-status" id="openai-status"></div>
@@ -99,9 +98,8 @@
             <input type="text" id="openrouter-key" placeholder="OpenRouter API Key (sk-or-...)" class="api-key-input">
           </div>
           <div class="input-group">
-            <select id="openrouter-model">
-              <option value="">Select a model...</option>
-            </select>
+            <input type="text" id="openrouter-model" placeholder="Select or type a model..." list="openrouter-models">
+            <datalist id="openrouter-models"></datalist>
             <div class="model-error" id="openrouter-error" style="display: none;"></div>
             <button type="button" class="test-connection" id="test-openrouter">Test Connection</button>
             <div class="connection-status" id="openrouter-status"></div>
