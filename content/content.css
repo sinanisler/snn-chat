@@ -18,6 +18,11 @@
   line-height: 1.5 !important;
   overflow: hidden !important;
   --chat-font-size: 15px;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  pointer-events: auto !important;
 }
 
 #ai-sidebar.theme-light {
@@ -497,6 +502,22 @@
 
 #ai-sidebar * {
   box-sizing: border-box !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+}
+
+/* Allow text selection in specific areas where users need it */
+#ai-sidebar .message-content,
+#ai-sidebar #user-input,
+#ai-sidebar input[type="text"],
+#ai-sidebar input[type="password"],
+#ai-sidebar textarea {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
 }
 
 /* Markdown Styling */
@@ -585,6 +606,10 @@
   opacity: 0 !important;
   visibility: hidden !important;
   transition: opacity 0.2s ease, visibility 0.2s ease !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
 }
 
 .overlay.visible {
