@@ -17,6 +17,8 @@ class SNNChat {
     this.currentSessionId = this.generateSessionId();
     this.historyKey = `snn_chat_history_${this.currentDomain}_${this.currentSessionId}`;
     this.allHistoryKeys = [];
+    this.isContentShifted = false;
+    this.persistentStickyKey = `snn_sticky_mode_${this.currentDomain}`;
     
     this.init();
   }
@@ -30,6 +32,7 @@ class SNNChat {
     this.extractPageContent();
     await this.loadMostRecentSession();
     await this.applySettings();
+    await this.restoreStickyState();
   }
   
   setupPageNavigationDetection() {
@@ -177,6 +180,7 @@ class SNNChat {
       this.currentModelSpan = this.sidebar.querySelector('#current-model');
       this.modelSettingsBtn = this.sidebar.querySelector('#model-settings-btn');
       this.pageContextIndicator = this.sidebar.querySelector('#page-context-indicator');
+      this.stickyLeftBtn = this.sidebar.querySelector('#sticky-left-btn');
       
       // Overlay elements
       this.historyOverlay = this.sidebar.querySelector('#history-overlay');
@@ -216,6 +220,7 @@ class SNNChat {
     historyBtn?.addEventListener('click', () => this.openHistoryOverlay());
     this.clearSelectionBtn?.addEventListener('click', () => this.clearSelection());
     this.modelSettingsBtn?.addEventListener('click', () => this.openSettingsOverlay());
+    this.stickyLeftBtn?.addEventListener('click', () => this.toggleStickyLeft());
     
     // Overlay event listeners
     this.setupOverlayEventListeners();
@@ -832,7 +837,8 @@ class SNNChat {
       
     } catch (error) {
       this.removeLoadingMessage();
-      this.addMessageToChat('ai', 'Sorry, I encountered an error. Please check your API key in settings.');
+      const errorMessage = error.message || 'Unknown error occurred';
+      this.addMessageToChat('ai', `Sorry, I encountered an error: ${errorMessage}`);
       console.error('API Error:', error);
     }
 
@@ -895,7 +901,16 @@ class SNNChat {
     });
 
     if (!response.ok) {
-      throw new Error(`API request failed: ${response.status}`);
+      let errorMessage = `API request failed: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        if (errorData.error && errorData.error.message) {
+          errorMessage = errorData.error.message;
+        }
+      } catch (e) {
+        // If JSON parsing fails, use the default error message
+      }
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();
@@ -2222,6 +2237,81 @@ class SNNChat {
     if (shortcutKey3) shortcutKey3.value = 'Y';
     
     this.showToast('Shortcut reset to default');
+  }
+  
+  async toggleStickyLeft() {
+    if (!this.sidebar) return;
+    
+    this.isContentShifted = !this.isContentShifted;
+    
+    if (this.isContentShifted) {
+      // Add padding to html to push all content including fixed elements left
+      const sidebarWidth = this.sidebar.style.getPropertyValue('--sidebar-width') || '400px';
+      document.documentElement.style.paddingRight = sidebarWidth;
+      document.documentElement.style.transition = 'padding-right 0.3s ease-in-out';
+      this.stickyLeftBtn?.classList.add('active');
+      
+      // Save sticky state and show sidebar
+      await this.saveStickyState(true);
+      this.showSidebar();
+      this.showToast('Sticky mode: overlay stays open while browsing this site');
+    } else {
+      // Remove padding to restore normal layout
+      document.documentElement.style.paddingRight = '';
+      this.stickyLeftBtn?.classList.remove('active');
+      
+      // Clear sticky state
+      await this.saveStickyState(false);
+      this.showToast('Normal overlay mode restored');
+    }
+  }
+  
+  async saveStickyState(isSticky) {
+    try {
+      if (!chrome?.storage?.local) return;
+      
+      if (isSticky) {
+        await chrome.storage.local.set({
+          [this.persistentStickyKey]: {
+            isSticky: true,
+            timestamp: Date.now()
+          }
+        });
+      } else {
+        await chrome.storage.local.remove([this.persistentStickyKey]);
+      }
+    } catch (error) {
+      console.error('Failed to save sticky state:', error);
+    }
+  }
+  
+  async restoreStickyState() {
+    try {
+      if (!chrome?.storage?.local) return;
+      
+      const result = await chrome.storage.local.get([this.persistentStickyKey]);
+      const stickyData = result[this.persistentStickyKey];
+      
+      if (stickyData && stickyData.isSticky) {
+        // Check if sticky state is not too old (24 hours)
+        const hoursSinceSet = (Date.now() - stickyData.timestamp) / (1000 * 60 * 60);
+        if (hoursSinceSet < 24) {
+          // Restore sticky mode
+          this.isContentShifted = true;
+          const sidebarWidth = this.sidebar?.style.getPropertyValue('--sidebar-width') || '400px';
+          document.documentElement.style.paddingRight = sidebarWidth;
+          this.stickyLeftBtn?.classList.add('active');
+          
+          // Show the sidebar since user was in sticky mode
+          this.showSidebar();
+        } else {
+          // Clear expired sticky state
+          await this.saveStickyState(false);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to restore sticky state:', error);
+    }
   }
 }
 
