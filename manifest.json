@@ -5,8 +5,7 @@
   "description": "SNN Chat - AI-powered sidebar for web browsing with OpenAI and OpenRouter support",
   "permissions": [
     "activeTab",
-    "storage",
-    "scripting"
+    "storage"
   ],
   "host_permissions": [
     "<all_urls>"
