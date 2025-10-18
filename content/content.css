@@ -1027,7 +1027,8 @@
 
 #ai-sidebar .provider-section.active {
   display: flex  ;
-  gap:5px
+  flex-direction: column;
+  gap:5px;
 }
 
 /* API Key Input Styling */
@@ -1253,10 +1254,7 @@
 }
 /* Domain and Session Headers */
 #ai-sidebar .domain-header {
-  background: var(--sidebar-header-bg, #f8f9fa)  ;
-  border: 1px solid var(--sidebar-header-border, #e0e0e0)  ;
   border-radius: 6px  ;
-  padding: 8px 12px  ;
   margin: 12px 0 8px 0  ;
   display: flex  ;
   justify-content: space-between  ;
@@ -1464,7 +1462,7 @@
   display: flex  ;
   align-items: center  ;
   justify-content: center  ;
-  margin-right: 8px  ;
+  height:70px;
 }
 
 #ai-sidebar .voice-input-btn:hover {
@@ -1552,7 +1550,7 @@
 #ai-sidebar .settings-tab {
   background: none  ;
   border: none  ;
-  padding: 10px 16px  ;
+  padding:5px 10px 5px 10px;
   cursor: pointer  ;
   border-bottom: 3px solid transparent  ;
   transition: all 0.2s  ;
