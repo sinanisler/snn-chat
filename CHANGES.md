@@ -1,5 +1,25 @@
 # Recent Changes - Context Switcher Removal
 
+## CRITICAL BUG FIX (October 18, 2025)
+**Fixed**: Chat was unable to read page content or selected text due to leftover reference to removed `currentContextMode` property.
+
+### Issue
+After removing the Context Switcher feature, the code still referenced `this.currentContextMode` in the `sendMessage()` method, which was never initialized. This caused the context to always be empty, preventing the AI from reading:
+- Full page content
+- Selected text portions
+
+### Solution
+Replaced the switch statement with a simple conditional check:
+- If `this.preservedSelection` exists → use selected text as context
+- Otherwise → use full page content (`this.pageContent`)
+
+### Impact
+✅ Full page reading now works correctly
+✅ Selected text reading now works correctly
+✅ Context is properly passed to the AI
+
+---
+
 ## Summary
 The Visual Context Switcher feature has been removed as it was redundant. The existing `.page-context-indicator` already provides clear context indication, showing whether the AI is reading the full page or selected text.
 

@@ -220,10 +220,27 @@
   padding: 8px 12px  ;
   display: none  ;
   flex-shrink: 0  ;
+  flex-direction: column;
+  gap: 4px;
 }
 
 #ai-sidebar .selection-preview.visible {
-  display: block  ;
+  display: flex  ;
+}
+
+#ai-sidebar .selection-preview .selection-text {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#ai-sidebar .selection-preview .selection-hint {
+  display: block;
+  font-size: 10px;
+  color: var(--sidebar-accent, #2196F3);
+  font-style: italic;
+  opacity: 0.8;
 }
 
 #ai-sidebar .preview-header {
@@ -614,6 +631,16 @@
 #ai-sidebar .toast.show {
   opacity: 1  ;
   transform: translateY(0)  ;
+}
+
+#ai-sidebar .toast.info {
+  background: var(--sidebar-accent, #2196F3) !important;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+#ai-sidebar .toast.success {
+  background: #10b981 !important;
+  border-color: #059669;
 }
 
 /* Overlay Styles */

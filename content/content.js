@@ -362,10 +362,18 @@ class SNNChat {
     const text = selection.toString().trim();
     
     if (text && text.length > 0) {
+      const hadPreviousSelection = !!this.preservedSelection;
+      const isNewSelection = this.preservedSelection !== text;
+      
       this.selectedText = text;
       this.preservedSelection = text;
       this.showSelectionPreview(text);
       this.hidePageContextIndicator();
+      
+      // Notify user if they changed selection during an active chat
+      if (hadPreviousSelection && isNewSelection && this.chatHistory.length > 0 && this.isVisible) {
+        this.showToast('📝 New text selected. Send a message to analyze it.', 'info');
+      }
     } else if (!this.preservedSelection) {
       this.selectedText = '';
       this.hideSelectionPreview();
@@ -377,7 +385,10 @@ class SNNChat {
     if (!this.selectionPreview || !this.previewText) return;
     
     const truncatedText = text.length > 200 ? text.substring(0, 200) + '...' : text;
-    this.previewText.textContent = `Selected: "${truncatedText}"`;
+    this.previewText.innerHTML = `
+      <span class="selection-text">Selected: "${truncatedText}"</span>
+      <span class="selection-hint">💡 Send a message to analyze this selection</span>
+    `;
     this.selectionPreview.classList.add('visible');
   }
 
@@ -833,31 +844,33 @@ class SNNChat {
     this.addMessageToChat('user', message, currentPageContext);
 
     try {
-      // Get context based on current mode
+      // Get context based on selection
       let context = '';
-      switch(this.currentContextMode) {
-        case 'page':
-          context = this.pageContent;
-          break;
-        case 'selection':
-          context = this.preservedSelection || this.pageContent;
-          break;
-        case 'none':
-          context = '';
-          break;
+      let contextType = 'page'; // 'page' or 'selection'
+      
+      if (this.preservedSelection) {
+        // If user has selected text, use that as context
+        context = this.preservedSelection;
+        contextType = 'selection';
+      } else {
+        // Otherwise use full page content
+        context = this.pageContent;
+        contextType = 'page';
       }
       
       // Check if streaming is enabled
       const settings = await this.getSettings();
       if (settings.enableStreaming) {
-        const response = await this.streamResponse(message, context);
+        const response = await this.streamResponse(message, context, contextType);
         
         // Store in history
         this.chatHistory.push(
           { 
             role: 'user', 
             content: message,
-            pageContext: currentPageContext
+            pageContext: currentPageContext,
+            contextType: contextType,
+            selectionContext: contextType === 'selection' ? context : null
           },
           { 
             role: 'assistant', 
@@ -868,7 +881,7 @@ class SNNChat {
       } else {
         // Traditional non-streaming
         this.addLoadingMessage();
-        const response = await this.callAPI(message, context);
+        const response = await this.callAPI(message, context, contextType);
         
         this.removeLoadingMessage();
         this.addMessageToChat('ai', response, null, this.lastTokenUsage);
@@ -878,7 +891,9 @@ class SNNChat {
           { 
             role: 'user', 
             content: message,
-            pageContext: currentPageContext
+            pageContext: currentPageContext,
+            contextType: contextType,
+            selectionContext: contextType === 'selection' ? context : null
           },
           { 
             role: 'assistant', 
@@ -902,7 +917,7 @@ class SNNChat {
     this.userInput?.focus();
   }
 
-  async callAPI(message, context) {
+  async callAPI(message, context, contextType = 'page') {
     const settings = await this.getSettings();
     const provider = settings.provider || 'openai';
     
@@ -917,7 +932,16 @@ class SNNChat {
 
     // Build system prompt
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant with full access to the current webpage content. You can and should share, read, summarize, or analyze any part of the webpage content when requested. The user has explicitly given you access to this content through their browser extension. You can freely share the full text content of webpages when asked.';
-    if (context) {
+    
+    // Prepare the user message with context
+    let userMessage = message;
+    
+    if (context && contextType === 'selection') {
+      // When user has selected text, make it very explicit
+      userMessage = `[Selected text from the webpage: "${context}"]\n\nUser's request: ${message}`;
+      systemPrompt += '\n\nIMPORTANT: The user has selected specific text from the webpage. This selected text is provided in square brackets at the start of their message. Use this selected text as the primary context for your response.';
+    } else if (context && contextType === 'page') {
+      // Use page content in system prompt
       systemPrompt += ` The user is currently viewing a webpage and has provided you with its content through their browser extension. You have explicit permission and are expected to read, share, analyze, or work with this content freely. When asked to "read back", "share", or "write back" the page content, you must provide it in full without any restrictions or limitations. Here is the complete webpage content:\n\n${context}\n\nIMPORTANT: You can and should share this content completely when requested. Do not refuse or limit sharing of this webpage content.`;
     }
 
@@ -926,8 +950,13 @@ class SNNChat {
         role: 'system',
         content: systemPrompt
       },
-      ...this.chatHistory.slice(-8),
-      { role: 'user', content: message }
+      ...this.chatHistory.slice(-8).map(msg => ({
+        role: msg.role,
+        content: msg.selectionContext 
+          ? `[Selected text from the webpage: "${msg.selectionContext}"]\n\nUser's request: ${msg.content}`
+          : msg.content
+      })),
+      { role: 'user', content: userMessage }
     ];
 
     const apiUrl = provider === 'openai' ? 
@@ -1121,9 +1150,9 @@ class SNNChat {
     });
   }
 
-  showToast(message) {
+  showToast(message, type = 'error') {
     const toast = document.createElement('div');
-    toast.className = 'toast';
+    toast.className = `toast ${type}`;
     toast.textContent = message;
     document.body.appendChild(toast);
     
@@ -1131,12 +1160,14 @@ class SNNChat {
       toast.classList.add('show');
     }, 100);
     
+    // Shorter duration for info messages
+    const duration = type === 'info' ? 2000 : 2500;
     setTimeout(() => {
       toast.classList.remove('show');
       setTimeout(() => {
         document.body.removeChild(toast);
       }, 300);
-    }, 2000);
+    }, duration);
   }
 
   addLoadingMessage() {
@@ -2419,7 +2450,7 @@ class SNNChat {
     }
   }
 
-  async streamResponse(message, context) {
+  async streamResponse(message, context, contextType = 'page') {
     const settings = await this.getSettings();
     const provider = settings.provider || 'openai';
     
@@ -2434,14 +2465,28 @@ class SNNChat {
 
     // Build system prompt
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant with full access to the current webpage content.';
-    if (context) {
+    
+    // Prepare the user message with context
+    let userMessage = message;
+    
+    if (context && contextType === 'selection') {
+      // When user has selected text, make it very explicit
+      userMessage = `[Selected text from the webpage: "${context}"]\n\nUser's request: ${message}`;
+      systemPrompt += '\n\nIMPORTANT: The user has selected specific text from the webpage. This selected text is provided in square brackets at the start of their message. Use this selected text as the primary context for your response.';
+    } else if (context && contextType === 'page') {
+      // Use page content in system prompt
       systemPrompt += `\n\nHere is the complete webpage content:\n\n${context}\n\nIMPORTANT: You can and should share this content completely when requested.`;
     }
 
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...this.chatHistory.slice(-8),
-      { role: 'user', content: message }
+      ...this.chatHistory.slice(-8).map(msg => ({
+        role: msg.role,
+        content: msg.selectionContext 
+          ? `[Selected text from the webpage: "${msg.selectionContext}"]\n\nUser's request: ${msg.content}`
+          : msg.content
+      })),
+      { role: 'user', content: userMessage }
     ];
 
     const apiUrl = provider === 'openai' ? 
