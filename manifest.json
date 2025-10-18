@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "SNN Chat",
+  "name": "SNN Chat - AI Assistant, All OpenRouter and OpenAI Models",
   "version": "1.0.5",
   "description": "SNN Chat - AI-powered sidebar for web browsing with OpenAI and OpenRouter support",
   "permissions": [
