@@ -814,6 +814,13 @@ class SNNChat {
     
     this.sidebar.classList.remove('visible');
     this.isVisible = false;
+    
+    // If sticky mode is active, remove the content padding
+    if (this.isContentShifted) {
+      document.documentElement.style.paddingRight = '';
+      this.isContentShifted = false;
+      this.stickyLeftBtn?.classList.remove('active');
+    }
   }
 
   adjustTextareaHeight() {
