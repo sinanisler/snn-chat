@@ -540,13 +540,7 @@
   box-sizing: border-box  ;
 }
 
-/* Allow text selection in specific areas where users need it */
-#ai-sidebar .message-content,
-#ai-sidebar #user-input,
-#ai-sidebar input[type="text"],
-#ai-sidebar input[type="password"],
-#ai-sidebar textarea {
-}
+
 
 /* Markdown Styling */
 #ai-sidebar .message-content h1, #ai-sidebar .message-content h2, #ai-sidebar .message-content h3 {
@@ -637,7 +631,6 @@
   opacity: 0  ;
   visibility: hidden  ;
   transition: opacity 0.2s ease, visibility 0.2s ease  ;
-  
 }
 
 #ai-sidebar .overlay.visible {
@@ -779,7 +772,6 @@
 
 #ai-sidebar .input-group {
   margin-bottom: 5px  ;
-  display:;
 }
 
 #ai-sidebar .input-group label {
