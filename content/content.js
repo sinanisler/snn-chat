@@ -2671,6 +2671,20 @@ class SNNChat {
     messageDiv.classList.remove('streaming');
     contentDiv.innerHTML = this.parseMarkdown(fullResponse);
     
+    // Add token usage display after streaming completes
+    if (this.lastTokenUsage && (this.lastTokenUsage.prompt_tokens > 0 || this.lastTokenUsage.completion_tokens > 0)) {
+      const totalTokens = (this.lastTokenUsage.prompt_tokens || 0) + (this.lastTokenUsage.completion_tokens || 0);
+      const tokenInfo = document.createElement('div');
+      tokenInfo.className = 'token-usage';
+      tokenInfo.textContent = `${totalTokens.toLocaleString()} tokens`;
+      tokenInfo.title = `Prompt: ${this.lastTokenUsage.prompt_tokens || 0} tokens, Completion: ${this.lastTokenUsage.completion_tokens || 0} tokens`;
+      messageDiv.appendChild(tokenInfo);
+      
+      // Update total tokens used in the session
+      this.totalTokensUsed += totalTokens;
+      this.updateTokenCounter();
+    }
+    
     this.setupMessageActions(messageDiv, message, context);
     
     return fullResponse;
@@ -2691,11 +2705,18 @@ class SNNChat {
       regenerateBtn.disabled = true;
       regenerateBtn.innerHTML = '<span class="spinner">⟳</span>';
       
-      messageDiv.remove();
-      
+      // Subtract the old message's tokens from the total before removing
       if (this.chatHistory.length > 0 && this.chatHistory[this.chatHistory.length - 1].role === 'assistant') {
+        const oldTokenUsage = this.chatHistory[this.chatHistory.length - 1].tokenUsage;
+        if (oldTokenUsage) {
+          const oldTotalTokens = (oldTokenUsage.prompt_tokens || 0) + (oldTokenUsage.completion_tokens || 0);
+          this.totalTokensUsed -= oldTotalTokens;
+          this.updateTokenCounter();
+        }
         this.chatHistory.pop();
       }
+      
+      messageDiv.remove();
       
       try {
         const settings = await this.getSettings();
