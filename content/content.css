@@ -1291,3 +1291,596 @@
   font-weight: 500  ;
   color: var(--sidebar-text, #333)  ;
 }
+
+/* Streaming Response Styles */
+#ai-sidebar .message.streaming .cursor {
+  display: inline-block  ;
+  width: 2px  ;
+  height: 1em  ;
+  background: var(--sidebar-input-focus, #007bff)  ;
+  animation: blink 1s infinite  ;
+  margin-left: 2px  ;
+}
+
+@keyframes blink {
+  0%, 49% { opacity: 1  ; }
+  50%, 100% { opacity: 0  ; }
+}
+
+/* Message Action Buttons */
+#ai-sidebar .message-actions {
+  display: flex  ;
+  gap: 4px  ;
+  margin-top: 6px  ;
+  opacity: 0  ;
+  transition: opacity 0.2s  ;
+}
+
+#ai-sidebar .message:hover .message-actions {
+  opacity: 1  ;
+}
+
+#ai-sidebar .action-btn {
+  background: rgba(0, 0, 0, 0.05)  ;
+  border: 1px solid rgba(0, 0, 0, 0.1)  ;
+  border-radius: 4px  ;
+  padding: 6px 8px  ;
+  cursor: pointer  ;
+  display: flex  ;
+  align-items: center  ;
+  justify-content: center  ;
+  transition: all 0.2s  ;
+  color: var(--sidebar-button-text, #666)  ;
+}
+
+#ai-sidebar .action-btn:hover {
+  background: rgba(0, 0, 0, 0.1)  ;
+  transform: scale(1.05)  ;
+}
+
+#ai-sidebar .action-btn:disabled {
+  opacity: 0.5  ;
+  cursor: not-allowed  ;
+}
+
+#ai-sidebar .action-btn svg {
+  width: 16px  ;
+  height: 16px  ;
+}
+
+#ai-sidebar .action-btn.bookmarked {
+  background: #ffc107  ;
+  color: white  ;
+  border-color: #ffc107  ;
+}
+
+#ai-sidebar .action-btn .spinner {
+  display: inline-block  ;
+  animation: rotate 1s linear infinite  ;
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg)  ; }
+  to { transform: rotate(360deg)  ; }
+}
+
+#ai-sidebar .action-btn .speaking {
+  color: #ff4444  ;
+  font-weight: bold  ;
+}
+
+/* Smart Prompts Styles */
+#ai-sidebar .smart-prompts {
+  padding: 12px  ;
+  background: var(--sidebar-preview-bg, #e3f2fd)  ;
+  border-top: 1px solid var(--sidebar-preview-border, #bbdefb)  ;
+  opacity: 0  ;
+  max-height: 0  ;
+  overflow: hidden  ;
+  transition: all 0.3s ease  ;
+}
+
+#ai-sidebar .smart-prompts.visible {
+  opacity: 1  ;
+  max-height: 250px  ;
+}
+
+#ai-sidebar .prompts-header {
+  display: flex  ;
+  justify-content: space-between  ;
+  align-items: center  ;
+  margin-bottom: 8px  ;
+}
+
+#ai-sidebar .prompts-title {
+  font-size: 12px  ;
+  font-weight: 600  ;
+  color: var(--sidebar-preview-text, #1565c0)  ;
+}
+
+#ai-sidebar .prompts-refresh {
+  background: none  ;
+  border: none  ;
+  cursor: pointer  ;
+  padding: 4px  ;
+  border-radius: 4px  ;
+  opacity: 0.6  ;
+  transition: all 0.2s  ;
+  font-size: 14px  ;
+}
+
+#ai-sidebar .prompts-refresh:hover {
+  opacity: 1  ;
+  background: rgba(0, 0, 0, 0.05)  ;
+}
+
+#ai-sidebar .prompts-grid {
+  display: grid  ;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr))  ;
+  gap: 6px  ;
+}
+
+#ai-sidebar .prompt-chip {
+  display: flex  ;
+  align-items: center  ;
+  gap: 6px  ;
+  padding: 8px 12px  ;
+  background: white  ;
+  border: 1px solid var(--sidebar-preview-border, #bbdefb)  ;
+  border-radius: 8px  ;
+  cursor: pointer  ;
+  transition: all 0.2s  ;
+  font-size: 13px  ;
+  white-space: nowrap  ;
+  overflow: hidden  ;
+  text-overflow: ellipsis  ;
+}
+
+#ai-sidebar .prompt-chip:hover {
+  background: var(--sidebar-input-focus, #007bff)  ;
+  color: white  ;
+  transform: translateY(-1px)  ;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1)  ;
+}
+
+#ai-sidebar .prompt-icon {
+  font-size: 16px  ;
+  flex-shrink: 0  ;
+}
+
+#ai-sidebar .prompt-text {
+  flex: 1  ;
+  text-align: left  ;
+}
+
+/* Context Panel Styles */
+#ai-sidebar .context-panel {
+  background: var(--sidebar-header-bg, #f8f9fa)  ;
+  border-bottom: 1px solid var(--sidebar-header-border, #e0e0e0)  ;
+  padding: 12px  ;
+}
+
+#ai-sidebar .context-modes {
+  display: flex  ;
+  gap: 8px  ;
+  margin-bottom: 12px  ;
+}
+
+#ai-sidebar .context-mode {
+  flex: 1  ;
+  display: flex  ;
+  align-items: center  ;
+  gap: 8px  ;
+  padding: 10px  ;
+  background: white  ;
+  border: 2px solid transparent  ;
+  border-radius: 8px  ;
+  cursor: pointer  ;
+  transition: all 0.2s  ;
+  position: relative  ;
+}
+
+#ai-sidebar .context-mode:hover {
+  background: var(--sidebar-input-bg, #ffffff)  ;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05)  ;
+}
+
+#ai-sidebar .context-mode.active {
+  border-color: var(--sidebar-input-focus, #007bff)  ;
+  background: var(--sidebar-preview-bg, #e3f2fd)  ;
+}
+
+#ai-sidebar .context-mode.disabled {
+  opacity: 0.5  ;
+  cursor: not-allowed  ;
+}
+
+#ai-sidebar .mode-icon {
+  font-size: 24px  ;
+}
+
+#ai-sidebar .mode-info {
+  flex: 1  ;
+  text-align: left  ;
+}
+
+#ai-sidebar .mode-title {
+  font-weight: 600  ;
+  font-size: 13px  ;
+  color: var(--sidebar-text, #333)  ;
+}
+
+#ai-sidebar .mode-size {
+  font-size: 11px  ;
+  color: var(--sidebar-button-text, #666)  ;
+  margin-top: 2px  ;
+}
+
+#ai-sidebar .mode-indicator {
+  width: 8px  ;
+  height: 8px  ;
+  border-radius: 50%  ;
+  background: transparent  ;
+}
+
+#ai-sidebar .context-mode.active .mode-indicator {
+  background: var(--sidebar-input-focus, #007bff)  ;
+  box-shadow: 0 0 8px var(--sidebar-input-focus, #007bff)  ;
+}
+
+#ai-sidebar .context-preview {
+  background: white  ;
+  border-radius: 6px  ;
+  overflow: hidden  ;
+}
+
+#ai-sidebar .preview-header {
+  display: flex  ;
+  justify-content: space-between  ;
+  align-items: center  ;
+  padding: 8px 12px  ;
+  background: rgba(0, 0, 0, 0.03)  ;
+  font-size: 12px  ;
+  font-weight: 600  ;
+  color: var(--sidebar-button-text, #666)  ;
+}
+
+#ai-sidebar .preview-expand {
+  background: none  ;
+  border: none  ;
+  cursor: pointer  ;
+  padding: 2px 6px  ;
+  border-radius: 4px  ;
+  transition: background 0.2s  ;
+  font-size: 14px  ;
+}
+
+#ai-sidebar .preview-expand:hover {
+  background: rgba(0, 0, 0, 0.05)  ;
+}
+
+#ai-sidebar .preview-content {
+  padding: 12px  ;
+  font-size: 12px  ;
+  color: var(--sidebar-button-text, #666)  ;
+  max-height: 80px  ;
+  overflow: hidden  ;
+  line-height: 1.5  ;
+  white-space: pre-wrap  ;
+}
+
+/* Context Modal */
+#ai-sidebar .context-modal {
+  position: fixed  ;
+  top: 0  ;
+  left: 0  ;
+  right: 0  ;
+  bottom: 0  ;
+  z-index: 100000  ;
+  display: flex  ;
+  align-items: center  ;
+  justify-content: center  ;
+  opacity: 0  ;
+  transition: opacity 0.3s  ;
+}
+
+#ai-sidebar .context-modal.visible {
+  opacity: 1  ;
+}
+
+#ai-sidebar .modal-backdrop {
+  position: absolute  ;
+  top: 0  ;
+  left: 0  ;
+  right: 0  ;
+  bottom: 0  ;
+  background: rgba(0, 0, 0, 0.6)  ;
+  backdrop-filter: blur(4px)  ;
+}
+
+#ai-sidebar .modal-content {
+  position: relative  ;
+  background: var(--sidebar-bg, #ffffff)  ;
+  border-radius: 12px  ;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3)  ;
+  max-width: 800px  ;
+  max-height: 80vh  ;
+  width: 90%  ;
+  display: flex  ;
+  flex-direction: column  ;
+}
+
+#ai-sidebar .modal-header {
+  display: flex  ;
+  justify-content: space-between  ;
+  align-items: center  ;
+  padding: 16px 20px  ;
+  border-bottom: 1px solid var(--sidebar-border, #e0e0e0)  ;
+}
+
+#ai-sidebar .modal-header h3 {
+  margin: 0  ;
+  font-size: 18px  ;
+  color: var(--sidebar-text, #333)  ;
+}
+
+#ai-sidebar .modal-actions {
+  display: flex  ;
+  gap: 8px  ;
+}
+
+#ai-sidebar .modal-copy,
+#ai-sidebar .modal-close {
+  background: var(--sidebar-button-bg, #f8f9fa)  ;
+  border: 1px solid var(--sidebar-button-border, #e0e0e0)  ;
+  border-radius: 6px  ;
+  padding: 6px 12px  ;
+  cursor: pointer  ;
+  transition: all 0.2s  ;
+  font-size: 14px  ;
+}
+
+#ai-sidebar .modal-copy:hover,
+#ai-sidebar .modal-close:hover {
+  background: var(--sidebar-input-bg, #ffffff)  ;
+}
+
+#ai-sidebar .modal-body {
+  flex: 1  ;
+  overflow: auto  ;
+  padding: 20px  ;
+}
+
+#ai-sidebar .modal-body pre {
+  font-size: 13px  ;
+  line-height: 1.6  ;
+  white-space: pre-wrap  ;
+  word-break: break-word  ;
+  margin: 0  ;
+}
+
+#ai-sidebar .modal-footer {
+  padding: 12px 20px  ;
+  border-top: 1px solid var(--sidebar-border, #e0e0e0)  ;
+  font-size: 12px  ;
+  color: var(--sidebar-button-text, #666)  ;
+  text-align: right  ;
+}
+
+/* Voice Input Styles */
+#ai-sidebar .voice-input-btn {
+  background: var(--sidebar-button-bg, #f8f9fa)  ;
+  border: 2px solid var(--sidebar-button-border, #e0e0e0)  ;
+  border-radius: 8px  ;
+  padding: 10px  ;
+  cursor: pointer  ;
+  transition: all 0.3s  ;
+  display: flex  ;
+  align-items: center  ;
+  justify-content: center  ;
+  margin-right: 8px  ;
+}
+
+#ai-sidebar .voice-input-btn:hover {
+  background: var(--sidebar-input-bg, #ffffff)  ;
+  transform: scale(1.05)  ;
+}
+
+#ai-sidebar .voice-input-btn.listening {
+  background: #ff4444  ;
+  border-color: #ff4444  ;
+  color: white  ;
+  animation: pulse 1.5s infinite  ;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1  ;
+    transform: scale(1)  ;
+  }
+  50% {
+    opacity: 0.8  ;
+    transform: scale(1.1)  ;
+  }
+}
+
+#ai-sidebar .voice-waveform {
+  display: flex  ;
+  gap: 4px  ;
+  height: 30px  ;
+  align-items: center  ;
+  justify-content: center  ;
+  padding: 8px  ;
+  background: var(--sidebar-preview-bg, #e3f2fd)  ;
+  border-radius: 8px  ;
+  margin-bottom: 8px  ;
+  opacity: 0  ;
+  max-height: 0  ;
+  overflow: hidden  ;
+  transition: all 0.3s  ;
+}
+
+#ai-sidebar .voice-waveform.active {
+  opacity: 1  ;
+  max-height: 50px  ;
+}
+
+#ai-sidebar .wave-bar {
+  width: 4px  ;
+  height: 10px  ;
+  background: var(--sidebar-input-focus, #007bff)  ;
+  border-radius: 2px  ;
+  animation: wave 1s ease-in-out infinite  ;
+}
+
+#ai-sidebar .wave-bar:nth-child(2) { animation-delay: 0.1s  ; }
+#ai-sidebar .wave-bar:nth-child(3) { animation-delay: 0.2s  ; }
+#ai-sidebar .wave-bar:nth-child(4) { animation-delay: 0.3s  ; }
+#ai-sidebar .wave-bar:nth-child(5) { animation-delay: 0.4s  ; }
+
+@keyframes wave {
+  0%, 100% { height: 10px  ; }
+  50% { height: 25px  ; }
+}
+
+#ai-sidebar .interim-transcript {
+  padding: 8px  ;
+  background: var(--sidebar-preview-bg, #e3f2fd)  ;
+  border-radius: 6px  ;
+  font-size: 13px  ;
+  color: var(--sidebar-button-text, #666)  ;
+  font-style: italic  ;
+  margin-bottom: 8px  ;
+  display: none  ;
+}
+
+/* Settings Tabs */
+#ai-sidebar .settings-tabs {
+  display: flex  ;
+  gap: 4px  ;
+  margin-bottom: 16px  ;
+  border-bottom: 2px solid var(--sidebar-border, #e0e0e0)  ;
+  overflow-x: auto  ;
+}
+
+#ai-sidebar .settings-tab {
+  background: none  ;
+  border: none  ;
+  padding: 10px 16px  ;
+  cursor: pointer  ;
+  border-bottom: 3px solid transparent  ;
+  transition: all 0.2s  ;
+  font-size: 13px  ;
+  font-weight: 500  ;
+  color: var(--sidebar-button-text, #666)  ;
+  white-space: nowrap  ;
+}
+
+#ai-sidebar .settings-tab:hover {
+  background: rgba(0, 0, 0, 0.03)  ;
+}
+
+#ai-sidebar .settings-tab.active {
+  border-bottom-color: var(--sidebar-input-focus, #007bff)  ;
+  color: var(--sidebar-input-focus, #007bff)  ;
+}
+
+#ai-sidebar .settings-tab-content {
+  display: none  ;
+}
+
+#ai-sidebar .settings-tab-content.active {
+  display: block  ;
+}
+
+/* Toggle Switch */
+#ai-sidebar .toggle-group {
+  display: flex  ;
+  flex-direction: column  ;
+  gap: 12px  ;
+}
+
+#ai-sidebar .toggle-option {
+  display: flex  ;
+  align-items: flex-start  ;
+  gap: 12px  ;
+}
+
+#ai-sidebar .toggle-switch {
+  position: relative  ;
+  display: inline-block  ;
+  width: 44px  ;
+  height: 24px  ;
+  flex-shrink: 0  ;
+}
+
+#ai-sidebar .toggle-switch input {
+  opacity: 0  ;
+  width: 0  ;
+  height: 0  ;
+}
+
+#ai-sidebar .toggle-slider {
+  position: absolute  ;
+  cursor: pointer  ;
+  top: 0  ;
+  left: 0  ;
+  right: 0  ;
+  bottom: 0  ;
+  background-color: #ccc  ;
+  transition: 0.4s  ;
+  border-radius: 24px  ;
+}
+
+#ai-sidebar .toggle-slider:before {
+  position: absolute  ;
+  content: ""  ;
+  height: 18px  ;
+  width: 18px  ;
+  left: 3px  ;
+  bottom: 3px  ;
+  background-color: white  ;
+  transition: 0.4s  ;
+  border-radius: 50%  ;
+}
+
+#ai-sidebar .toggle-switch input:checked + .toggle-slider {
+  background-color: var(--sidebar-input-focus, #007bff)  ;
+}
+
+#ai-sidebar .toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(20px)  ;
+}
+
+#ai-sidebar .toggle-label {
+  flex: 1  ;
+}
+
+#ai-sidebar .toggle-label strong {
+  display: block  ;
+  margin-bottom: 4px  ;
+  font-size: 14px  ;
+  color: var(--sidebar-text, #333)  ;
+}
+
+#ai-sidebar .toggle-label small {
+  display: block  ;
+  font-size: 12px  ;
+  color: var(--sidebar-button-text, #666)  ;
+  line-height: 1.4  ;
+}
+
+#ai-sidebar .input-group small {
+  display: block  ;
+  margin-top: 4px  ;
+  font-size: 11px  ;
+  color: var(--sidebar-button-text, #666)  ;
+}
+
+#ai-sidebar .input-group label {
+  display: block  ;
+  margin-bottom: 6px  ;
+  font-weight: 500  ;
+  font-size: 13px  ;
+  color: var(--sidebar-text, #333)  ;
+}

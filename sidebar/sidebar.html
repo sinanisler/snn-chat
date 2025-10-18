@@ -69,153 +69,285 @@
         <button class="overlay-close" id="close-settings-overlay">×</button>
       </div>
       <div class="overlay-body">
-        <div class="settings-section">
-          <h4>API Provider</h4>
-          <div class="radio-group">
-            <div class="radio-option">
-              <input type="radio" id="provider-openai" name="provider" value="openai" checked>
-              <label for="provider-openai">OpenAI</label>
-            </div>
-            <div class="radio-option">
-              <input type="radio" id="provider-openrouter" name="provider" value="openrouter">
-              <label for="provider-openrouter">OpenRouter</label>
-            </div>
-          </div>
+        <!-- Settings Tabs -->
+        <div class="settings-tabs">
+          <button class="settings-tab active" data-tab="api">🔑 API</button>
+          <button class="settings-tab" data-tab="chat">💬 Chat</button>
+          <button class="settings-tab" data-tab="features">⭐ Features</button>
+          <button class="settings-tab" data-tab="appearance">🎨 Appearance</button>
+          <button class="settings-tab" data-tab="advanced">⚙️ Advanced</button>
         </div>
-        
-        <div class="settings-section provider-section active" id="openai-section">
-          <div class="input-group">
-            <input type="text" id="openai-key" placeholder="API Key (sk-...)" class="api-key-input">
+
+        <!-- API Tab -->
+        <div class="settings-tab-content active" data-tab-content="api">
+          <div class="settings-section">
+            <h4>API Provider</h4>
+            <div class="radio-group">
+              <div class="radio-option">
+                <input type="radio" id="provider-openai" name="provider" value="openai" checked>
+                <label for="provider-openai">OpenAI</label>
+              </div>
+              <div class="radio-option">
+                <input type="radio" id="provider-openrouter" name="provider" value="openrouter">
+                <label for="provider-openrouter">OpenRouter</label>
+              </div>
+            </div>
           </div>
-          <div class="input-group">
-            <input type="text" id="openai-model" placeholder="Select or type a model..." list="openai-models">
-            <datalist id="openai-models"></datalist>
-            <div class="model-error" id="openai-error" style="display: none;"></div>
+          
+          <div class="settings-section provider-section active" id="openai-section">
+            <h4>OpenAI Configuration</h4>
+            <div class="input-group">
+              <label>API Key</label>
+              <input type="text" id="openai-key" placeholder="sk-..." class="api-key-input">
+            </div>
+            <div class="input-group">
+              <label>Model</label>
+              <input type="text" id="openai-model" placeholder="Select or type a model..." list="openai-models">
+              <datalist id="openai-models"></datalist>
+              <div class="model-error" id="openai-error" style="display: none;"></div>
+            </div>
             <button type="button" class="test-connection" id="test-openai">Test Connection</button>
             <div class="connection-status" id="openai-status"></div>
           </div>
-        </div>
-        
-        <div class="settings-section provider-section" id="openrouter-section">
-          <div class="input-group">
-            <input type="text" id="openrouter-key" placeholder="API Key (sk-or-...)" class="api-key-input">
-          </div>
-          <div class="input-group">
-            <input type="text" id="openrouter-model" placeholder="Select or type a model..." list="openrouter-models">
-            <datalist id="openrouter-models"></datalist>
-            <div class="model-error" id="openrouter-error" style="display: none;"></div>
+          
+          <div class="settings-section provider-section" id="openrouter-section">
+            <h4>OpenRouter Configuration</h4>
+            <div class="input-group">
+              <label>API Key</label>
+              <input type="text" id="openrouter-key" placeholder="sk-or-..." class="api-key-input">
+            </div>
+            <div class="input-group">
+              <label>Model</label>
+              <input type="text" id="openrouter-model" placeholder="Select or type a model..." list="openrouter-models">
+              <datalist id="openrouter-models"></datalist>
+              <div class="model-error" id="openrouter-error" style="display: none;"></div>
+            </div>
             <button type="button" class="test-connection" id="test-openrouter">Test Connection</button>
             <div class="connection-status" id="openrouter-status"></div>
           </div>
         </div>
-        
-        <div class="settings-section">
-          <h4>Chat Settings</h4>
-          <div class="input-group">
-            <input type="number" id="max-tokens" min="100" max="4000" value="2000" placeholder="Max Tokens (100-4000)">
-          </div>
-          <div class="input-group temperature">
-            <label for="temperature">Temperature: <span id="temperature-value">0.7</span></label>
-            <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.7">
-          </div>
-          <div class="input-group">
-            <label for="content-limit">Page Content Limit (characters):</label>
-            <input type="number" id="content-limit" min="1000" max="1000000" value="15000" placeholder="Content extraction limit (1000-100000)">
-          </div>
-          <div class="input-group">
-            <textarea id="system-prompt" placeholder="System prompt (optional - customize AI behavior)" rows="3">You are a helpful AI assistant with full access to the current webpage content. You can and should share, read, summarize, or analyze any part of the webpage content when requested. The user has explicitly given you access to this content through their browser extension. You can freely share the full text content of webpages when asked.</textarea>
-          </div>
-        </div>
-        
-        <div class="settings-section">
-          <div class="input-group">
-            <select id="theme-select">
-              <option value="auto">Theme: Auto</option>
-              <option value="light">Theme: Light</option>
-              <option value="dark">Theme: Dark</option>
-            </select>
-          </div>
-          <div class="input-group font-size">
-            <label for="font-size">Font Size: <span id="font-size-value">15px</span></label>
-            <input type="range" id="font-size" min="12" max="20" value="15">
-          </div>
-          <div class="input-group sidebar-width">
-            <label for="sidebar-width">Width: <span id="sidebar-width-value">400px</span></label>
-            <input type="range" id="sidebar-width" min="300" max="900" value="400">
-          </div>
-        </div>
-        
-        <div class="settings-section">
-          <div class="input-group">
-            <div class="shortcut-selects-container">
-              <select id="shortcut-key1">
-                <option value="">Key 1</option>
-                <option value="Ctrl">Ctrl</option>
-                <option value="Shift">Shift</option>
-                <option value="Alt">Alt</option>
-              </select>
-              <span class="shortcut-plus">+</span>
-              <select id="shortcut-key2">
-                <option value="">Key 2</option>
-                <option value="Ctrl">Ctrl</option>
-                <option value="Shift">Shift</option>
-                <option value="Alt">Alt</option>
-              </select>
-              <span class="shortcut-plus">+</span>
-              <select id="shortcut-key3">
-                <option value="">Key 3</option>
-                <option value="A">A</option>
-                <option value="B">B</option>
-                <option value="C">C</option>
-                <option value="D">D</option>
-                <option value="E">E</option>
-                <option value="F">F</option>
-                <option value="G">G</option>
-                <option value="H">H</option>
-                <option value="I">I</option>
-                <option value="J">J</option>
-                <option value="K">K</option>
-                <option value="L">L</option>
-                <option value="M">M</option>
-                <option value="N">N</option>
-                <option value="O">O</option>
-                <option value="P">P</option>
-                <option value="Q">Q</option>
-                <option value="R">R</option>
-                <option value="S">S</option>
-                <option value="T">T</option>
-                <option value="U">U</option>
-                <option value="V">V</option>
-                <option value="W">W</option>
-                <option value="X">X</option>
-                <option value="Y">Y</option>
-                <option value="Z">Z</option>
-                <option value="0">0</option>
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-                <option value="5">5</option>
-                <option value="6">6</option>
-                <option value="7">7</option>
-                <option value="8">8</option>
-                <option value="9">9</option>
-              </select>
-              <button type="button" id="reset-shortcut" class="btn secondary">Reset</button>
+
+        <!-- Chat Tab -->
+        <div class="settings-tab-content" data-tab-content="chat">
+          <div class="settings-section">
+            <h4>Chat Behavior</h4>
+            <div class="input-group">
+              <label>Max Tokens</label>
+              <input type="number" id="max-tokens" min="100" max="4000" value="2000" placeholder="Max Tokens (100-4000)">
+              <small>Maximum length of AI responses</small>
             </div>
-            
+            <div class="input-group temperature">
+              <label for="temperature">Temperature: <span id="temperature-value">0.7</span></label>
+              <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.7">
+              <small>Lower = more focused, Higher = more creative</small>
+            </div>
+            <div class="input-group">
+              <label for="content-limit">Page Content Limit (characters)</label>
+              <input type="number" id="content-limit" min="1000" max="1000000" value="15000" placeholder="Content extraction limit">
+              <small>Maximum characters to extract from webpage</small>
+            </div>
+          </div>
+          
+          <div class="settings-section">
+            <h4>System Prompt</h4>
+            <div class="input-group">
+              <textarea id="system-prompt" placeholder="System prompt (optional - customize AI behavior)" rows="4">You are a helpful AI assistant with full access to the current webpage content. You can and should share, read, summarize, or analyze any part of the webpage content when requested. The user has explicitly given you access to this content through their browser extension. You can freely share the full text content of webpages when asked.</textarea>
+              <small>Customize how the AI behaves</small>
+            </div>
           </div>
         </div>
 
-        <div class="settings-section">
-          <div class="input-group">
-            <button type="button" class="danger-btn" id="clear-all-history-settings">Clear All Chat History</button>
-            <button type="button" class="secondary-btn" id="export-chat-history">Export Chat History</button>
+        <!-- Features Tab -->
+        <div class="settings-tab-content" data-tab-content="features">
+          <div class="settings-section">
+            <h4>Response Features</h4>
+            <div class="toggle-group">
+              <div class="toggle-option">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="enable-streaming" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="toggle-label">
+                  <strong>Streaming Responses</strong>
+                  <small>See AI responses as they're generated in real-time</small>
+                </div>
+              </div>
+              
+              <div class="toggle-option">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="enable-message-actions" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="toggle-label">
+                  <strong>Message Actions</strong>
+                  <small>Regenerate, copy, bookmark, and read aloud buttons on messages</small>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h4>Input Features</h4>
+            <div class="toggle-group">
+              <div class="toggle-option">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="enable-quick-actions" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="toggle-label">
+                  <strong>Smart Quick Actions</strong>
+                  <small>Context-aware prompt suggestions based on page type</small>
+                </div>
+              </div>
+              
+              <div class="toggle-option">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="enable-voice-input" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="toggle-label">
+                  <strong>Voice Input</strong>
+                  <small>Click microphone or hold Space to dictate messages</small>
+                </div>
+              </div>
+              
+              <div class="toggle-option">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="enable-context-switcher" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="toggle-label">
+                  <strong>Context Switcher</strong>
+                  <small>Toggle between full page, selection, or no context modes</small>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h4>Session Features</h4>
+            <div class="toggle-group">
+              <div class="toggle-option">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="enable-auto-title" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+                <div class="toggle-label">
+                  <strong>Auto-Generated Titles</strong>
+                  <small>Automatically name chat sessions based on content</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Appearance Tab -->
+        <div class="settings-tab-content" data-tab-content="appearance">
+          <div class="settings-section">
+            <h4>Theme</h4>
+            <div class="input-group">
+              <select id="theme-select">
+                <option value="auto">Auto (System)</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h4>Display</h4>
+            <div class="input-group font-size">
+              <label for="font-size">Font Size: <span id="font-size-value">15px</span></label>
+              <input type="range" id="font-size" min="12" max="20" value="15">
+            </div>
+            <div class="input-group sidebar-width">
+              <label for="sidebar-width">Sidebar Width: <span id="sidebar-width-value">400px</span></label>
+              <input type="range" id="sidebar-width" min="300" max="900" value="400">
+            </div>
+          </div>
+        </div>
+
+        <!-- Advanced Tab -->
+        <div class="settings-tab-content" data-tab-content="advanced">
+          <div class="settings-section">
+            <h4>Keyboard Shortcut</h4>
+            <div class="input-group">
+              <label>Toggle Sidebar Shortcut</label>
+              <div class="shortcut-selects-container">
+                <select id="shortcut-key1">
+                  <option value="">Key 1</option>
+                  <option value="Ctrl">Ctrl</option>
+                  <option value="Shift">Shift</option>
+                  <option value="Alt">Alt</option>
+                </select>
+                <span class="shortcut-plus">+</span>
+                <select id="shortcut-key2">
+                  <option value="">Key 2</option>
+                  <option value="Ctrl">Ctrl</option>
+                  <option value="Shift">Shift</option>
+                  <option value="Alt">Alt</option>
+                </select>
+                <span class="shortcut-plus">+</span>
+                <select id="shortcut-key3">
+                  <option value="">Key 3</option>
+                  <option value="A">A</option>
+                  <option value="B">B</option>
+                  <option value="C">C</option>
+                  <option value="D">D</option>
+                  <option value="E">E</option>
+                  <option value="F">F</option>
+                  <option value="G">G</option>
+                  <option value="H">H</option>
+                  <option value="I">I</option>
+                  <option value="J">J</option>
+                  <option value="K">K</option>
+                  <option value="L">L</option>
+                  <option value="M">M</option>
+                  <option value="N">N</option>
+                  <option value="O">O</option>
+                  <option value="P">P</option>
+                  <option value="Q">Q</option>
+                  <option value="R">R</option>
+                  <option value="S">S</option>
+                  <option value="T">T</option>
+                  <option value="U">U</option>
+                  <option value="V">V</option>
+                  <option value="W">W</option>
+                  <option value="X">X</option>
+                  <option value="Y">Y</option>
+                  <option value="Z">Z</option>
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                  <option value="9">9</option>
+                </select>
+                <button type="button" id="reset-shortcut" class="btn secondary">Reset</button>
+              </div>
+              <small>Default: Ctrl+Shift+Y</small>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <h4>Data Management</h4>
+            <div class="input-group">
+              <button type="button" class="secondary-btn" id="export-chat-history">📤 Export Chat History</button>
+              <small>Download all conversations as markdown</small>
+            </div>
+            <div class="input-group">
+              <button type="button" class="danger-btn" id="clear-all-history-settings">🗑️ Clear All Chat History</button>
+              <small>Permanently delete all saved conversations</small>
+            </div>
           </div>
         </div>
         
         <div class="settings-actions">
-          <button id="save-settings" class="primary-btn">Save Settings</button>
+          <button id="save-settings" class="primary-btn">💾 Save Settings</button>
         </div>
       </div>
     </div>

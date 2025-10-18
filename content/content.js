@@ -33,6 +33,27 @@ class SNNChat {
     await this.loadMostRecentSession();
     await this.applySettings();
     await this.restoreStickyState();
+    
+    // Initialize new features based on settings
+    const settings = await this.getSettings();
+    
+    if (settings.enableQuickActions !== false) {
+      this.smartPrompts = new SmartPrompts(this);
+      if (this.chatHistory.length === 0) {
+        this.smartPrompts.show();
+      }
+    }
+    
+    if (settings.enableContextSwitcher !== false) {
+      this.contextManager = new ContextManager(this);
+      this.currentContextMode = 'page';
+    }
+    
+    if (settings.enableVoiceInput !== false) {
+      this.voiceInput = new VoiceInput(this);
+    }
+    
+    this.sessionManager = new SessionManager(this);
   }
   
   setupPageNavigationDetection() {
@@ -804,34 +825,73 @@ class SNNChat {
     this.userInput.value = '';
     this.adjustTextareaHeight();
 
+    // Hide smart prompts when sending message
+    if (this.smartPrompts) {
+      this.smartPrompts.hide();
+    }
+
     // Add message with current page context
     const currentPageContext = {
       title: this.currentPageTitle,
       url: this.currentPageUrl
     };
     this.addMessageToChat('user', message, currentPageContext);
-    this.addLoadingMessage();
 
     try {
-      const context = this.preservedSelection || this.pageContent;
-      const response = await this.callAPI(message, context);
+      // Get context based on current mode
+      let context = '';
+      switch(this.currentContextMode) {
+        case 'page':
+          context = this.pageContent;
+          break;
+        case 'selection':
+          context = this.preservedSelection || this.pageContent;
+          break;
+        case 'none':
+          context = '';
+          break;
+      }
       
-      this.removeLoadingMessage();
-      this.addMessageToChat('ai', response, null, this.lastTokenUsage);
-      
-      // Store page context with user message in history
-      this.chatHistory.push(
-        { 
-          role: 'user', 
-          content: message,
-          pageContext: currentPageContext
-        },
-        { 
-          role: 'assistant', 
-          content: response,
-          tokenUsage: this.lastTokenUsage
-        }
-      );
+      // Check if streaming is enabled
+      const settings = await this.getSettings();
+      if (settings.enableStreaming) {
+        const response = await this.streamResponse(message, context);
+        
+        // Store in history
+        this.chatHistory.push(
+          { 
+            role: 'user', 
+            content: message,
+            pageContext: currentPageContext
+          },
+          { 
+            role: 'assistant', 
+            content: response,
+            tokenUsage: this.lastTokenUsage
+          }
+        );
+      } else {
+        // Traditional non-streaming
+        this.addLoadingMessage();
+        const response = await this.callAPI(message, context);
+        
+        this.removeLoadingMessage();
+        this.addMessageToChat('ai', response, null, this.lastTokenUsage);
+        
+        // Store in history
+        this.chatHistory.push(
+          { 
+            role: 'user', 
+            content: message,
+            pageContext: currentPageContext
+          },
+          { 
+            role: 'assistant', 
+            content: response,
+            tokenUsage: this.lastTokenUsage
+          }
+        );
+      }
       
       await this.saveChatHistory();
       
@@ -928,23 +988,41 @@ class SNNChat {
   async getSettings() {
     try {
       if (!chrome?.storage?.sync) {
-        //  console.log('Chrome storage not available, using defaults');
-        return {};
+        return {
+          enableStreaming: true,
+          enableQuickActions: true,
+          enableVoiceInput: true,
+          enableContextSwitcher: true
+        };
       }
       
       return new Promise((resolve) => {
         chrome.storage.sync.get(['settings'], (result) => {
           if (chrome.runtime.lastError) {
-            //  console.log('Storage error:', chrome.runtime.lastError);
-            resolve({});
+            resolve({
+              enableStreaming: true,
+              enableQuickActions: true,
+              enableVoiceInput: true,
+              enableContextSwitcher: true
+            });
           } else {
-            resolve(result.settings || {});
+            const settings = result.settings || {};
+            // Set defaults for new features if not defined
+            if (settings.enableStreaming === undefined) settings.enableStreaming = true;
+            if (settings.enableQuickActions === undefined) settings.enableQuickActions = true;
+            if (settings.enableVoiceInput === undefined) settings.enableVoiceInput = true;
+            if (settings.enableContextSwitcher === undefined) settings.enableContextSwitcher = true;
+            resolve(settings);
           }
         });
       });
     } catch (error) {
-      //  console.log('Failed to access settings:', error);
-      return {};
+      return {
+        enableStreaming: true,
+        enableQuickActions: true,
+        enableVoiceInput: true,
+        enableContextSwitcher: true
+      };
     }
   }
 
@@ -1220,6 +1298,23 @@ class SNNChat {
 
 
   setupOverlayEventListeners() {
+    // Settings tabs switching
+    const settingsTabs = this.sidebar.querySelectorAll('.settings-tab');
+    const settingsTabContents = this.sidebar.querySelectorAll('.settings-tab-content');
+    
+    settingsTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabName = tab.dataset.tab;
+        
+        // Update active states
+        settingsTabs.forEach(t => t.classList.remove('active'));
+        settingsTabContents.forEach(c => c.classList.remove('active'));
+        
+        tab.classList.add('active');
+        this.sidebar.querySelector(`[data-tab-content="${tabName}"]`)?.classList.add('active');
+      });
+    });
+    
     // History overlay events
     const closeHistoryBtn = this.sidebar.querySelector('#close-history-overlay');
     const clearAllHistoryBtn = this.sidebar.querySelector('#clear-all-history');
@@ -1830,6 +1925,14 @@ class SNNChat {
     const shortcutKey2 = this.sidebar.querySelector('#shortcut-key2');
     const shortcutKey3 = this.sidebar.querySelector('#shortcut-key3');
     
+    // Feature toggles
+    const enableStreaming = this.sidebar.querySelector('#enable-streaming');
+    const enableMessageActions = this.sidebar.querySelector('#enable-message-actions');
+    const enableQuickActions = this.sidebar.querySelector('#enable-quick-actions');
+    const enableVoiceInput = this.sidebar.querySelector('#enable-voice-input');
+    const enableContextSwitcher = this.sidebar.querySelector('#enable-context-switcher');
+    const enableAutoTitle = this.sidebar.querySelector('#enable-auto-title');
+    
     // Set radio button for provider
     const providerRadio = this.sidebar.querySelector(`input[name="provider"][value="${provider}"]`);
     if (providerRadio) {
@@ -1855,6 +1958,14 @@ class SNNChat {
       sidebarWidth.value = settings.sidebarWidth || 400;
       if (sidebarWidthValue) sidebarWidthValue.textContent = (settings.sidebarWidth || 400) + 'px';
     }
+    
+    // Load feature toggles (default to true)
+    if (enableStreaming) enableStreaming.checked = settings.enableStreaming !== false;
+    if (enableMessageActions) enableMessageActions.checked = settings.enableMessageActions !== false;
+    if (enableQuickActions) enableQuickActions.checked = settings.enableQuickActions !== false;
+    if (enableVoiceInput) enableVoiceInput.checked = settings.enableVoiceInput !== false;
+    if (enableContextSwitcher) enableContextSwitcher.checked = settings.enableContextSwitcher !== false;
+    if (enableAutoTitle) enableAutoTitle.checked = settings.enableAutoTitle !== false;
     
     // Load shortcut settings
     const shortcut = settings.shortcut || 'Ctrl+Shift+Y';
@@ -2110,13 +2221,19 @@ class SNNChat {
         theme: this.sidebar.querySelector('#theme-select')?.value || 'auto',
         fontSize: parseInt(this.sidebar.querySelector('#font-size')?.value) || 15,
         sidebarWidth: parseInt(this.sidebar.querySelector('#sidebar-width')?.value) || 400,
-        shortcut: this.buildShortcutFromSelects()
+        shortcut: this.buildShortcutFromSelects(),
+        // Feature toggles
+        enableStreaming: this.sidebar.querySelector('#enable-streaming')?.checked !== false,
+        enableMessageActions: this.sidebar.querySelector('#enable-message-actions')?.checked !== false,
+        enableQuickActions: this.sidebar.querySelector('#enable-quick-actions')?.checked !== false,
+        enableVoiceInput: this.sidebar.querySelector('#enable-voice-input')?.checked !== false,
+        enableContextSwitcher: this.sidebar.querySelector('#enable-context-switcher')?.checked !== false,
+        enableAutoTitle: this.sidebar.querySelector('#enable-auto-title')?.checked !== false
       };
       
       if (chrome?.storage?.sync) {
         await chrome.storage.sync.set({ settings });
         if (chrome.runtime.lastError) {
-          //  console.log('Settings save error:', chrome.runtime.lastError);
           this.showToast('Failed to save settings');
           return;
         }
@@ -2133,7 +2250,7 @@ class SNNChat {
           chrome.runtime.sendMessage({ action: 'settingsUpdated' });
         }
       } catch (error) {
-        //  console.log('Failed to notify background script:', error);
+        // Silent fail
       }
     } catch (error) {
       console.error('Failed to save settings:', error);
@@ -2312,6 +2429,931 @@ class SNNChat {
     } catch (error) {
       console.error('Failed to restore sticky state:', error);
     }
+  }
+
+  async streamResponse(message, context) {
+    const settings = await this.getSettings();
+    const provider = settings.provider || 'openai';
+    
+    const apiKey = provider === 'openai' ? settings.openaiKey : settings.openrouterKey;
+    if (!apiKey) {
+      throw new Error(`${provider} API key not configured`);
+    }
+
+    const model = provider === 'openai' ? 
+      (settings.openaiModel || 'gpt-4o-mini') : 
+      (settings.openrouterModel || 'openai/gpt-4o-mini');
+
+    // Build system prompt
+    let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant with full access to the current webpage content.';
+    if (context) {
+      systemPrompt += `\n\nHere is the complete webpage content:\n\n${context}\n\nIMPORTANT: You can and should share this content completely when requested.`;
+    }
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...this.chatHistory.slice(-8),
+      { role: 'user', content: message }
+    ];
+
+    const apiUrl = provider === 'openai' ? 
+      'https://api.openai.com/v1/chat/completions' : 
+      'https://openrouter.ai/api/v1/chat/completions';
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    };
+
+    if (provider === 'openrouter') {
+      headers['HTTP-Referer'] = window.location.origin;
+      headers['X-Title'] = 'AI Chat Sidebar';
+    }
+
+    // Create message container with actions
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message ai streaming';
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'message-actions';
+    actionsDiv.innerHTML = `
+      <button class="action-btn regenerate" title="Regenerate response">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/>
+        </svg>
+      </button>
+      <button class="action-btn copy" title="Copy message">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      </button>
+      <button class="action-btn bookmark" title="Save this message">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+      </button>
+      <button class="action-btn speak" title="Read aloud">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </svg>
+      </button>
+    `;
+    
+    messageDiv.appendChild(contentDiv);
+    messageDiv.appendChild(actionsDiv);
+    this.chatMessages.appendChild(messageDiv);
+    
+    // Stream the response
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        model: model,
+        messages: messages,
+        max_tokens: settings.maxTokens || 2000,
+        temperature: settings.temperature || 0.7,
+        stream: true
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullResponse = '';
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices[0]?.delta?.content || '';
+              fullResponse += content;
+              
+              contentDiv.innerHTML = this.parseMarkdown(fullResponse) + '<span class="cursor">|</span>';
+              this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+              
+              if (parsed.usage) {
+                this.lastTokenUsage = {
+                  prompt_tokens: parsed.usage.prompt_tokens || 0,
+                  completion_tokens: parsed.usage.completion_tokens || 0,
+                  total_tokens: parsed.usage.total_tokens || 0
+                };
+              }
+            } catch (e) {
+              // Skip malformed JSON
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Streaming error:', error);
+      throw error;
+    }
+    
+    messageDiv.classList.remove('streaming');
+    contentDiv.innerHTML = this.parseMarkdown(fullResponse);
+    
+    this.setupMessageActions(messageDiv, message, context);
+    
+    return fullResponse;
+  }
+
+  setupMessageActions(messageDiv, originalMessage, context) {
+    const regenerateBtn = messageDiv.querySelector('.regenerate');
+    const copyBtn = messageDiv.querySelector('.copy');
+    const bookmarkBtn = messageDiv.querySelector('.bookmark');
+    const speakBtn = messageDiv.querySelector('.speak');
+    
+    regenerateBtn.onclick = async () => {
+      regenerateBtn.disabled = true;
+      regenerateBtn.innerHTML = '<span class="spinner">⟳</span>';
+      
+      messageDiv.remove();
+      
+      if (this.chatHistory.length > 0 && this.chatHistory[this.chatHistory.length - 1].role === 'assistant') {
+        this.chatHistory.pop();
+      }
+      
+      try {
+        const settings = await this.getSettings();
+        let newResponse;
+        if (settings.enableStreaming) {
+          newResponse = await this.streamResponse(originalMessage, context);
+        } else {
+          this.addLoadingMessage();
+          newResponse = await this.callAPI(originalMessage, context);
+          this.removeLoadingMessage();
+          this.addMessageToChat('ai', newResponse, null, this.lastTokenUsage);
+        }
+        
+        this.chatHistory.push({
+          role: 'assistant',
+          content: newResponse,
+          tokenUsage: this.lastTokenUsage
+        });
+        await this.saveChatHistory();
+      } catch (error) {
+        this.addMessageToChat('ai', `Failed to regenerate: ${error.message}`);
+      }
+    };
+    
+    copyBtn.onclick = () => {
+      const content = messageDiv.querySelector('.message-content').textContent;
+      navigator.clipboard.writeText(content);
+      copyBtn.innerHTML = '<span>✓</span>';
+      setTimeout(() => {
+        copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>`;
+      }, 2000);
+    };
+    
+    bookmarkBtn.onclick = async () => {
+      const content = messageDiv.querySelector('.message-content').textContent;
+      await this.bookmarkMessage(content);
+      bookmarkBtn.classList.add('bookmarked');
+      bookmarkBtn.innerHTML = '<span>★</span>';
+      this.showToast('Bookmarked!');
+    };
+    
+    speakBtn.onclick = () => {
+      const content = messageDiv.querySelector('.message-content').textContent;
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        speakBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+        </svg>`;
+      } else {
+        const utterance = new SpeechSynthesisUtterance(content);
+        utterance.onend = () => {
+          speakBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+          </svg>`;
+        };
+        window.speechSynthesis.speak(utterance);
+        speakBtn.innerHTML = '<span class="speaking">■</span>';
+      }
+    };
+  }
+
+  async bookmarkMessage(content) {
+    try {
+      if (!chrome?.storage?.local) return;
+      
+      const bookmarkKey = 'snn_bookmarked_messages';
+      const result = await chrome.storage.local.get([bookmarkKey]);
+      const bookmarks = result[bookmarkKey] || [];
+      
+      bookmarks.push({
+        content: content,
+        timestamp: Date.now(),
+        domain: this.currentDomain,
+        pageTitle: this.currentPageTitle,
+        pageUrl: this.currentPageUrl
+      });
+      
+      await chrome.storage.local.set({
+        [bookmarkKey]: bookmarks
+      });
+    } catch (error) {
+      console.error('Failed to bookmark message:', error);
+    }
+  }
+}
+
+// Smart Prompts Class
+class SmartPrompts {
+  constructor(chatInstance) {
+    this.chat = chatInstance;
+    this.promptsContainer = this.createPromptsContainer();
+  }
+  
+  createPromptsContainer() {
+    const container = document.createElement('div');
+    container.className = 'smart-prompts';
+    container.id = 'smart-prompts';
+    return container;
+  }
+  
+  getContextualPrompts() {
+    const hasSelection = !!this.chat.preservedSelection;
+    const pageType = this.detectPageType();
+    
+    if (hasSelection) {
+      return [
+        { icon: '✨', text: 'Explain this', prompt: 'Explain the selected text in simple terms' },
+        { icon: '🔄', text: 'Rewrite', prompt: 'Rewrite this text to be more clear and concise' },
+        { icon: '📋', text: 'Summarize', prompt: 'Summarize this in bullet points' },
+        { icon: '🌐', text: 'Translate', prompt: 'Translate this to Spanish' },
+        { icon: '❓', text: 'Questions', prompt: 'Generate 3 questions about this text' }
+      ];
+    }
+    
+    switch(pageType) {
+      case 'article':
+        return [
+          { icon: '📝', text: 'Summarize article', prompt: 'Summarize this article in 3 paragraphs' },
+          { icon: '🎯', text: 'Key takeaways', prompt: 'What are the 5 key takeaways from this article?' },
+          { icon: '🔍', text: 'Find bias', prompt: 'Analyze any potential bias in this article' },
+          { icon: '💡', text: 'Related topics', prompt: 'What related topics should I explore?' }
+        ];
+        
+      case 'code':
+        return [
+          { icon: '🐛', text: 'Find bugs', prompt: 'Review this code for bugs and issues' },
+          { icon: '⚡', text: 'Optimize', prompt: 'How can this code be optimized?' },
+          { icon: '📚', text: 'Explain code', prompt: 'Explain what this code does step by step' },
+          { icon: '✅', text: 'Best practices', prompt: 'Check this code against best practices' }
+        ];
+        
+      case 'product':
+        return [
+          { icon: '⭐', text: 'Pros & cons', prompt: 'List the pros and cons of this product' },
+          { icon: '💰', text: 'Compare prices', prompt: 'Compare this with similar products' },
+          { icon: '📊', text: 'Review summary', prompt: 'Summarize the customer reviews' },
+          { icon: '🤔', text: 'Should I buy?', prompt: 'Based on this page, should I buy this product?' }
+        ];
+        
+      case 'documentation':
+        return [
+          { icon: '🎓', text: 'Learn basics', prompt: 'Explain the basics of what this documentation covers' },
+          { icon: '💻', text: 'Code example', prompt: 'Show me a code example using this' },
+          { icon: '🔗', text: 'Related docs', prompt: 'What other docs should I read related to this?' },
+          { icon: '🚀', text: 'Quick start', prompt: 'Create a quick start guide from this documentation' }
+        ];
+        
+      default:
+        return [
+          { icon: '📄', text: 'Summarize page', prompt: 'Summarize this webpage' },
+          { icon: '🔍', text: 'Key information', prompt: 'Extract the key information from this page' },
+          { icon: '❓', text: 'Ask about page', prompt: 'What is this page about?' },
+          { icon: '✏️', text: 'Custom prompt', prompt: '' }
+        ];
+    }
+  }
+  
+  detectPageType() {
+    const url = window.location.href.toLowerCase();
+    const title = document.title.toLowerCase();
+    const content = document.body.textContent.toLowerCase();
+    
+    if (url.includes('github.com') || url.includes('stackoverflow.com') || 
+        content.includes('function') || content.includes('const ') || content.includes('import ')) {
+      return 'code';
+    }
+    
+    if (url.includes('amazon.com') || url.includes('ebay.com') || 
+        title.includes('buy') || content.includes('add to cart')) {
+      return 'product';
+    }
+    
+    if (url.includes('docs.') || url.includes('/documentation/') || 
+        title.includes('documentation') || title.includes('api reference')) {
+      return 'documentation';
+    }
+    
+    if (content.length > 2000 && (title.includes('how to') || title.includes('guide') || 
+        url.includes('blog') || url.includes('article'))) {
+      return 'article';
+    }
+    
+    return 'general';
+  }
+  
+  render() {
+    const prompts = this.getContextualPrompts();
+    
+    this.promptsContainer.innerHTML = `
+      <div class="prompts-header">
+        <span class="prompts-title">💡 Quick Actions</span>
+        <button class="prompts-refresh" title="Refresh suggestions">⟳</button>
+      </div>
+      <div class="prompts-grid">
+        ${prompts.map((p, i) => `
+          <button class="prompt-chip" data-index="${i}" data-prompt="${this.escapeHtml(p.prompt)}">
+            <span class="prompt-icon">${p.icon}</span>
+            <span class="prompt-text">${p.text}</span>
+          </button>
+        `).join('')}
+      </div>
+    `;
+    
+    this.promptsContainer.querySelectorAll('.prompt-chip').forEach(btn => {
+      btn.onclick = () => {
+        const prompt = btn.dataset.prompt;
+        if (prompt) {
+          this.chat.userInput.value = prompt;
+          this.chat.userInput.focus();
+          this.chat.sendMessage();
+        } else {
+          this.chat.userInput.focus();
+        }
+      };
+    });
+    
+    this.promptsContainer.querySelector('.prompts-refresh').onclick = () => {
+      this.render();
+      this.chat.showToast('Suggestions refreshed');
+    };
+    
+    return this.promptsContainer;
+  }
+  
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  
+  show() {
+    if (!this.promptsContainer.parentElement) {
+      const inputContainer = this.chat.sidebar.querySelector('.input-container');
+      inputContainer.before(this.promptsContainer);
+    }
+    this.render();
+    this.promptsContainer.classList.add('visible');
+  }
+  
+  hide() {
+    this.promptsContainer.classList.remove('visible');
+  }
+}
+
+// Context Manager Class
+class ContextManager {
+  constructor(chatInstance) {
+    this.chat = chatInstance;
+    this.createContextPanel();
+  }
+  
+  createContextPanel() {
+    this.panel = document.createElement('div');
+    this.panel.className = 'context-panel';
+    this.panel.innerHTML = `
+      <div class="context-modes">
+        <button class="context-mode active" data-mode="page">
+          <div class="mode-icon">📄</div>
+          <div class="mode-info">
+            <div class="mode-title">Full Page</div>
+            <div class="mode-size">0 chars</div>
+          </div>
+          <div class="mode-indicator"></div>
+        </button>
+        
+        <button class="context-mode" data-mode="selection">
+          <div class="mode-icon">📝</div>
+          <div class="mode-info">
+            <div class="mode-title">Selection</div>
+            <div class="mode-size">0 chars</div>
+          </div>
+          <div class="mode-indicator"></div>
+        </button>
+        
+        <button class="context-mode" data-mode="none">
+          <div class="mode-icon">💭</div>
+          <div class="mode-info">
+            <div class="mode-title">No Context</div>
+            <div class="mode-size">General chat</div>
+          </div>
+          <div class="mode-indicator"></div>
+        </button>
+      </div>
+      
+      <div class="context-preview">
+        <div class="preview-header">
+          <span>Context Preview</span>
+          <button class="preview-expand">⛶</button>
+        </div>
+        <div class="preview-content"></div>
+      </div>
+    `;
+    
+    this.updateContextSizes();
+    this.setupEventListeners();
+    
+    const header = this.chat.sidebar.querySelector('.sidebar-header');
+    header.after(this.panel);
+    
+    return this.panel;
+  }
+  
+  setupEventListeners() {
+    this.panel.querySelectorAll('.context-mode').forEach(btn => {
+      btn.onclick = () => {
+        const mode = btn.dataset.mode;
+        this.switchMode(mode);
+      };
+    });
+    
+    this.panel.querySelector('.preview-expand').onclick = () => {
+      this.expandPreview();
+    };
+    
+    document.addEventListener('selectionchange', () => {
+      this.updateContextSizes();
+    });
+  }
+  
+  switchMode(mode) {
+    this.panel.querySelectorAll('.context-mode').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    
+    switch(mode) {
+      case 'page':
+        this.chat.currentContextMode = 'page';
+        this.chat.clearSelection();
+        break;
+      case 'selection':
+        this.chat.currentContextMode = 'selection';
+        if (!this.chat.preservedSelection) {
+          this.chat.showToast('Please select some text first', 'info');
+        }
+        break;
+      case 'none':
+        this.chat.currentContextMode = 'none';
+        this.chat.clearSelection();
+        break;
+    }
+    
+    this.updatePreview();
+    this.chat.showToast(`Context: ${mode}`, 'success');
+  }
+  
+  updateContextSizes() {
+    const pageSize = this.chat.pageContent?.length || 0;
+    const selectionSize = this.chat.preservedSelection?.length || 0;
+    
+    const pageBtn = this.panel.querySelector('[data-mode="page"]');
+    pageBtn.querySelector('.mode-size').textContent = this.formatSize(pageSize);
+    
+    const selectionBtn = this.panel.querySelector('[data-mode="selection"]');
+    selectionBtn.querySelector('.mode-size').textContent = selectionSize > 0 ? 
+      this.formatSize(selectionSize) : 'No selection';
+    selectionBtn.classList.toggle('disabled', selectionSize === 0);
+    
+    this.updatePreview();
+  }
+  
+  updatePreview() {
+    const previewContent = this.panel.querySelector('.preview-content');
+    const mode = this.chat.currentContextMode || 'page';
+    
+    let content = '';
+    switch(mode) {
+      case 'page':
+        content = this.chat.pageContent || 'Page content not yet extracted...';
+        break;
+      case 'selection':
+        content = this.chat.preservedSelection || 'No text selected';
+        break;
+      case 'none':
+        content = 'No context - general conversation mode';
+        break;
+    }
+    
+    const truncated = content.length > 300 ? 
+      content.substring(0, 300) + '...' : content;
+    
+    previewContent.textContent = truncated;
+  }
+  
+  expandPreview() {
+    const mode = this.chat.currentContextMode || 'page';
+    let content = '';
+    
+    switch(mode) {
+      case 'page':
+        content = this.chat.pageContent || '';
+        break;
+      case 'selection':
+        content = this.chat.preservedSelection || '';
+        break;
+      case 'none':
+        content = 'No context available';
+        break;
+    }
+    
+    const modal = document.createElement('div');
+    modal.className = 'context-modal';
+    modal.innerHTML = `
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Full Context Preview</h3>
+          <div class="modal-actions">
+            <button class="modal-copy">Copy</button>
+            <button class="modal-close">×</button>
+          </div>
+        </div>
+        <div class="modal-body">
+          <pre>${this.escapeHtml(content)}</pre>
+        </div>
+        <div class="modal-footer">
+          <span>${this.formatSize(content.length)} total</span>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    modal.querySelector('.modal-backdrop').onclick = () => modal.remove();
+    modal.querySelector('.modal-close').onclick = () => modal.remove();
+    modal.querySelector('.modal-copy').onclick = () => {
+      navigator.clipboard.writeText(content);
+      this.chat.showToast('Context copied!');
+    };
+    
+    setTimeout(() => modal.classList.add('visible'), 10);
+  }
+  
+  formatSize(chars) {
+    if (chars < 1000) return `${chars} chars`;
+    if (chars < 1000000) return `${(chars / 1000).toFixed(1)}K chars`;
+    return `${(chars / 1000000).toFixed(1)}M chars`;
+  }
+  
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+}
+
+// Voice Input Class
+class VoiceInput {
+  constructor(chatInstance) {
+    this.chat = chatInstance;
+    this.isListening = false;
+    this.recognition = null;
+    this.setupRecognition();
+    this.createVoiceButton();
+  }
+  
+  setupRecognition() {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+      console.log('Speech recognition not supported');
+      return;
+    }
+    
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    this.recognition = new SpeechRecognition();
+    
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
+    this.recognition.maxAlternatives = 1;
+    this.recognition.lang = navigator.language || 'en-US';
+    
+    this.recognition.onstart = () => {
+      this.isListening = true;
+      this.updateButton();
+      this.showVisualFeedback();
+    };
+    
+    this.recognition.onresult = (event) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript + ' ';
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      
+      if (finalTranscript) {
+        this.chat.userInput.value += finalTranscript;
+        this.chat.adjustTextareaHeight();
+      }
+      
+      this.showInterimResults(interimTranscript);
+      this.autoPunctuate();
+    };
+    
+    this.recognition.onerror = (event) => {
+      console.error('Speech recognition error:', event.error);
+      this.stopListening();
+      
+      if (event.error === 'no-speech') {
+        this.chat.showToast('No speech detected. Try again.', 'warning');
+      } else if (event.error === 'not-allowed') {
+        this.chat.showToast('Microphone permission denied', 'error');
+      }
+    };
+    
+    this.recognition.onend = () => {
+      if (this.isListening) {
+        this.recognition.start();
+      } else {
+        this.updateButton();
+        this.hideVisualFeedback();
+      }
+    };
+  }
+  
+  createVoiceButton() {
+    this.button = document.createElement('button');
+    this.button.className = 'voice-input-btn';
+    this.button.innerHTML = `
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+        <line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+    `;
+    this.button.title = 'Voice input (click or hold Space)';
+    
+    this.button.onclick = () => this.toggleListening();
+    
+    const sendBtn = this.chat.sidebar.querySelector('#send-btn');
+    sendBtn.before(this.button);
+    
+    this.setupKeyboardShortcut();
+  }
+  
+  setupKeyboardShortcut() {
+    let spaceHeld = false;
+    
+    document.addEventListener('keydown', (e) => {
+      if (!this.chat.isVisible || document.activeElement === this.chat.userInput) {
+        return;
+      }
+      
+      if (e.code === 'Space' && !spaceHeld) {
+        spaceHeld = true;
+        e.preventDefault();
+        this.startListening();
+      }
+    });
+    
+    document.addEventListener('keyup', (e) => {
+      if (e.code === 'Space' && spaceHeld) {
+        spaceHeld = false;
+        e.preventDefault();
+        this.stopListening();
+        
+        if (this.chat.userInput.value.trim()) {
+          setTimeout(() => this.chat.sendMessage(), 100);
+        }
+      }
+    });
+  }
+  
+  toggleListening() {
+    if (this.isListening) {
+      this.stopListening();
+    } else {
+      this.startListening();
+    }
+  }
+  
+  startListening() {
+    if (!this.recognition) {
+      this.chat.showToast('Voice input not supported in this browser', 'error');
+      return;
+    }
+    
+    try {
+      this.recognition.start();
+    } catch (error) {
+      console.error('Failed to start recognition:', error);
+    }
+  }
+  
+  stopListening() {
+    this.isListening = false;
+    if (this.recognition) {
+      this.recognition.stop();
+    }
+  }
+  
+  updateButton() {
+    if (this.isListening) {
+      this.button.classList.add('listening');
+      this.button.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="12" cy="12" r="8"/>
+        </svg>
+      `;
+    } else {
+      this.button.classList.remove('listening');
+      this.button.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      `;
+    }
+  }
+  
+  showVisualFeedback() {
+    if (!this.waveform) {
+      this.waveform = document.createElement('div');
+      this.waveform.className = 'voice-waveform';
+      this.waveform.innerHTML = `
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+      `;
+      this.chat.sidebar.querySelector('.input-container').prepend(this.waveform);
+    }
+    this.waveform.classList.add('active');
+  }
+  
+  hideVisualFeedback() {
+    if (this.waveform) {
+      this.waveform.classList.remove('active');
+    }
+  }
+  
+  showInterimResults(text) {
+    if (!text) return;
+    
+    if (!this.interimDiv) {
+      this.interimDiv = document.createElement('div');
+      this.interimDiv.className = 'interim-transcript';
+      this.chat.userInput.parentElement.prepend(this.interimDiv);
+    }
+    
+    this.interimDiv.textContent = text;
+    this.interimDiv.style.display = 'block';
+  }
+  
+  autoPunctuate() {
+    let text = this.chat.userInput.value;
+    
+    if (text.trim() && !text.trim().match(/[.!?]$/)) {
+      if (text.toLowerCase().match(/^(what|where|when|why|how|who|which|whose|is|are|can|could|would|should|do|does|did)/)) {
+        text = text.trim() + '?';
+      } else {
+        text = text.trim() + '.';
+      }
+      this.chat.userInput.value = text;
+    }
+    
+    this.chat.userInput.value = this.chat.userInput.value.charAt(0).toUpperCase() + 
+                                 this.chat.userInput.value.slice(1);
+  }
+}
+
+// Session Manager Class
+class SessionManager {
+  constructor(chatInstance) {
+    this.chat = chatInstance;
+  }
+  
+  async createNewSession(template = null) {
+    if (this.chat.chatHistory.length > 0) {
+      await this.saveCurrentSession();
+    }
+    
+    this.chat.currentSessionId = this.generateSessionId();
+    this.chat.historyKey = `snn_chat_history_${this.chat.currentDomain}_${this.chat.currentSessionId}`;
+    this.chat.chatHistory = [];
+    
+    if (this.chat.chatMessages) {
+      this.chat.chatMessages.innerHTML = '';
+    }
+    
+    this.chat.showToast('✨ New chat started');
+  }
+  
+  async saveCurrentSession() {
+    if (this.chat.chatHistory.length === 0) return;
+    
+    if (!this.chat.currentSessionTitle) {
+      this.chat.currentSessionTitle = await this.generateTitle();
+    }
+    
+    const sessionData = {
+      domain: this.chat.currentDomain,
+      sessionId: this.chat.currentSessionId,
+      title: this.chat.currentSessionTitle,
+      lastUpdated: Date.now(),
+      messages: this.chat.chatHistory,
+      pageContext: {
+        title: this.chat.currentPageTitle,
+        url: this.chat.currentPageUrl
+      },
+      stats: {
+        messageCount: this.chat.chatHistory.length,
+        totalTokens: this.calculateTotalTokens()
+      }
+    };
+    
+    await chrome.storage.local.set({
+      [this.chat.historyKey]: sessionData
+    });
+  }
+  
+  async generateTitle() {
+    if (this.chat.chatHistory.length === 0) {
+      return 'New Chat';
+    }
+    
+    const firstMessage = this.chat.chatHistory[0].content;
+    let title = '';
+    
+    if (firstMessage.toLowerCase().includes('summarize')) {
+      title = '📝 Summary';
+    } else if (firstMessage.toLowerCase().includes('explain')) {
+      title = '💡 Explanation';
+    } else if (firstMessage.toLowerCase().includes('translate')) {
+      title = '🌐 Translation';
+    } else if (firstMessage.toLowerCase().includes('code') || firstMessage.toLowerCase().includes('bug')) {
+      title = '💻 Code Help';
+    } else if (firstMessage.toLowerCase().match(/how to|guide|tutorial/)) {
+      title = '📚 Tutorial';
+    } else {
+      if (this.chat.currentPageTitle && this.chat.currentPageTitle.length < 30) {
+        title = `💬 ${this.chat.currentPageTitle}`;
+      } else {
+        const words = firstMessage.split(' ').slice(0, 5).join(' ');
+        title = words.length > 40 ? words.substring(0, 40) + '...' : words;
+      }
+    }
+    
+    return title;
+  }
+  
+  calculateTotalTokens() {
+    return this.chat.chatHistory.reduce((sum, msg) => {
+      return sum + (msg.tokenUsage?.total_tokens || 0);
+    }, 0);
+  }
+  
+  generateSessionId() {
+    return Date.now().toString() + '_' + Math.random().toString(36).substring(2, 8);
   }
 }
 
