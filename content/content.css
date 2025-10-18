@@ -459,10 +459,27 @@
   flex-shrink: 0  ;
 }
 
+#ai-sidebar .input-header {
+  display: flex  ;
+  justify-content: space-between  ;
+  align-items: center  ;
+  margin-bottom: 8px  ;
+}
+
+#ai-sidebar .token-counter {
+  font-size: 11px  ;
+  color: var(--sidebar-button-text, #666)  ;
+  background: var(--sidebar-button-bg, #f8f9fa)  ;
+  border: 1px solid var(--sidebar-button-border, #e0e0e0)  ;
+  padding: 4px 8px  ;
+  border-radius: 6px  ;
+  font-weight: 500  ;
+  white-space: nowrap  ;
+}
+
 #ai-sidebar .input-actions {
   display: flex  ;
   gap: 8px  ;
-  margin-bottom: 8px  ;
 }
 
 #ai-sidebar .input-actions button {

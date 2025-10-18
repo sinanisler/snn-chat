@@ -19,6 +19,7 @@ class SNNChat {
     this.allHistoryKeys = [];
     this.isContentShifted = false;
     this.persistentStickyKey = `snn_sticky_mode_${this.currentDomain}`;
+    this.totalTokensUsed = 0; // Track total tokens used in current chat session
     
     this.init();
   }
@@ -197,6 +198,7 @@ class SNNChat {
       this.modelSettingsBtn = this.sidebar.querySelector('#model-settings-btn');
       this.pageContextIndicator = this.sidebar.querySelector('#page-context-indicator');
       this.stickyLeftBtn = this.sidebar.querySelector('#sticky-left-btn');
+      this.tokenCounter = this.sidebar.querySelector('#token-counter');
       
       // Overlay elements
       this.historyOverlay = this.sidebar.querySelector('#history-overlay');
@@ -1094,6 +1096,10 @@ class SNNChat {
       tokenInfo.textContent = `${totalTokens.toLocaleString()} tokens`;
       tokenInfo.title = `Prompt: ${tokenUsage.prompt_tokens || 0} tokens, Completion: ${tokenUsage.completion_tokens || 0} tokens`;
       messageDiv.appendChild(tokenInfo);
+      
+      // Update total tokens used in the session
+      this.totalTokensUsed += totalTokens;
+      this.updateTokenCounter();
     }
     
     // Check if message actions are enabled
@@ -1213,6 +1219,17 @@ class SNNChat {
     }, duration);
   }
 
+  updateTokenCounter() {
+    if (!this.tokenCounter) return;
+    
+    if (this.totalTokensUsed > 0) {
+      this.tokenCounter.textContent = `${this.totalTokensUsed.toLocaleString()} tokens`;
+      this.tokenCounter.style.display = 'block';
+    } else {
+      this.tokenCounter.style.display = 'none';
+    }
+  }
+
   addLoadingMessage() {
     if (!this.chatMessages) return;
 
@@ -1243,6 +1260,8 @@ class SNNChat {
     
     this.chatMessages.innerHTML = '';
     this.chatHistory = [];
+    this.totalTokensUsed = 0; // Reset token counter
+    this.updateTokenCounter();
     this.hideSelectionPreview();
     
     // Clear the current history but keep the saved one
@@ -1345,6 +1364,7 @@ class SNNChat {
     if (!this.chatMessages) return;
     
     this.chatMessages.innerHTML = '';
+    this.totalTokensUsed = 0; // Reset token counter before restoring
     
     for (let i = 0; i < this.chatHistory.length; i += 2) {
       const userMessage = this.chatHistory[i];
@@ -2383,6 +2403,8 @@ class SNNChat {
     this.currentSessionId = this.generateSessionId();
     this.historyKey = `snn_chat_history_${this.currentDomain}_${this.currentSessionId}`;
     this.chatHistory = [];
+    this.totalTokensUsed = 0; // Reset token counter for new session
+    this.updateTokenCounter();
     
     // Clear chat UI
     if (this.chatMessages) {
@@ -3201,6 +3223,8 @@ class SessionManager {
     this.chat.currentSessionId = this.generateSessionId();
     this.chat.historyKey = `snn_chat_history_${this.chat.currentDomain}_${this.chat.currentSessionId}`;
     this.chat.chatHistory = [];
+    this.chat.totalTokensUsed = 0; // Reset token counter for new session
+    this.chat.updateTokenCounter();
     
     if (this.chat.chatMessages) {
       this.chat.chatMessages.innerHTML = '';
