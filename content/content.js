@@ -44,11 +44,6 @@ class SNNChat {
       }
     }
     
-    if (settings.enableContextSwitcher !== false) {
-      this.contextManager = new ContextManager(this);
-      this.currentContextMode = 'page';
-    }
-    
     if (settings.enableVoiceInput !== false) {
       this.voiceInput = new VoiceInput(this);
     }
@@ -991,8 +986,7 @@ class SNNChat {
         return {
           enableStreaming: true,
           enableQuickActions: true,
-          enableVoiceInput: true,
-          enableContextSwitcher: true
+          enableVoiceInput: true
         };
       }
       
@@ -1002,8 +996,7 @@ class SNNChat {
             resolve({
               enableStreaming: true,
               enableQuickActions: true,
-              enableVoiceInput: true,
-              enableContextSwitcher: true
+              enableVoiceInput: true
             });
           } else {
             const settings = result.settings || {};
@@ -1011,7 +1004,6 @@ class SNNChat {
             if (settings.enableStreaming === undefined) settings.enableStreaming = true;
             if (settings.enableQuickActions === undefined) settings.enableQuickActions = true;
             if (settings.enableVoiceInput === undefined) settings.enableVoiceInput = true;
-            if (settings.enableContextSwitcher === undefined) settings.enableContextSwitcher = true;
             resolve(settings);
           }
         });
@@ -1020,8 +1012,7 @@ class SNNChat {
       return {
         enableStreaming: true,
         enableQuickActions: true,
-        enableVoiceInput: true,
-        enableContextSwitcher: true
+        enableVoiceInput: true
       };
     }
   }
@@ -1930,7 +1921,6 @@ class SNNChat {
     const enableMessageActions = this.sidebar.querySelector('#enable-message-actions');
     const enableQuickActions = this.sidebar.querySelector('#enable-quick-actions');
     const enableVoiceInput = this.sidebar.querySelector('#enable-voice-input');
-    const enableContextSwitcher = this.sidebar.querySelector('#enable-context-switcher');
     const enableAutoTitle = this.sidebar.querySelector('#enable-auto-title');
     
     // Set radio button for provider
@@ -1964,7 +1954,6 @@ class SNNChat {
     if (enableMessageActions) enableMessageActions.checked = settings.enableMessageActions !== false;
     if (enableQuickActions) enableQuickActions.checked = settings.enableQuickActions !== false;
     if (enableVoiceInput) enableVoiceInput.checked = settings.enableVoiceInput !== false;
-    if (enableContextSwitcher) enableContextSwitcher.checked = settings.enableContextSwitcher !== false;
     if (enableAutoTitle) enableAutoTitle.checked = settings.enableAutoTitle !== false;
     
     // Load shortcut settings
@@ -2227,7 +2216,6 @@ class SNNChat {
         enableMessageActions: this.sidebar.querySelector('#enable-message-actions')?.checked !== false,
         enableQuickActions: this.sidebar.querySelector('#enable-quick-actions')?.checked !== false,
         enableVoiceInput: this.sidebar.querySelector('#enable-voice-input')?.checked !== false,
-        enableContextSwitcher: this.sidebar.querySelector('#enable-context-switcher')?.checked !== false,
         enableAutoTitle: this.sidebar.querySelector('#enable-auto-title')?.checked !== false
       };
       
@@ -2839,207 +2827,6 @@ class SmartPrompts {
   
   hide() {
     this.promptsContainer.classList.remove('visible');
-  }
-}
-
-// Context Manager Class
-class ContextManager {
-  constructor(chatInstance) {
-    this.chat = chatInstance;
-    this.createContextPanel();
-  }
-  
-  createContextPanel() {
-    this.panel = document.createElement('div');
-    this.panel.className = 'context-panel';
-    this.panel.innerHTML = `
-      <div class="context-modes">
-        <button class="context-mode active" data-mode="page">
-          <div class="mode-icon">📄</div>
-          <div class="mode-info">
-            <div class="mode-title">Full Page</div>
-            <div class="mode-size">0 chars</div>
-          </div>
-          <div class="mode-indicator"></div>
-        </button>
-        
-        <button class="context-mode" data-mode="selection">
-          <div class="mode-icon">📝</div>
-          <div class="mode-info">
-            <div class="mode-title">Selection</div>
-            <div class="mode-size">0 chars</div>
-          </div>
-          <div class="mode-indicator"></div>
-        </button>
-        
-        <button class="context-mode" data-mode="none">
-          <div class="mode-icon">💭</div>
-          <div class="mode-info">
-            <div class="mode-title">No Context</div>
-            <div class="mode-size">General chat</div>
-          </div>
-          <div class="mode-indicator"></div>
-        </button>
-      </div>
-      
-      <div class="context-preview">
-        <div class="preview-header">
-          <span>Context Preview</span>
-          <button class="preview-expand">⛶</button>
-        </div>
-        <div class="preview-content"></div>
-      </div>
-    `;
-    
-    this.updateContextSizes();
-    this.setupEventListeners();
-    
-    const header = this.chat.sidebar.querySelector('.sidebar-header');
-    header.after(this.panel);
-    
-    return this.panel;
-  }
-  
-  setupEventListeners() {
-    this.panel.querySelectorAll('.context-mode').forEach(btn => {
-      btn.onclick = () => {
-        const mode = btn.dataset.mode;
-        this.switchMode(mode);
-      };
-    });
-    
-    this.panel.querySelector('.preview-expand').onclick = () => {
-      this.expandPreview();
-    };
-    
-    document.addEventListener('selectionchange', () => {
-      this.updateContextSizes();
-    });
-  }
-  
-  switchMode(mode) {
-    this.panel.querySelectorAll('.context-mode').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.mode === mode);
-    });
-    
-    switch(mode) {
-      case 'page':
-        this.chat.currentContextMode = 'page';
-        this.chat.clearSelection();
-        break;
-      case 'selection':
-        this.chat.currentContextMode = 'selection';
-        if (!this.chat.preservedSelection) {
-          this.chat.showToast('Please select some text first', 'info');
-        }
-        break;
-      case 'none':
-        this.chat.currentContextMode = 'none';
-        this.chat.clearSelection();
-        break;
-    }
-    
-    this.updatePreview();
-    this.chat.showToast(`Context: ${mode}`, 'success');
-  }
-  
-  updateContextSizes() {
-    const pageSize = this.chat.pageContent?.length || 0;
-    const selectionSize = this.chat.preservedSelection?.length || 0;
-    
-    const pageBtn = this.panel.querySelector('[data-mode="page"]');
-    pageBtn.querySelector('.mode-size').textContent = this.formatSize(pageSize);
-    
-    const selectionBtn = this.panel.querySelector('[data-mode="selection"]');
-    selectionBtn.querySelector('.mode-size').textContent = selectionSize > 0 ? 
-      this.formatSize(selectionSize) : 'No selection';
-    selectionBtn.classList.toggle('disabled', selectionSize === 0);
-    
-    this.updatePreview();
-  }
-  
-  updatePreview() {
-    const previewContent = this.panel.querySelector('.preview-content');
-    const mode = this.chat.currentContextMode || 'page';
-    
-    let content = '';
-    switch(mode) {
-      case 'page':
-        content = this.chat.pageContent || 'Page content not yet extracted...';
-        break;
-      case 'selection':
-        content = this.chat.preservedSelection || 'No text selected';
-        break;
-      case 'none':
-        content = 'No context - general conversation mode';
-        break;
-    }
-    
-    const truncated = content.length > 300 ? 
-      content.substring(0, 300) + '...' : content;
-    
-    previewContent.textContent = truncated;
-  }
-  
-  expandPreview() {
-    const mode = this.chat.currentContextMode || 'page';
-    let content = '';
-    
-    switch(mode) {
-      case 'page':
-        content = this.chat.pageContent || '';
-        break;
-      case 'selection':
-        content = this.chat.preservedSelection || '';
-        break;
-      case 'none':
-        content = 'No context available';
-        break;
-    }
-    
-    const modal = document.createElement('div');
-    modal.className = 'context-modal';
-    modal.innerHTML = `
-      <div class="modal-backdrop"></div>
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>Full Context Preview</h3>
-          <div class="modal-actions">
-            <button class="modal-copy">Copy</button>
-            <button class="modal-close">×</button>
-          </div>
-        </div>
-        <div class="modal-body">
-          <pre>${this.escapeHtml(content)}</pre>
-        </div>
-        <div class="modal-footer">
-          <span>${this.formatSize(content.length)} total</span>
-        </div>
-      </div>
-    `;
-    
-    document.body.appendChild(modal);
-    
-    modal.querySelector('.modal-backdrop').onclick = () => modal.remove();
-    modal.querySelector('.modal-close').onclick = () => modal.remove();
-    modal.querySelector('.modal-copy').onclick = () => {
-      navigator.clipboard.writeText(content);
-      this.chat.showToast('Context copied!');
-    };
-    
-    setTimeout(() => modal.classList.add('visible'), 10);
-  }
-  
-  formatSize(chars) {
-    if (chars < 1000) return `${chars} chars`;
-    if (chars < 1000000) return `${(chars / 1000).toFixed(1)}K chars`;
-    return `${(chars / 1000000).toFixed(1)}M chars`;
-  }
-  
-  escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
   }
 }
 
