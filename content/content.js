@@ -2921,10 +2921,12 @@ class VoiceInput {
       if (finalTranscript) {
         this.chat.userInput.value += finalTranscript;
         this.chat.adjustTextareaHeight();
+        this.hideInterimResults();
       }
       
-      this.showInterimResults(interimTranscript);
-      this.autoPunctuate();
+      if (interimTranscript) {
+        this.showInterimResults(interimTranscript);
+      }
     };
     
     this.recognition.onerror = (event) => {
@@ -2940,10 +2942,16 @@ class VoiceInput {
     
     this.recognition.onend = () => {
       if (this.isListening) {
-        this.recognition.start();
+        try {
+          this.recognition.start();
+        } catch (error) {
+          console.error('Failed to restart recognition:', error);
+          this.stopListening();
+        }
       } else {
         this.updateButton();
         this.hideVisualFeedback();
+        this.finalizeInterimText();
       }
     };
   }
@@ -3023,6 +3031,11 @@ class VoiceInput {
     if (this.recognition) {
       this.recognition.stop();
     }
+    // Ensure cleanup happens
+    setTimeout(() => {
+      this.hideVisualFeedback();
+      this.finalizeInterimText();
+    }, 100);
   }
   
   updateButton() {
@@ -3069,32 +3082,60 @@ class VoiceInput {
   }
   
   showInterimResults(text) {
-    if (!text) return;
+    if (!text) {
+      this.hideInterimResults();
+      return;
+    }
     
     if (!this.interimDiv) {
       this.interimDiv = document.createElement('div');
       this.interimDiv.className = 'interim-transcript';
-      this.chat.userInput.parentElement.prepend(this.interimDiv);
+      // Insert before the input wrapper (above the textarea), not inside it
+      const inputContainer = this.chat.sidebar.querySelector('.input-container');
+      const inputWrapper = inputContainer.querySelector('.input-wrapper');
+      inputContainer.insertBefore(this.interimDiv, inputWrapper);
     }
     
     this.interimDiv.textContent = text;
     this.interimDiv.style.display = 'block';
   }
   
+  hideInterimResults() {
+    if (this.interimDiv) {
+      this.interimDiv.style.display = 'none';
+      this.interimDiv.textContent = '';
+    }
+  }
+  
+  finalizeInterimText() {
+    // If there's interim text when speech ends abruptly, add it to textarea
+    if (this.interimDiv && this.interimDiv.textContent.trim()) {
+      const interimText = this.interimDiv.textContent.trim();
+      this.chat.userInput.value += interimText + ' ';
+      this.chat.adjustTextareaHeight();
+      this.autoPunctuate();
+    }
+    this.hideInterimResults();
+  }
+  
   autoPunctuate() {
-    let text = this.chat.userInput.value;
+    let text = this.chat.userInput.value.trim();
     
-    if (text.trim() && !text.trim().match(/[.!?]$/)) {
+    if (!text) return;
+    
+    // Only punctuate if there's no ending punctuation
+    if (!text.match(/[.!?]$/)) {
       if (text.toLowerCase().match(/^(what|where|when|why|how|who|which|whose|is|are|can|could|would|should|do|does|did)/)) {
-        text = text.trim() + '?';
+        text = text + '?';
       } else {
-        text = text.trim() + '.';
+        text = text + '.';
       }
-      this.chat.userInput.value = text;
     }
     
-    this.chat.userInput.value = this.chat.userInput.value.charAt(0).toUpperCase() + 
-                                 this.chat.userInput.value.slice(1);
+    // Capitalize first letter
+    text = text.charAt(0).toUpperCase() + text.slice(1);
+    
+    this.chat.userInput.value = text;
   }
 }
 
