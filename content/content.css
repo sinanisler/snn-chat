@@ -1490,6 +1490,7 @@
   align-items: center  ;
   justify-content: center  ;
   height:70px;
+  color:white;
 }
 
 #ai-sidebar .voice-input-btn:hover {

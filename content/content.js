@@ -1046,7 +1046,7 @@ class SNNChat {
     }
   }
 
-  addMessageToChat(sender, content, pageContext = null, tokenUsage = null) {
+  async addMessageToChat(sender, content, pageContext = null, tokenUsage = null) {
     if (!this.chatMessages) return;
 
     const messageDiv = document.createElement('div');
@@ -1084,6 +1084,8 @@ class SNNChat {
       messageContent.textContent = content;
     }
     
+    messageDiv.appendChild(messageContent);
+    
     // Add token usage indicator for AI messages
     if (sender === 'ai' && tokenUsage && (tokenUsage.prompt_tokens > 0 || tokenUsage.completion_tokens > 0)) {
       const totalTokens = (tokenUsage.prompt_tokens || 0) + (tokenUsage.completion_tokens || 0);
@@ -1094,14 +1096,55 @@ class SNNChat {
       messageDiv.appendChild(tokenInfo);
     }
     
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-btn';
-    copyBtn.textContent = 'Copy';
-    copyBtn.title = 'Copy message';
-    copyBtn.addEventListener('click', () => this.copyToClipboard(content));
+    // Check if message actions are enabled
+    const settings = await this.getSettings();
     
-    messageDiv.appendChild(messageContent);
-    messageDiv.appendChild(copyBtn);
+    if (sender === 'ai' && settings.enableMessageActions !== false) {
+      // Add message actions for AI messages
+      const actionsDiv = document.createElement('div');
+      actionsDiv.className = 'message-actions';
+      actionsDiv.innerHTML = `
+        <button class="action-btn regenerate" title="Regenerate response">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/>
+          </svg>
+        </button>
+        <button class="action-btn copy" title="Copy message">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+        <button class="action-btn bookmark" title="Save this message">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+        <button class="action-btn speak" title="Read aloud">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+          </svg>
+        </button>
+      `;
+      messageDiv.appendChild(actionsDiv);
+      
+      // Setup action button handlers - need to store the original user message for regenerate
+      // We'll find the previous user message from chat history
+      const userMessageIndex = this.chatHistory.length - 2;
+      const originalUserMessage = userMessageIndex >= 0 ? this.chatHistory[userMessageIndex]?.content : '';
+      const contextForRegenerate = this.chatHistory[userMessageIndex]?.selectionContext || this.pageContent;
+      
+      this.setupMessageActions(messageDiv, originalUserMessage, contextForRegenerate);
+    } else {
+      // Fall back to simple copy button for non-AI messages or when actions are disabled
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'copy-btn';
+      copyBtn.textContent = 'Copy';
+      copyBtn.title = 'Copy message';
+      copyBtn.addEventListener('click', () => this.copyToClipboard(content));
+      messageDiv.appendChild(copyBtn);
+    }
     
     this.chatMessages.appendChild(messageDiv);
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
@@ -1266,7 +1309,7 @@ class SNNChat {
       
       if (history && history.messages) {
         this.chatHistory = history.messages;
-        this.restoreChatMessages();
+        await this.restoreChatMessages();
       }
     } catch (error) {
       //  console.log('Failed to load chat history:', error);
@@ -1298,7 +1341,7 @@ class SNNChat {
     }
   }
 
-  restoreChatMessages() {
+  async restoreChatMessages() {
     if (!this.chatMessages) return;
     
     this.chatMessages.innerHTML = '';
@@ -1309,11 +1352,11 @@ class SNNChat {
       
       if (userMessage && userMessage.role === 'user') {
         // Restore user message with its original page context
-        this.addMessageToChat('user', userMessage.content, userMessage.pageContext);
+        await this.addMessageToChat('user', userMessage.content, userMessage.pageContext);
       }
       
       if (aiMessage && aiMessage.role === 'assistant') {
-        this.addMessageToChat('ai', aiMessage.content, null, aiMessage.tokenUsage);
+        await this.addMessageToChat('ai', aiMessage.content, null, aiMessage.tokenUsage);
       }
     }
   }
@@ -2321,7 +2364,7 @@ class SNNChat {
         this.currentSessionId = mostRecent.sessionId;
         this.historyKey = mostRecent.key;
         this.chatHistory = mostRecent.data.messages;
-        this.restoreChatMessages();
+        await this.restoreChatMessages();
       }
       // If no existing sessions, we keep the new session ID generated in constructor
       
@@ -2616,6 +2659,11 @@ class SNNChat {
     const copyBtn = messageDiv.querySelector('.copy');
     const bookmarkBtn = messageDiv.querySelector('.bookmark');
     const speakBtn = messageDiv.querySelector('.speak');
+    
+    // Add null checks to prevent errors if buttons don't exist
+    if (!regenerateBtn || !copyBtn || !bookmarkBtn || !speakBtn) {
+      return;
+    }
     
     regenerateBtn.onclick = async () => {
       regenerateBtn.disabled = true;
