@@ -185,6 +185,8 @@ class SNNChat {
       tempDiv.innerHTML = htmlContent;
       
       this.sidebar = tempDiv.firstElementChild;
+      // Add a data attribute for easier identification during content extraction
+      this.sidebar.setAttribute('data-snn-extension', 'true');
       document.body.appendChild(this.sidebar);
       
       this.chatMessages = this.sidebar.querySelector('#chat-messages');
@@ -421,6 +423,54 @@ class SNNChat {
     this.pageContextIndicator.classList.add('hidden');
   }
 
+  // Helper method to check if an element is part of our extension's sidebar
+  isSidebarElement(element) {
+    if (!element) return false;
+    
+    // Check if it's the sidebar itself
+    if (element.id === 'ai-sidebar' || element.getAttribute('data-snn-extension') === 'true') {
+      return true;
+    }
+    
+    // Check if it's inside the sidebar
+    const parent = element.closest('#ai-sidebar, [data-snn-extension="true"]');
+    return parent !== null;
+  }
+
+  // Helper method to detect if text looks like code or markup
+  looksLikeCode(text) {
+    if (!text || text.length < 10) return false;
+    
+    // Check for common code patterns
+    const codePatterns = [
+      /\{[\s\S]*:[^\}]*\}/,  // JSON-like objects
+      /function\s*\(/,        // Function declarations
+      /const\s+\w+\s*=/,      // Const declarations
+      /let\s+\w+\s*=/,        // Let declarations
+      /var\s+\w+\s*=/,        // Var declarations
+      /=>\s*\{/,              // Arrow functions
+      /import\s+.*from/,      // ES6 imports
+      /class\s+\w+/,          // Class declarations
+      /<\w+[^>]*>/,           // HTML tags
+      /\}\s*\{/,              // Curly braces patterns
+      /;\s*$/m,               // Statements ending with semicolons
+    ];
+    
+    // Count how many code patterns match
+    let matches = 0;
+    for (const pattern of codePatterns) {
+      if (pattern.test(text)) matches++;
+      if (matches >= 2) return true; // If 2+ patterns match, it's likely code
+    }
+    
+    // Check character distribution - code has more special chars
+    const specialChars = (text.match(/[{}\[\]();:=><]/g) || []).length;
+    const totalChars = text.length;
+    if (specialChars / totalChars > 0.15) return true; // >15% special chars
+    
+    return false;
+  }
+
   extractPageContent() {
     const title = document.title;
     const url = window.location.href;
@@ -566,6 +616,12 @@ class SNNChat {
         for (const element of elements) {
           // Skip if already processed
           if (processedElements.has(element)) continue;
+          
+          // Skip if it's our sidebar
+          if (this.isSidebarElement(element)) {
+            continue;
+          }
+          
           processedElements.add(element);
           
           // Skip if hidden
@@ -574,15 +630,15 @@ class SNNChat {
             continue;
           }
           
-          // Skip if it's our sidebar or contains it
-          if (element.id === 'ai-sidebar' || element.closest('#ai-sidebar')) {
-            continue;
-          }
-          
           let text = element.textContent?.trim();
           if (text && text.length > 5) {
             // Clean up the text
             text = text.replace(/\s+/g, ' ').trim();
+            
+            // Skip text that looks like code or CSS
+            if (this.looksLikeCode(text)) {
+              continue;
+            }
             
             // Add text if it's substantial and not already included
             if (text.length > 20 && !content.includes(text.substring(0, 50))) {
@@ -649,12 +705,14 @@ class SNNChat {
       document.body,
       NodeFilter.SHOW_TEXT,
       {
-        acceptNode: function(node) {
+        acceptNode: (node) => {
           const parent = node.parentElement;
           if (!parent) return NodeFilter.FILTER_REJECT;
           
-          // Skip our sidebar
-          if (parent.closest('#ai-sidebar')) return NodeFilter.FILTER_REJECT;
+          // Skip our sidebar - use the helper method
+          if (this.isSidebarElement(parent)) {
+            return NodeFilter.FILTER_REJECT;
+          }
           
           const style = window.getComputedStyle(parent);
           if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
@@ -666,7 +724,7 @@ class SNNChat {
           
           // Skip script, style, nav, header, footer content
           const tagName = parent.tagName.toLowerCase();
-          if (['script', 'style', 'nav', 'header', 'footer', 'aside', 'button'].includes(tagName)) {
+          if (['script', 'style', 'nav', 'header', 'footer', 'aside', 'button', 'noscript', 'svg', 'path'].includes(tagName)) {
             return NodeFilter.FILTER_REJECT;
           }
           
@@ -680,7 +738,7 @@ class SNNChat {
     let currentText = '';
     while (node = walker.nextNode()) {
       const text = node.textContent.trim();
-      if (text && text.length > 3) {
+      if (text && text.length > 3 && !this.looksLikeCode(text)) {
         textNodes.push(text);
         currentText = textNodes.join(' ');
         if (this.countWords(currentText) >= wordLimit) {
@@ -699,11 +757,18 @@ class SNNChat {
     
     // Simply get all text from body, excluding our sidebar
     const bodyClone = document.body.cloneNode(true);
+    
+    // Remove our sidebar from the clone
     const sidebar = bodyClone.querySelector('#ai-sidebar');
     if (sidebar) sidebar.remove();
     
-    const scripts = bodyClone.querySelectorAll('script, style, nav, header, footer');
-    scripts.forEach(el => el.remove());
+    // Also remove by data attribute
+    const sidebarByAttr = bodyClone.querySelector('[data-snn-extension="true"]');
+    if (sidebarByAttr) sidebarByAttr.remove();
+    
+    // Remove scripts, styles, and other non-content elements
+    const unwantedElements = bodyClone.querySelectorAll('script, style, nav, header, footer, noscript, svg, iframe');
+    unwantedElements.forEach(el => el.remove());
     
     let text = bodyClone.textContent || bodyClone.innerText || '';
     text = text.replace(/\s+/g, ' ').trim();
@@ -716,11 +781,15 @@ class SNNChat {
     const settings = await this.getSettings();
     const wordLimit = settings.contentLimit || 15000;
     
-    const allElements = document.querySelectorAll('*:not(#ai-sidebar):not(#ai-sidebar *)');
+    // Get all elements but exclude our sidebar
+    const allElements = Array.from(document.querySelectorAll('*')).filter(el => !this.isSidebarElement(el));
     const texts = [];
     
     for (const element of allElements) {
-      if (['script', 'style', 'nav', 'header', 'footer', 'aside', 'button'].includes(element.tagName.toLowerCase())) {
+      const tagName = element.tagName.toLowerCase();
+      
+      // Skip non-content elements
+      if (['script', 'style', 'nav', 'header', 'footer', 'aside', 'button', 'noscript', 'svg', 'path', 'iframe'].includes(tagName)) {
         continue;
       }
       
@@ -736,7 +805,7 @@ class SNNChat {
         .join(' ')
         .trim();
       
-      if (text && text.length > 10) {
+      if (text && text.length > 10 && !this.looksLikeCode(text)) {
         texts.push(text);
       }
       
