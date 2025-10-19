@@ -1601,6 +1601,7 @@
 /* Settings Tabs */
 #ai-sidebar .settings-tabs {
   display: flex  ;
+  flex-wrap:wrap;
   gap: 4px  ;
   margin-bottom: 16px  ;
   border-bottom: 2px solid var(--sidebar-border, #e0e0e0)  ;
