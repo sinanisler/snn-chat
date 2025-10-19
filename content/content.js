@@ -1,6 +1,6 @@
 class SNNChat {
   constructor() {
-    // Check if extension context is valid before proceeding
+    // Check if extension context is valid before proceeding 
     if (!chrome?.runtime?.id) {
       //  console.log('Extension context invalid, skipping initialization');
       return;
