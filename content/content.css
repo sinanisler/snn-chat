@@ -19,6 +19,7 @@
   overflow: hidden  ;
   --chat-font-size: 15px;
   pointer-events: auto  ;
+  font-family:Arial, Helvetica, sans-serif;
 }
 
 #ai-sidebar.theme-light {
