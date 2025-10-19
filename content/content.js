@@ -1024,7 +1024,8 @@ class SNNChat {
         return {
           enableStreaming: true,
           enableQuickActions: true,
-          enableVoiceInput: true
+          enableVoiceInput: true,
+          quickActions: this.getDefaultQuickActions()
         };
       }
       
@@ -1034,7 +1035,8 @@ class SNNChat {
             resolve({
               enableStreaming: true,
               enableQuickActions: true,
-              enableVoiceInput: true
+              enableVoiceInput: true,
+              quickActions: this.getDefaultQuickActions()
             });
           } else {
             const settings = result.settings || {};
@@ -1042,6 +1044,9 @@ class SNNChat {
             if (settings.enableStreaming === undefined) settings.enableStreaming = true;
             if (settings.enableQuickActions === undefined) settings.enableQuickActions = true;
             if (settings.enableVoiceInput === undefined) settings.enableVoiceInput = true;
+            if (!settings.quickActions || settings.quickActions.length === 0) {
+              settings.quickActions = this.getDefaultQuickActions();
+            }
             resolve(settings);
           }
         });
@@ -1050,9 +1055,21 @@ class SNNChat {
       return {
         enableStreaming: true,
         enableQuickActions: true,
-        enableVoiceInput: true
+        enableVoiceInput: true,
+        quickActions: this.getDefaultQuickActions()
       };
     }
+  }
+
+  getDefaultQuickActions() {
+    return [
+      { icon: '📝', text: 'Summarize page', prompt: 'Summarize this webpage' },
+      { icon: '🔍', text: 'Key information', prompt: 'Extract the key information from this page' },
+      { icon: '❓', text: 'Ask about page', prompt: 'What is this page about?' },
+      { icon: '✨', text: 'Explain simply', prompt: 'Explain this in simple terms' },
+      { icon: '📋', text: 'Bullet points', prompt: 'Summarize this in bullet points' },
+      { icon: '🌐', text: 'Translate', prompt: 'Translate this to Spanish' }
+    ];
   }
 
   async addMessageToChat(sender, content, pageContext = null, tokenUsage = null) {
@@ -1431,11 +1448,15 @@ class SNNChat {
     const shortcutKey3 = this.sidebar.querySelector('#shortcut-key3');
     const resetShortcutBtn = this.sidebar.querySelector('#reset-shortcut');
     const exportChatHistoryBtn = this.sidebar.querySelector('#export-chat-history');
+    const addQuickActionBtn = this.sidebar.querySelector('#add-quick-action');
+    const resetQuickActionsBtn = this.sidebar.querySelector('#reset-quick-actions');
     
     closeSettingsBtn?.addEventListener('click', () => this.closeSettingsOverlay());
     saveSettingsBtn?.addEventListener('click', () => this.saveSettings());
     clearAllHistorySettingsBtn?.addEventListener('click', () => this.clearAllHistory());
     exportChatHistoryBtn?.addEventListener('click', () => this.exportChatHistory());
+    addQuickActionBtn?.addEventListener('click', () => this.addQuickAction());
+    resetQuickActionsBtn?.addEventListener('click', () => this.resetQuickActions());
     
     // Provider radio button changes
     providerRadios.forEach(radio => {
@@ -2068,8 +2089,105 @@ class SNNChat {
     this.savedOpenaiModel = settings.openaiModel;
     this.savedOpenrouterModel = settings.openrouterModel;
     
+    // Load quick actions
+    this.loadQuickActionsToForm(settings.quickActions || this.getDefaultQuickActions());
+    
     // Load models if API keys are present
     await this.loadInitialModels();
+  }
+
+  loadQuickActionsToForm(quickActions) {
+    const quickActionsList = this.sidebar.querySelector('#quick-actions-list');
+    if (!quickActionsList) return;
+    
+    quickActionsList.innerHTML = '';
+    
+    quickActions.forEach((action, index) => {
+      const actionItem = document.createElement('div');
+      actionItem.className = 'quick-action-item';
+      actionItem.innerHTML = `
+        <div class="quick-action-inputs">
+          <input type="text" class="quick-action-icon" value="${this.escapeHtmlAttr(action.icon)}" placeholder="🔥" maxlength="2">
+          <input type="text" class="quick-action-text" value="${this.escapeHtmlAttr(action.text)}" placeholder="Action name">
+          <input type="text" class="quick-action-prompt" value="${this.escapeHtmlAttr(action.prompt)}" placeholder="Prompt text">
+          <button class="quick-action-remove" data-index="${index}" title="Remove">×</button>
+        </div>
+      `;
+      quickActionsList.appendChild(actionItem);
+    });
+    
+    // Add event listeners for remove buttons
+    quickActionsList.querySelectorAll('.quick-action-remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const item = e.target.closest('.quick-action-item');
+        item.remove();
+      });
+    });
+  }
+
+  escapeHtmlAttr(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  addQuickAction() {
+    const quickActionsList = this.sidebar.querySelector('#quick-actions-list');
+    if (!quickActionsList) return;
+    
+    const actionItem = document.createElement('div');
+    actionItem.className = 'quick-action-item';
+    actionItem.innerHTML = `
+      <div class="quick-action-inputs">
+        <input type="text" class="quick-action-icon" value="✨" placeholder="🔥" maxlength="2">
+        <input type="text" class="quick-action-text" value="" placeholder="Action name">
+        <input type="text" class="quick-action-prompt" value="" placeholder="Prompt text">
+        <button class="quick-action-remove" title="Remove">×</button>
+      </div>
+    `;
+    quickActionsList.appendChild(actionItem);
+    
+    // Add event listener for remove button
+    actionItem.querySelector('.quick-action-remove').addEventListener('click', () => {
+      actionItem.remove();
+    });
+    
+    // Focus on the text input
+    actionItem.querySelector('.quick-action-text').focus();
+  }
+
+  resetQuickActions() {
+    if (!confirm('Reset all quick actions to defaults? This will remove your custom actions.')) {
+      return;
+    }
+    
+    const defaultActions = this.getDefaultQuickActions();
+    this.loadQuickActionsToForm(defaultActions);
+    this.showToast('Quick actions reset to defaults');
+  }
+
+  getQuickActionsFromForm() {
+    const quickActionsList = this.sidebar.querySelector('#quick-actions-list');
+    if (!quickActionsList) return [];
+    
+    const actions = [];
+    const items = quickActionsList.querySelectorAll('.quick-action-item');
+    
+    items.forEach(item => {
+      const icon = item.querySelector('.quick-action-icon').value.trim();
+      const text = item.querySelector('.quick-action-text').value.trim();
+      const prompt = item.querySelector('.quick-action-prompt').value.trim();
+      
+      if (text && prompt) {
+        actions.push({
+          icon: icon || '✨',
+          text: text,
+          prompt: prompt
+        });
+      }
+    });
+    
+    return actions;
   }
   
   async loadInitialModels() {
@@ -2317,7 +2435,9 @@ class SNNChat {
         enableMessageActions: this.sidebar.querySelector('#enable-message-actions')?.checked !== false,
         enableQuickActions: this.sidebar.querySelector('#enable-quick-actions')?.checked !== false,
         enableVoiceInput: this.sidebar.querySelector('#enable-voice-input')?.checked !== false,
-        enableAutoTitle: this.sidebar.querySelector('#enable-auto-title')?.checked !== false
+        enableAutoTitle: this.sidebar.querySelector('#enable-auto-title')?.checked !== false,
+        // Quick actions
+        quickActions: this.getQuickActionsFromForm()
       };
       
       if (chrome?.storage?.sync) {
@@ -2329,6 +2449,11 @@ class SNNChat {
       }
       
       await this.applySettings();
+      
+      // Refresh quick actions if visible
+      if (this.smartPrompts && this.smartPrompts.promptsContainer.classList.contains('visible')) {
+        await this.smartPrompts.render();
+      }
       
       this.closeSettingsOverlay();
       this.showToast('Settings saved successfully!');
@@ -2416,6 +2541,12 @@ class SNNChat {
     // Clear chat UI
     if (this.chatMessages) {
       this.chatMessages.innerHTML = '';
+    }
+    
+    // Show quick actions if enabled
+    const settings = await this.getSettings();
+    if (settings.enableQuickActions !== false && this.smartPrompts) {
+      this.smartPrompts.show();
     }
     
     this.showToast('New chat session started');
@@ -2829,61 +2960,28 @@ class SmartPrompts {
     return container;
   }
   
-  getContextualPrompts() {
-    const hasSelection = !!this.chat.preservedSelection;
-    const pageType = this.detectPageType();
+  async getContextualPrompts() {
+    // Get custom quick actions from settings
+    const settings = await this.chat.getSettings();
+    const customActions = settings.quickActions || this.chat.getDefaultQuickActions();
     
-    if (hasSelection) {
-      return [
+    // If user has text selected, show selection-specific prompts
+    const hasSelection = !!this.chat.preservedSelection;
+    
+    if (hasSelection && customActions.length > 0) {
+      // Filter actions that work well with selections or return default selection actions
+      const selectionActions = [
         { icon: '✨', text: 'Explain this', prompt: 'Explain the selected text in simple terms' },
         { icon: '🔄', text: 'Rewrite', prompt: 'Rewrite this text to be more clear and concise' },
-        { icon: '📋', text: 'Summarize', prompt: 'Summarize this in bullet points' },
-        { icon: '🌐', text: 'Translate', prompt: 'Translate this to Spanish' },
-        { icon: '❓', text: 'Questions', prompt: 'Generate 3 questions about this text' }
+        { icon: '�', text: 'Summarize', prompt: 'Summarize this in bullet points' },
+        { icon: '🌐', text: 'Translate', prompt: 'Translate this to Spanish' }
       ];
+      // Also include custom actions
+      return [...selectionActions, ...customActions.slice(0, 2)];
     }
     
-    switch(pageType) {
-      case 'article':
-        return [
-          { icon: '📝', text: 'Summarize article', prompt: 'Summarize this article in 3 paragraphs' },
-          { icon: '🎯', text: 'Key takeaways', prompt: 'What are the 5 key takeaways from this article?' },
-          { icon: '🔍', text: 'Find bias', prompt: 'Analyze any potential bias in this article' },
-          { icon: '💡', text: 'Related topics', prompt: 'What related topics should I explore?' }
-        ];
-        
-      case 'code':
-        return [
-          { icon: '🐛', text: 'Find bugs', prompt: 'Review this code for bugs and issues' },
-          { icon: '⚡', text: 'Optimize', prompt: 'How can this code be optimized?' },
-          { icon: '📚', text: 'Explain code', prompt: 'Explain what this code does step by step' },
-          { icon: '✅', text: 'Best practices', prompt: 'Check this code against best practices' }
-        ];
-        
-      case 'product':
-        return [
-          { icon: '⭐', text: 'Pros & cons', prompt: 'List the pros and cons of this product' },
-          { icon: '💰', text: 'Compare prices', prompt: 'Compare this with similar products' },
-          { icon: '📊', text: 'Review summary', prompt: 'Summarize the customer reviews' },
-          { icon: '🤔', text: 'Should I buy?', prompt: 'Based on this page, should I buy this product?' }
-        ];
-        
-      case 'documentation':
-        return [
-          { icon: '🎓', text: 'Learn basics', prompt: 'Explain the basics of what this documentation covers' },
-          { icon: '💻', text: 'Code example', prompt: 'Show me a code example using this' },
-          { icon: '🔗', text: 'Related docs', prompt: 'What other docs should I read related to this?' },
-          { icon: '🚀', text: 'Quick start', prompt: 'Create a quick start guide from this documentation' }
-        ];
-        
-      default:
-        return [
-          { icon: '📄', text: 'Summarize page', prompt: 'Summarize this webpage' },
-          { icon: '🔍', text: 'Key information', prompt: 'Extract the key information from this page' },
-          { icon: '❓', text: 'Ask about page', prompt: 'What is this page about?' },
-          { icon: '✏️', text: 'Custom prompt', prompt: '' }
-        ];
-    }
+    // Return custom actions for normal page context
+    return customActions;
   }
   
   detectPageType() {
@@ -2914,8 +3012,8 @@ class SmartPrompts {
     return 'general';
   }
   
-  render() {
-    const prompts = this.getContextualPrompts();
+  async render() {
+    const prompts = await this.getContextualPrompts();
     
     this.promptsContainer.innerHTML = `
       <div class="prompts-header">
@@ -2945,10 +3043,13 @@ class SmartPrompts {
       };
     });
     
-    this.promptsContainer.querySelector('.prompts-refresh').onclick = () => {
-      this.render();
-      this.chat.showToast('Suggestions refreshed');
-    };
+    const refreshBtn = this.promptsContainer.querySelector('.prompts-refresh');
+    if (refreshBtn) {
+      refreshBtn.onclick = () => {
+        this.render();
+        this.chat.showToast('Suggestions refreshed');
+      };
+    }
     
     return this.promptsContainer;
   }
@@ -2959,12 +3060,12 @@ class SmartPrompts {
     return div.innerHTML;
   }
   
-  show() {
+  async show() {
     if (!this.promptsContainer.parentElement) {
       const inputContainer = this.chat.sidebar.querySelector('.input-container');
       inputContainer.before(this.promptsContainer);
     }
-    this.render();
+    await this.render();
     this.promptsContainer.classList.add('visible');
   }
   
