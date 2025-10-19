@@ -87,7 +87,7 @@ The extension provides comprehensive settings accessible directly from the sideb
 ### Chat Configuration
 - **Max Tokens**: Response length limit (100-4000)
 - **Temperature**: AI creativity level (0.0-1.0)
-- **Content Limit**: Page content extraction limit (1000-100000 characters)
+- **Content Limit**: Page content extraction limit (1000-100000 words)
 - **System Prompt**: Customize AI behavior with custom instructions
 
 ### Interface Customization

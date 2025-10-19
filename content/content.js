@@ -556,7 +556,7 @@ class SNNChat {
   async extractBySelectors(selectors) {
     let content = '';
     const settings = await this.getSettings();
-    const contentLimit = settings.contentLimit || 15000;
+    const wordLimit = settings.contentLimit || 15000;
     const processedElements = new Set(); // Avoid duplicates
     
     for (const selector of selectors) {
@@ -588,9 +588,9 @@ class SNNChat {
             if (text.length > 20 && !content.includes(text.substring(0, 50))) {
               content += text + ' ';
               
-              // Break if we've hit the limit
-              if (content.length > contentLimit) {
-                return content.substring(0, contentLimit);
+              // Break if we've hit the word limit
+              if (this.countWords(content) > wordLimit) {
+                return this.truncateToWordLimit(content, wordLimit);
               }
             }
           }
@@ -600,7 +600,7 @@ class SNNChat {
       }
     }
     
-    return content.substring(0, contentLimit);
+    return this.truncateToWordLimit(content, wordLimit);
   }
   
   async extractGenericContent() {
@@ -643,7 +643,7 @@ class SNNChat {
   
   async extractVisibleText() {
     const settings = await this.getSettings();
-    const contentLimit = settings.contentLimit || 15000;
+    const wordLimit = settings.contentLimit || 15000;
     
     const walker = document.createTreeWalker(
       document.body,
@@ -677,22 +677,25 @@ class SNNChat {
     
     const textNodes = [];
     let node;
-    let totalLength = 0;
-    while ((node = walker.nextNode()) && totalLength < contentLimit) {
+    let currentText = '';
+    while (node = walker.nextNode()) {
       const text = node.textContent.trim();
       if (text && text.length > 3) {
         textNodes.push(text);
-        totalLength += text.length;
+        currentText = textNodes.join(' ');
+        if (this.countWords(currentText) >= wordLimit) {
+          break;
+        }
       }
     }
     
-    return textNodes.join(' ').substring(0, contentLimit);
+    return this.truncateToWordLimit(textNodes.join(' '), wordLimit);
   }
   
   async extractAllText() {
     // Get ALL text from the page, very aggressive
     const settings = await this.getSettings();
-    const contentLimit = settings.contentLimit || 15000;
+    const wordLimit = settings.contentLimit || 15000;
     
     // Simply get all text from body, excluding our sidebar
     const bodyClone = document.body.cloneNode(true);
@@ -705,13 +708,13 @@ class SNNChat {
     let text = bodyClone.textContent || bodyClone.innerText || '';
     text = text.replace(/\s+/g, ' ').trim();
     
-    return text.substring(0, contentLimit);
+    return this.truncateToWordLimit(text, wordLimit);
   }
   
   async extractBruteForce() {
     // Last resort - get text from every possible element
     const settings = await this.getSettings();
-    const contentLimit = settings.contentLimit || 15000;
+    const wordLimit = settings.contentLimit || 15000;
     
     const allElements = document.querySelectorAll('*:not(#ai-sidebar):not(#ai-sidebar *)');
     const texts = [];
@@ -737,12 +740,26 @@ class SNNChat {
         texts.push(text);
       }
       
-      if (texts.join(' ').length > contentLimit) break;
+      const currentText = texts.join(' ');
+      if (this.countWords(currentText) > wordLimit) break;
     }
     
-    return texts.join(' ').substring(0, contentLimit);
+    return this.truncateToWordLimit(texts.join(' '), wordLimit);
   }
   
+  countWords(text) {
+    if (!text) return 0;
+    // Remove extra whitespace and count words
+    return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+  }
+
+  truncateToWordLimit(text, wordLimit) {
+    if (!text) return '';
+    const words = text.trim().split(/\s+/);
+    if (words.length <= wordLimit) return text;
+    return words.slice(0, wordLimit).join(' ');
+  }
+
   updatePageContextIndicator() {
     if (!this.pageContextIndicator) return;
     
@@ -753,12 +770,12 @@ class SNNChat {
         this.currentPageTitle;
       
       // Show content extraction status
-      const contentLength = this.pageContent ? this.pageContent.length : 0;
-      const actualContentLength = this.pageContent ? this.pageContent.replace(/^Page:.*?Content:\s*/s, '').length : 0;
-      const contentStatus = actualContentLength > 1000 ? '✓' : actualContentLength > 200 ? '⚠' : '❌';
+      const actualContent = this.pageContent ? this.pageContent.replace(/^Page:.*?Content:\s*/s, '') : '';
+      const actualContentWords = this.countWords(actualContent);
+      const contentStatus = actualContentWords > 150 ? '✓' : actualContentWords > 30 ? '⚠' : '❌';
       
-      contextText.textContent = `${contentStatus} Page: ${truncatedTitle} (${actualContentLength} chars)`;
-      contextText.title = `Full access granted to ${actualContentLength} characters of content. AI can freely share this content when requested.`;
+      contextText.textContent = `${contentStatus} Page: ${truncatedTitle} (${actualContentWords} words)`;
+      contextText.title = `Full access granted to ${actualContentWords} words of content. AI can freely share this content when requested.`;
     }
   }
   
@@ -777,7 +794,7 @@ class SNNChat {
     for (const method of methods) {
       try {
         const result = await method.func();
-        //  console.log(`${method.name}: ${result.length} characters`);
+        //  console.log(`${method.name}: ${this.countWords(result)} words`);
         if (result.length > 0) {
           //  console.log(`${method.name} preview:`, result.substring(0, 200) + '...');
         }
@@ -786,7 +803,7 @@ class SNNChat {
       }
     }
     
-    //  console.log('Current page content:', this.pageContent?.length || 0, 'characters');
+    //  console.log('Current page content:', this.countWords(this.pageContent || ''), 'words');
     //  console.log('=== END TEST ===');
   }
 
