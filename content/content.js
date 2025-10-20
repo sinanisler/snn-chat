@@ -724,7 +724,7 @@ class SNNChat {
           
           // Skip script, style, nav, header, footer content
           const tagName = parent.tagName.toLowerCase();
-          if (['script', 'style', 'nav', 'header', 'footer', 'aside', 'button', 'noscript', 'svg', 'path'].includes(tagName)) {
+          if (['script', 'style', 'noscript', 'svg', 'path'].includes(tagName)) {
             return NodeFilter.FILTER_REJECT;
           }
           
