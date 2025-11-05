@@ -1267,7 +1267,7 @@ class SNNChat {
   }
 
   parseMarkdown(text) {
-    // First escape any HTML to prevent injection
+    // Escape HTML to prevent injection, but preserve code blocks first
     const escapeHtml = (unsafe) => {
       return unsafe
         .replace(/&/g, "&amp;")
@@ -1277,27 +1277,90 @@ class SNNChat {
         .replace(/'/g, "&#039;");
     };
     
-    // Escape HTML first
-    let escapedText = escapeHtml(text);
+    // Store code blocks and inline code to preserve them
+    const codeBlocks = [];
+    const inlineCodes = [];
     
-    // Then apply markdown parsing
-    return escapedText
-      // Headers
+    // Extract and preserve code blocks with language specification
+    text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (match, lang, code) => {
+      const placeholder = `___CODEBLOCK_${codeBlocks.length}___`;
+      // Don't escape code content - preserve it exactly as is
+      codeBlocks.push({
+        lang: lang || '',
+        code: code
+      });
+      return placeholder;
+    });
+    
+    // Extract and preserve inline code
+    text = text.replace(/`([^`]+)`/g, (match, code) => {
+      const placeholder = `___INLINECODE_${inlineCodes.length}___`;
+      // Don't escape inline code - preserve it exactly as is
+      inlineCodes.push(code);
+      return placeholder;
+    });
+    
+    // Now escape HTML in the remaining text
+    text = escapeHtml(text);
+    
+    // Apply markdown parsing to non-code content
+    text = text
+      // Headers (h1 to h6)
+      .replace(/^###### (.*$)/gm, '<h6>$1</h6>')
+      .replace(/^##### (.*$)/gm, '<h5>$1</h5>')
+      .replace(/^#### (.*$)/gm, '<h4>$1</h4>')
       .replace(/^### (.*$)/gm, '<h3>$1</h3>')
       .replace(/^## (.*$)/gm, '<h2>$1</h2>')
       .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-      // Bold
+      // Horizontal rules
+      .replace(/^(?:---|\*\*\*|___)\s*$/gm, '<hr>')
+      // Bold and Italic (handle bold first to avoid conflicts)
+      .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/___（.*?)___/g, '<strong><em>$1</em></strong>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/__(.*?)__/g, '<strong>$1</strong>')
-      // Italic
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
       .replace(/_(.*?)_/g, '<em>$1</em>')
-      // Code blocks (preserve content as-is)
-      .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-      // Inline code
-      .replace(/`(.*?)`/g, '<code>$1</code>')
-      // Line breaks
+      // Links [text](url)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      // Blockquotes
+      .replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>')
+      // Merge consecutive blockquotes
+      .replace(/<\/blockquote>\n<blockquote>/g, '\n')
+      // Unordered lists (-, *, +)
+      .replace(/^[\-\*\+]\s+(.*)$/gm, '<li>$1</li>')
+      // Ordered lists
+      .replace(/^\d+\.\s+(.*)$/gm, '<li>$1</li>')
+      // Wrap consecutive list items in ul/ol tags (simple approach)
+      .replace(/(<li>.*<\/li>\n?)+/g, (match) => {
+        return '<ul>' + match + '</ul>';
+      })
+      // Paragraphs (double line breaks)
+      .replace(/\n\n+/g, '</p><p>')
+      // Single line breaks
       .replace(/\n/g, '<br>');
+    
+    // Wrap in paragraph if not already wrapped
+    if (!text.startsWith('<')) {
+      text = '<p>' + text + '</p>';
+    }
+    
+    // Restore inline code
+    inlineCodes.forEach((code, index) => {
+      text = text.replace(`___INLINECODE_${index}___`, `<code>${code}</code>`);
+    });
+    
+    // Restore code blocks with proper formatting
+    codeBlocks.forEach((block, index) => {
+      const langClass = block.lang ? ` class="language-${block.lang}"` : '';
+      const langLabel = block.lang ? `<div class="code-lang">${block.lang}</div>` : '';
+      text = text.replace(
+        `___CODEBLOCK_${index}___`,
+        `<pre${langClass}>${langLabel}<code>${block.code}</code></pre>`
+      );
+    });
+    
+    return text;
   }
 
   copyToClipboard(text) {
