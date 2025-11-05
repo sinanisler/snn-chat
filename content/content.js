@@ -1325,8 +1325,8 @@ class SNNChat {
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
       // Blockquotes
       .replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>')
-      // Merge consecutive blockquotes
-      .replace(/<\/blockquote><br><blockquote>/g, '<br>')
+      // Merge consecutive blockquotes (do this BEFORE converting newlines to <br>)
+      .replace(/<\/blockquote>\n<blockquote>/g, '\n')
       // Unordered lists (-, *, +) - mark with special prefix
       .replace(/^[\-\*\+]\s+(.*)$/gm, '<li data-ul>$1</li>')
       // Ordered lists - mark with different prefix
