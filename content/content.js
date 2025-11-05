@@ -1282,7 +1282,7 @@ class SNNChat {
     const inlineCodes = [];
     
     // Extract and preserve code blocks with language specification
-    text = text.replace(/```(\w+)?\s*([\s\S]*?)```/g, (match, lang, code) => {
+    text = text.replace(/```([a-zA-Z0-9\-_+#]*)?\s*([\s\S]*?)```/g, (match, lang, code) => {
       const placeholder = `\x00CODEBLOCK${codeBlocks.length}\x00`;
       // Don't escape code content - preserve it exactly as is
       codeBlocks.push({
@@ -1326,7 +1326,7 @@ class SNNChat {
       // Blockquotes
       .replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>')
       // Merge consecutive blockquotes
-      .replace(/<\/blockquote>\n<blockquote>/g, '\n')
+      .replace(/<\/blockquote><br><blockquote>/g, '<br>')
       // Unordered lists (-, *, +) - mark with special prefix
       .replace(/^[\-\*\+]\s+(.*)$/gm, '<li data-ul>$1</li>')
       // Ordered lists - mark with different prefix
@@ -1339,26 +1339,26 @@ class SNNChat {
       .replace(/(<li data-ol>.*?<\/li>\n?)+/g, (match) => {
         return '<ol>' + match.replace(/ data-ol/g, '') + '</ol>';
       })
-      // Paragraphs (double line breaks)
-      .replace(/\n\n+/g, '\n<br>\n')
+      // Paragraphs (double line breaks) - just add visual spacing
+      .replace(/\n\n+/g, '<br><br>')
       // Single line breaks
       .replace(/\n/g, '<br>');
     
     // Don't auto-wrap in paragraph tags - the content already has proper structure
     // from the markdown processing above
     
-    // Restore inline code
+    // Restore inline code with HTML escaping for security
     inlineCodes.forEach((code, index) => {
-      text = text.replace(`\x00INLINECODE${index}\x00`, `<code>${code}</code>`);
+      text = text.replace(`\x00INLINECODE${index}\x00`, `<code>${escapeHtml(code)}</code>`);
     });
     
-    // Restore code blocks with proper formatting
+    // Restore code blocks with proper formatting and HTML escaping for security
     codeBlocks.forEach((block, index) => {
-      const langClass = block.lang ? ` class="language-${block.lang}"` : '';
-      const langLabel = block.lang ? `<div class="code-lang">${block.lang}</div>` : '';
+      const langClass = block.lang ? ` class="language-${escapeHtml(block.lang)}"` : '';
+      const langLabel = block.lang ? `<div class="code-lang">${escapeHtml(block.lang)}</div>` : '';
       text = text.replace(
         `\x00CODEBLOCK${index}\x00`,
-        `<pre${langClass}>${langLabel}<code>${block.code}</code></pre>`
+        `<pre${langClass}>${langLabel}<code>${escapeHtml(block.code)}</code></pre>`
       );
     });
     
