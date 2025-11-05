@@ -1283,7 +1283,7 @@ class SNNChat {
     
     // Extract and preserve code blocks with language specification
     text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (match, lang, code) => {
-      const placeholder = `___CODEBLOCK_${codeBlocks.length}___`;
+      const placeholder = `\x00CODEBLOCK${codeBlocks.length}\x00`;
       // Don't escape code content - preserve it exactly as is
       codeBlocks.push({
         lang: lang || '',
@@ -1294,7 +1294,7 @@ class SNNChat {
     
     // Extract and preserve inline code
     text = text.replace(/`([^`]+)`/g, (match, code) => {
-      const placeholder = `___INLINECODE_${inlineCodes.length}___`;
+      const placeholder = `\x00INLINECODE${inlineCodes.length}\x00`;
       // Don't escape inline code - preserve it exactly as is
       inlineCodes.push(code);
       return placeholder;
@@ -1316,7 +1316,7 @@ class SNNChat {
       .replace(/^(?:---|\*\*\*|___)\s*$/gm, '<hr>')
       // Bold and Italic (handle bold first to avoid conflicts)
       .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-      .replace(/___（.*?)___/g, '<strong><em>$1</em></strong>')
+      .replace(/___(.*?)___/g, '<strong><em>$1</em></strong>')
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/__(.*?)__/g, '<strong>$1</strong>')
       .replace(/\*(.*?)\*/g, '<em>$1</em>')
@@ -1347,7 +1347,7 @@ class SNNChat {
     
     // Restore inline code
     inlineCodes.forEach((code, index) => {
-      text = text.replace(`___INLINECODE_${index}___`, `<code>${code}</code>`);
+      text = text.replace(`\x00INLINECODE${index}\x00`, `<code>${code}</code>`);
     });
     
     // Restore code blocks with proper formatting
@@ -1355,7 +1355,7 @@ class SNNChat {
       const langClass = block.lang ? ` class="language-${block.lang}"` : '';
       const langLabel = block.lang ? `<div class="code-lang">${block.lang}</div>` : '';
       text = text.replace(
-        `___CODEBLOCK_${index}___`,
+        `\x00CODEBLOCK${index}\x00`,
         `<pre${langClass}>${langLabel}<code>${block.code}</code></pre>`
       );
     });
