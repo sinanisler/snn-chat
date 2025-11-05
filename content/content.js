@@ -1282,7 +1282,7 @@ class SNNChat {
     const inlineCodes = [];
     
     // Extract and preserve code blocks with language specification
-    text = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (match, lang, code) => {
+    text = text.replace(/```(\w+)?\s*([\s\S]*?)```/g, (match, lang, code) => {
       const placeholder = `\x00CODEBLOCK${codeBlocks.length}\x00`;
       // Don't escape code content - preserve it exactly as is
       codeBlocks.push({
@@ -1327,23 +1327,25 @@ class SNNChat {
       .replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>')
       // Merge consecutive blockquotes
       .replace(/<\/blockquote>\n<blockquote>/g, '\n')
-      // Unordered lists (-, *, +)
-      .replace(/^[\-\*\+]\s+(.*)$/gm, '<li>$1</li>')
-      // Ordered lists
-      .replace(/^\d+\.\s+(.*)$/gm, '<li>$1</li>')
-      // Wrap consecutive list items in ul/ol tags (simple approach)
-      .replace(/(<li>.*<\/li>\n?)+/g, (match) => {
-        return '<ul>' + match + '</ul>';
+      // Unordered lists (-, *, +) - mark with special prefix
+      .replace(/^[\-\*\+]\s+(.*)$/gm, '<li data-ul>$1</li>')
+      // Ordered lists - mark with different prefix
+      .replace(/^\d+\.\s+(.*)$/gm, '<li data-ol>$1</li>')
+      // Wrap unordered list items
+      .replace(/(<li data-ul>.*?<\/li>\n?)+/g, (match) => {
+        return '<ul>' + match.replace(/ data-ul/g, '') + '</ul>';
+      })
+      // Wrap ordered list items
+      .replace(/(<li data-ol>.*?<\/li>\n?)+/g, (match) => {
+        return '<ol>' + match.replace(/ data-ol/g, '') + '</ol>';
       })
       // Paragraphs (double line breaks)
-      .replace(/\n\n+/g, '</p><p>')
+      .replace(/\n\n+/g, '\n<br>\n')
       // Single line breaks
       .replace(/\n/g, '<br>');
     
-    // Wrap in paragraph if not already wrapped
-    if (!text.startsWith('<')) {
-      text = '<p>' + text + '</p>';
-    }
+    // Don't auto-wrap in paragraph tags - the content already has proper structure
+    // from the markdown processing above
     
     // Restore inline code
     inlineCodes.forEach((code, index) => {
