@@ -578,24 +578,6 @@
 
 
 /* Markdown Styling */
-#ai-sidebar .message-content h1, #ai-sidebar .message-content h2, #ai-sidebar .message-content h3 {
-  margin: 12px 0 8px 0  ;
-  font-weight: 600  ;
-  color: inherit  ;
-}
-
-#ai-sidebar .message-content h1 {
-  font-size: 1.25em  ;
-}
-
-#ai-sidebar .message-content h2 {
-  font-size: 1.15em  ;
-}
-
-#ai-sidebar .message-content h3 {
-  font-size: 1.1em  ;
-}
-
 #ai-sidebar .message-content strong {
   font-weight: 600  ;
 }
