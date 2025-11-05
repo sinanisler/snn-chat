@@ -169,4 +169,5 @@ If you're unsure about:
 
 - Repository: https://github.com/sinanisler/snn-chat
 - Chrome Extension API Docs: https://developer.chrome.com/docs/extensions/
-- No external issue tracker specified in the repository
+- Issue Tracker: Use GitHub Issues at https://github.com/sinanisler/snn-chat/issues
+- For bug reports or feature requests, create a new issue with detailed description and steps to reproduce
