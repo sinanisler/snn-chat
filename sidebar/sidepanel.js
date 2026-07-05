@@ -29,6 +29,9 @@ class SNNSidePanel {
     this._agentLoop = null;
     this._agentUI = null;
 
+    // ── Last screenshot for vision follow-up questions ────────
+    this._lastScreenshot = null;
+
     this.cacheDom();
     this.setupListeners();
     this.init();
@@ -495,7 +498,11 @@ class SNNSidePanel {
     await this.saveChatHistory();
 
     // ── Try Agent Loop first ───────────────────────────────────
-    if (this._agentLoop && !this._agentLoop.isBusy) {
+    // Skip agent loop for informational queries when page context is available —
+    // go straight to streaming chat (faster, and the LLM already has the context).
+    const skipAgent = this._shouldSkipAgentLoop(message, contextSnapshot);
+
+    if (this._agentLoop && !this._agentLoop.isBusy && !skipAgent) {
       try {
         const agentResult = await this._agentLoop.run(message, contextSnapshot, this.currentTabId);
 
@@ -514,7 +521,7 @@ class SNNSidePanel {
           }
           // ── Render LLM's synthesized response if present ──
           if (agentResult.llmResponse) {
-            this.addMessage('ai', agentResult.llmResponse);
+            await this.streamRenderMessage(agentResult.llmResponse);
             this.chatHistory.push(
               { role: 'assistant', content: agentResult.llmResponse }
             );
@@ -528,7 +535,22 @@ class SNNSidePanel {
           else { this.activeContext = null; this.refreshActiveContext(); }
           return;
         }
-        // agentResult.type === 'chat' or undefined → fall through to normal chat
+
+        // ── Agent returned { type:'chat', content } — stream it directly ──
+        if (agentResult && agentResult.type === 'chat' && agentResult.content) {
+          await this.streamRenderMessage(agentResult.content);
+          this.chatHistory.push(
+            { role: 'assistant', content: agentResult.content }
+          );
+          await this.saveChatHistory();
+          this.isLoading = false;
+          this.els.sendBtn.disabled = false;
+          this.els.userInput.focus();
+          if (this.selection) { this.clearSelection(); }
+          else { this.activeContext = null; this.refreshActiveContext(); }
+          return;
+        }
+        // agentResult.type === 'chat' without content → fall through to normal chat
       } catch (agentErr) {
         console.warn('Agent loop failed, falling back to chat:', agentErr.message);
       }
@@ -618,6 +640,19 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
+    // ── Attach last screenshot as vision content if available ──
+    const screenshotData = this._lastScreenshot;
+    if (screenshotData) {
+      messages[messages.length - 1] = {
+        role: 'user',
+        content: [
+          { type: 'text', text: userMessage },
+          { type: 'image_url', image_url: { url: screenshotData } }
+        ]
+      };
+      this._lastScreenshot = null;
+    }
+
     const body = {
       model,
       messages,
@@ -676,6 +711,19 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
+    // ── Attach last screenshot as vision content if available ──
+    const screenshotData = this._lastScreenshot;
+    if (screenshotData) {
+      messages[messages.length - 1] = {
+        role: 'user',
+        content: [
+          { type: 'text', text: userMessage },
+          { type: 'image_url', image_url: { url: screenshotData } }
+        ]
+      };
+      this._lastScreenshot = null; // consume it
+    }
+
     const body = {
       model, messages, stream: true,
       max_tokens: settings.maxTokens || 4096,
@@ -717,19 +765,36 @@ class SNNSidePanel {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
+      // Process complete lines from buffer
+      let newlineIdx;
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.substring(0, newlineIdx).trim();
+        buffer = buffer.substring(newlineIdx + 1);
+
+        if (!line) continue; // skip empty lines (SSE heartbeat)
+
+        // Handle SSE comments
+        if (line.startsWith(':')) continue;
+
+        // Handle data: prefix
+        let data = line;
+        if (line.startsWith('data:')) {
+          data = line.substring(5).trimStart();
+        } else if (line.startsWith('data: ')) {
+          data = line.substring(6);
+        }
+
         if (data === '[DONE]') continue;
+
         try {
           const parsed = JSON.parse(data);
           const content = parsed.choices?.[0]?.delta?.content || '';
-          fullResponse += content;
-          contentDiv.innerHTML = this.parseMarkdown(fullResponse) + '<span class="sp-cursor">|</span>';
-          this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+          if (content) {
+            fullResponse += content;
+            contentDiv.innerHTML = this.parseMarkdown(fullResponse) + '<span class="sp-cursor">|</span>';
+            this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+          }
           if (parsed.usage) {
             this.lastTokenUsage = {
               prompt_tokens: parsed.usage.prompt_tokens || 0,
@@ -737,7 +802,21 @@ class SNNSidePanel {
               total_tokens: parsed.usage.total_tokens || 0
             };
           }
-        } catch (e) { /* skip malformed */ }
+        } catch (e) { /* skip malformed JSON lines */ }
+      }
+    }
+    // Process any remaining data in buffer (shouldn't normally happen)
+    if (buffer.trim()) {
+      const line = buffer.trim();
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6);
+        if (data !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content || '';
+            if (content) fullResponse += content;
+          } catch (e) { /* skip */ }
+        }
       }
     }
 
@@ -771,6 +850,54 @@ class SNNSidePanel {
     }
 
     this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+  }
+
+  /**
+   * Stream-render an AI message character by character.
+   * Used for agent loop final responses to give a streaming feel
+   * without making an extra API call.
+   */
+  async streamRenderMessage(content) {
+    this.els.welcomeScreen.style.display = 'none';
+
+    const div = document.createElement('div');
+    div.className = 'sp-msg sp-msg-ai';
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'sp-msg-content';
+    div.appendChild(contentDiv);
+    this.els.chatMessages.appendChild(div);
+
+    // Render in chunks for smooth visual streaming
+    const CHUNK_SIZE = 3; // characters per frame
+    let pos = 0;
+
+    return new Promise((resolve) => {
+      const renderChunk = () => {
+        if (pos >= content.length) {
+          // Final render — parse full markdown
+          contentDiv.innerHTML = this.parseMarkdown(content);
+          this.renderMermaid(div);
+          this.addMsgActions(div, content);
+          this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+          resolve();
+          return;
+        }
+
+        const chunk = content.substring(0, pos + CHUNK_SIZE);
+        pos += CHUNK_SIZE;
+
+        // Use text rendering for speed during streaming, 
+        // then final markdown parse at the end
+        contentDiv.innerHTML = this.escapeHtml(chunk).replace(/\n/g, '<br>') + '<span class="sp-cursor">|</span>';
+        this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+
+        // Adaptive speed: faster for longer content
+        const delay = content.length > 2000 ? 5 : (content.length > 500 ? 10 : 20);
+        setTimeout(renderChunk, delay);
+      };
+
+      renderChunk();
+    });
   }
 
   // ── Context Chip rendering ─────────────────────────────────────
@@ -979,10 +1106,8 @@ class SNNSidePanel {
         <button class="sp-tab active" data-tab="api">API</button>
         <button class="sp-tab" data-tab="chat">Chat</button>
         <button class="sp-tab" data-tab="actions">Actions</button>
-        <button class="sp-tab" data-tab="features">Features</button>
         <button class="sp-tab" data-tab="quickactions">Quick Actions</button>
         <button class="sp-tab" data-tab="appearance">Appearance</button>
-        <button class="sp-tab" data-tab="advanced">Advanced</button>
       </div>
 
       <div class="sp-tab-content active" data-tab-content="api">
@@ -997,6 +1122,7 @@ class SNNSidePanel {
             <input type="text" id="s-openrouter-model" value="${this.escapeHtml(s.openrouterModel || '')}" placeholder="Select or type..." list="openrouter-models">
             <datalist id="openrouter-models"></datalist>
           </div>
+          <div id="s-model-info" class="sp-model-info" style="display:none"></div>
           <button class="sp-btn sp-btn-success" id="s-test-connection">Test Connection</button>
           <div class="sp-status" id="s-status"></div>
         </div>
@@ -1033,6 +1159,41 @@ class SNNSidePanel {
           <div class="sp-field">
             <input type="number" id="s-content-limit" value="${s.contentLimit || 15000}" min="500" max="100000">
           </div>
+        </div>
+        <div class="sp-section">
+          <h4>Features</h4>
+          ${this.toggleHtml('s-enable-streaming', 'Streaming Responses', 'See AI responses in real-time', s.enableStreaming !== false)}
+          ${this.toggleHtml('s-enable-quick-actions', 'Quick Actions', 'Show prompt suggestions for new chats', s.enableQuickActions !== false)}
+          ${this.toggleHtml('s-enable-voice-input', 'Voice Input', 'Click mic button or hold Space to dictate', s.enableVoiceInput !== false)}
+        </div>
+        <div class="sp-section">
+          <h4>Keyboard Shortcut</h4>
+          <div class="sp-shortcut-selects">
+            <select id="s-shortcut-1">
+              <option value="">-</option>
+              <option value="Ctrl">Ctrl</option>
+              <option value="Shift">Shift</option>
+              <option value="Alt">Alt</option>
+            </select>
+            <span class="sp-shortcut-plus">+</span>
+            <select id="s-shortcut-2">
+              <option value="">-</option>
+              <option value="Ctrl">Ctrl</option>
+              <option value="Shift">Shift</option>
+              <option value="Alt">Alt</option>
+            </select>
+            <span class="sp-shortcut-plus">+</span>
+            <select id="s-shortcut-3">
+              <option value="">-</option>
+              ${'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('').map(k => `<option value="${k}">${k}</option>`).join('')}
+            </select>
+            <button class="sp-btn sp-btn-secondary" id="s-reset-shortcut">Reset</button>
+          </div>
+        </div>
+        <div class="sp-section">
+          <h4>Data</h4>
+          <button class="sp-btn sp-btn-secondary" id="s-export-history">Export Chat History</button>
+          <button class="sp-btn sp-btn-danger" id="s-clear-history" style="margin-left:8px">Clear All History</button>
         </div>
       </div>
 
@@ -1094,15 +1255,6 @@ class SNNSidePanel {
         </div>
       </div>
 
-      <div class="sp-tab-content" data-tab-content="features">
-        <div class="sp-section">
-          <h4>Features</h4>
-          ${this.toggleHtml('s-enable-streaming', 'Streaming Responses', 'See AI responses in real-time', s.enableStreaming !== false)}
-          ${this.toggleHtml('s-enable-quick-actions', 'Quick Actions', 'Show prompt suggestions for new chats', s.enableQuickActions !== false)}
-          ${this.toggleHtml('s-enable-voice-input', 'Voice Input', 'Click mic button or hold Space to dictate', s.enableVoiceInput !== false)}
-        </div>
-      </div>
-
       <div class="sp-tab-content" data-tab-content="quickactions">
         <div class="sp-section">
           <h4>Manage Quick Actions</h4>
@@ -1134,38 +1286,6 @@ class SNNSidePanel {
             <span id="s-font-size-val">${s.fontSize || 16}px</span>
           </div>
           <small>Minimum 16px for readability. Adjust to your preference.</small>
-        </div>
-      </div>
-
-      <div class="sp-tab-content" data-tab-content="advanced">
-        <div class="sp-section">
-          <h4>Keyboard Shortcut</h4>
-          <div class="sp-shortcut-selects">
-            <select id="s-shortcut-1">
-              <option value="">-</option>
-              <option value="Ctrl">Ctrl</option>
-              <option value="Shift">Shift</option>
-              <option value="Alt">Alt</option>
-            </select>
-            <span class="sp-shortcut-plus">+</span>
-            <select id="s-shortcut-2">
-              <option value="">-</option>
-              <option value="Ctrl">Ctrl</option>
-              <option value="Shift">Shift</option>
-              <option value="Alt">Alt</option>
-            </select>
-            <span class="sp-shortcut-plus">+</span>
-            <select id="s-shortcut-3">
-              <option value="">-</option>
-              ${'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('').map(k => `<option value="${k}">${k}</option>`).join('')}
-            </select>
-            <button class="sp-btn sp-btn-secondary" id="s-reset-shortcut">Reset</button>
-          </div>
-        </div>
-        <div class="sp-section">
-          <h4>Data</h4>
-          <button class="sp-btn sp-btn-secondary" id="s-export-history">Export Chat History</button>
-          <button class="sp-btn sp-btn-danger" id="s-clear-history" style="margin-left:8px">Clear All History</button>
         </div>
       </div>
 
@@ -1233,6 +1353,26 @@ class SNNSidePanel {
       }
     });
     if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey);
+
+    // Model info — fetch when model input changes
+    const modelInput = this.els.settingsBody.querySelector('#s-openrouter-model');
+    modelInput.addEventListener('change', () => this.fetchModelInfo());
+    modelInput.addEventListener('blur', () => this.fetchModelInfo());
+    // Allow free space typing — datalist auto-selects on Space otherwise
+    modelInput.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        e.stopPropagation();
+        // Manually insert space at cursor
+        const start = modelInput.selectionStart;
+        const end = modelInput.selectionEnd;
+        modelInput.value = modelInput.value.substring(0, start) + ' ' + modelInput.value.substring(end);
+        modelInput.selectionStart = modelInput.selectionEnd = start + 1;
+        // Trigger input event so any listeners fire
+        modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    if (s.openrouterModel) this.fetchModelInfo();
   }
 
   bindRange(inputId, displayId, suffix = '') {
@@ -1279,6 +1419,86 @@ class SNNSidePanel {
     }
   }
 
+  async fetchModelInfo() {
+    const modelId = this.els.settingsBody.querySelector('#s-openrouter-model')?.value.trim();
+    const infoDiv = this.els.settingsBody.querySelector('#s-model-info');
+    if (!modelId || !infoDiv) {
+      if (infoDiv) infoDiv.style.display = 'none';
+      return;
+    }
+
+    infoDiv.style.display = 'block';
+    infoDiv.innerHTML = '<div class="sp-model-info-loading">Loading model info...</div>';
+
+    try {
+      const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key')?.value.trim();
+      if (!apiKey) {
+        infoDiv.innerHTML = '<div class="sp-model-info-error">Enter API key to see model details.</div>';
+        return;
+      }
+
+      const res = await fetch(`https://openrouter.ai/api/v1/models/${encodeURI(modelId)}/endpoints`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const data = json.data;
+      if (!data) throw new Error('No model data');
+
+      let html = '';
+
+      // Description
+      if (data.description) {
+        html += `<div class="sp-model-info-desc">${this.escapeHtml(data.description.substring(0, 400))}${data.description.length > 400 ? '...' : ''}</div>`;
+      }
+
+      // Architecture / modalities
+      const arch = data.architecture;
+      if (arch) {
+        // Input modalities
+        if (arch.input_modalities && arch.input_modalities.length > 0) {
+          html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
+          for (const mod of arch.input_modalities) {
+            html += `<span class="sp-model-tag sp-model-tag-input">${this.escapeHtml(mod)}</span>`;
+          }
+          html += '</div></div>';
+        }
+        // Output modalities
+        if (arch.output_modalities && arch.output_modalities.length > 0) {
+          html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Output:</span><div class="sp-model-info-tags">';
+          for (const mod of arch.output_modalities) {
+            html += `<span class="sp-model-tag sp-model-tag-output">${this.escapeHtml(mod)}</span>`;
+          }
+          html += '</div></div>';
+        }
+      }
+
+      // Supported parameters (from first endpoint)
+      const endpoint = data.endpoints?.[0];
+      if (endpoint?.supported_parameters && endpoint.supported_parameters.length > 0) {
+        html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Params:</span><div class="sp-model-info-tags">';
+        for (const param of endpoint.supported_parameters) {
+          html += `<span class="sp-model-tag sp-model-tag-param">${this.escapeHtml(param)}</span>`;
+        }
+        html += '</div></div>';
+      }
+
+      // Context length
+      if (endpoint?.context_length) {
+        html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Context:</span><span class="sp-model-info-value">${(endpoint.context_length / 1024).toFixed(0)}K tokens</span></div>`;
+      }
+
+      // Max completion tokens
+      if (endpoint?.max_completion_tokens) {
+        html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Max output:</span><span class="sp-model-info-value">${endpoint.max_completion_tokens.toLocaleString()} tokens</span></div>`;
+      }
+
+      infoDiv.innerHTML = html || '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
+    } catch (e) {
+      infoDiv.innerHTML = `<div class="sp-model-info-error">Could not load model info: ${this.escapeHtml(e.message)}</div>`;
+    }
+  }
+
   async testConnection() {
     const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key').value.trim();
     const statusEl = this.els.settingsBody.querySelector('#s-status');
@@ -1306,15 +1526,69 @@ class SNNSidePanel {
   renderQuickActionsEditor(actions) {
     const list = this.els.settingsBody.querySelector('#s-qa-list');
     if (!list) return;
-    list.innerHTML = actions.map(a => `
-      <div class="sp-qa-item">
-        <input type="text" value="${this.escapeHtml(a.text)}" placeholder="Name">
-        <input type="text" value="${this.escapeHtml(a.prompt)}" placeholder="Prompt">
+    list.innerHTML = actions.map((a, i) => `
+      <div class="sp-qa-item" draggable="true" data-index="${i}">
+        <span class="sp-qa-drag-handle" title="Drag to reorder">⋮⋮</span>
+        <div class="sp-qa-fields">
+          <input type="text" class="sp-qa-title" value="${this.escapeHtml(a.text)}" placeholder="Title">
+          <textarea class="sp-qa-prompt" placeholder="Prompt" rows="2">${this.escapeHtml(a.prompt)}</textarea>
+        </div>
         <button class="sp-qa-remove">×</button>
       </div>
     `).join('');
+
+    // Remove buttons
     list.querySelectorAll('.sp-qa-remove').forEach(btn => {
       btn.addEventListener('click', () => btn.closest('.sp-qa-item').remove());
+    });
+
+    // Drag and drop
+    this._setupQuickActionDrag(list);
+  }
+
+  _setupQuickActionDrag(list) {
+    let dragSrc = null;
+
+    list.addEventListener('dragstart', (e) => {
+      const item = e.target.closest('.sp-qa-item');
+      if (!item) return;
+      dragSrc = item;
+      item.classList.add('sp-qa-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', '');
+    });
+
+    list.addEventListener('dragend', (e) => {
+      const item = e.target.closest('.sp-qa-item');
+      if (item) item.classList.remove('sp-qa-dragging');
+      list.querySelectorAll('.sp-qa-item').forEach(el => el.classList.remove('sp-qa-drag-over'));
+      dragSrc = null;
+    });
+
+    list.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const item = e.target.closest('.sp-qa-item');
+      if (item && item !== dragSrc) {
+        list.querySelectorAll('.sp-qa-item').forEach(el => el.classList.remove('sp-qa-drag-over'));
+        item.classList.add('sp-qa-drag-over');
+      }
+    });
+
+    list.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const item = e.target.closest('.sp-qa-item');
+      if (!item || item === dragSrc || !dragSrc) return;
+      list.querySelectorAll('.sp-qa-item').forEach(el => el.classList.remove('sp-qa-drag-over'));
+
+      // Insert dragged item before or after drop target
+      const rect = item.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (e.clientY < midY) {
+        list.insertBefore(dragSrc, item);
+      } else {
+        list.insertBefore(dragSrc, item.nextSibling);
+      }
     });
   }
 
@@ -1322,23 +1596,29 @@ class SNNSidePanel {
     const list = this.els.settingsBody.querySelector('#s-qa-list');
     const row = document.createElement('div');
     row.className = 'sp-qa-item';
+    row.draggable = true;
     row.innerHTML = `
-      <input type="text" placeholder="Name">
-      <input type="text" placeholder="Prompt">
+      <span class="sp-qa-drag-handle" title="Drag to reorder">⋮⋮</span>
+      <div class="sp-qa-fields">
+        <input type="text" class="sp-qa-title" placeholder="Title">
+        <textarea class="sp-qa-prompt" placeholder="Prompt" rows="2"></textarea>
+      </div>
       <button class="sp-qa-remove">×</button>
     `;
     row.querySelector('.sp-qa-remove').addEventListener('click', () => row.remove());
     list.appendChild(row);
     row.querySelector('input').focus();
+    this._setupQuickActionDrag(list);
   }
 
   getQuickActionsFromEditor() {
     const items = this.els.settingsBody.querySelectorAll('#s-qa-list .sp-qa-item');
     const actions = [];
     items.forEach(item => {
-      const inputs = item.querySelectorAll('input');
-      const text = inputs[0].value.trim();
-      const prompt = inputs[1].value.trim();
+      const titleInput = item.querySelector('.sp-qa-title');
+      const promptTextarea = item.querySelector('.sp-qa-prompt');
+      const text = titleInput?.value?.trim() || '';
+      const prompt = promptTextarea?.value?.trim() || '';
       if (text && prompt) actions.push({ text, prompt });
     });
     return actions.length ? actions : this.getDefaultQuickActions();
@@ -1904,6 +2184,54 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     }
 
     await this._saveChatLockState();
+  }
+
+  /**
+   * Smart gateway: skip the agent loop for informational queries
+   * when page context is already available. This avoids wasteful
+   * non-streaming LLM calls and goes straight to streaming chat.
+   */
+  _shouldSkipAgentLoop(message, contextSnapshot) {
+    if (!contextSnapshot || contextSnapshot.type !== 'page') return false;
+
+    const msg = message.toLowerCase().trim();
+
+    // Action patterns — these NEED the agent loop
+    const actionPatterns = [
+      /^(click|press|hit|tap|push)\b/,
+      /^(type|enter|write|input|fill)\b/,
+      /^(scroll|go to|navigate|open)\b/,
+      /^(take|capture|grab)\s.*(screenshot|screen)/,
+      /^(highlight|select|pick|choose)\b/,
+      /^(download|save|copy)\b/,
+      /^(fill|submit|complete)\s.*(form|field)/,
+      /^(check|uncheck|toggle)\b/,
+      /^(hover|mouse\s*over)\b/,
+      /^(find|search|look\s*for)\s/,
+      /^(extract|get|pull)\s.*(table|data|info)/,
+      /^(do|perform|execute|run)\s/,
+    ];
+    for (const p of actionPatterns) {
+      if (p.test(msg)) return false;
+    }
+
+    // Informational patterns — page context is enough
+    const infoPatterns = [
+      /^(summarize|summary|sum\s*up|tldr|overview)\b/,
+      /^(what|who|where|when|why|how)\s/,
+      /^(explain|describe|tell|elaborate)\b/,
+      /^(list|enumerate|name)\b/,
+      /^(is|are|does|do|can|could|would|should|will)\s/,
+      /^(compare|contrast|analyze)\b/,
+      /^(give|provide|show)\s.*(summary|overview|brief)/,
+      /^(what's|whats|how's|hows)\s/,
+      /^(any|are there)\s/,
+    ];
+    for (const p of infoPatterns) {
+      if (p.test(msg)) return true;
+    }
+
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════

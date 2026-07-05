@@ -786,17 +786,162 @@ body.theme-dark {
 /* ── Quick Action Editor ──────────────────────────────────────── */
 .sp-qa-list { display: flex; flex-direction: column; gap: 8px; }
 .sp-qa-item {
-  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  display: flex; gap: 8px; align-items: flex-start;
   padding: 10px; background: var(--sp-input-bg);
   border: 1px solid var(--sp-input-border); border-radius: 8px;
+  transition: all 0.2s;
 }
-.sp-qa-item input { flex: 1; min-width: 0; }
-.sp-qa-item input[type="text"]:first-child { max-width: 52px; text-align: center; font-size: 16px; }
+.sp-qa-item.sp-qa-dragging {
+  opacity: 0.5;
+  border-color: var(--sp-accent);
+}
+.sp-qa-item.sp-qa-drag-over {
+  border-color: var(--sp-accent);
+  background: var(--sp-context-bg);
+  box-shadow: 0 0 8px rgba(5,86,199,0.3);
+}
+.sp-qa-drag-handle {
+  cursor: grab;
+  color: var(--sp-text-secondary);
+  font-size: 18px;
+  padding: 6px 2px;
+  user-select: none;
+  line-height: 1;
+  letter-spacing: -2px;
+  flex-shrink: 0;
+}
+.sp-qa-drag-handle:hover { color: var(--sp-text); }
+.sp-qa-drag-handle:active { cursor: grabbing; }
+.sp-qa-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sp-qa-fields input.sp-qa-title {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--sp-input-border);
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--sp-input-bg);
+  color: var(--sp-text);
+}
+.sp-qa-fields input.sp-qa-title:focus {
+  outline: none;
+  border-color: var(--sp-input-focus);
+}
+.sp-qa-fields textarea.sp-qa-prompt {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--sp-input-border);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  background: var(--sp-input-bg);
+  color: var(--sp-text);
+  resize: vertical;
+  min-height: 48px;
+  line-height: 1.4;
+}
+.sp-qa-fields textarea.sp-qa-prompt:focus {
+  outline: none;
+  border-color: var(--sp-input-focus);
+}
 .sp-qa-remove {
   background: var(--sp-danger); color: #fff; border: none; border-radius: 6px;
   padding: 8px 12px; cursor: pointer; font-weight: bold; flex-shrink: 0; font-size: 15px;
+  align-self: flex-start;
 }
 .sp-qa-remove:hover { filter: brightness(1.1); }
+
+/* ── Model Info (API tab) ──────────────────────────────────────── */
+.sp-model-info {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--sp-ai-msg-bg);
+  border: 1px solid var(--sp-ai-msg-border);
+  border-radius: 8px;
+  font-size: 13px;
+  animation: snn-slide-up 0.2s ease;
+}
+.sp-model-info-loading {
+  color: var(--sp-text-secondary);
+  font-style: italic;
+  padding: 4px 0;
+}
+.sp-model-info-error {
+  color: var(--sp-danger);
+  font-size: 12px;
+}
+.sp-model-info-empty {
+  color: var(--sp-text-secondary);
+  font-size: 12px;
+  font-style: italic;
+}
+.sp-model-info-desc {
+  font-size: 12px;
+  color: var(--sp-text-secondary);
+  line-height: 1.5;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--sp-border);
+}
+.sp-model-info-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.sp-model-info-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--sp-text-secondary);
+  min-width: 55px;
+  padding-top: 3px;
+  flex-shrink: 0;
+}
+.sp-model-info-value {
+  font-size: 13px;
+  color: var(--sp-text);
+  padding-top: 2px;
+}
+.sp-model-info-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+}
+.sp-model-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sp-model-tag-input {
+  background: rgba(5,86,199,0.12);
+  color: var(--sp-accent);
+  border: 1px solid rgba(5,86,199,0.25);
+}
+.sp-model-tag-output {
+  background: rgba(30,126,52,0.12);
+  color: var(--sp-success);
+  border: 1px solid rgba(30,126,52,0.25);
+}
+.sp-model-tag-param {
+  background: rgba(128,128,128,0.12);
+  color: var(--sp-text-secondary);
+  border: 1px solid rgba(128,128,128,0.2);
+  font-family: monospace;
+  font-size: 10px;
+}
 
 /* ── Toast ────────────────────────────────────────────────────── */
 .sp-toast {

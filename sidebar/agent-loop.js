@@ -108,9 +108,13 @@ class SNNAgentLoop {
 
       // Add page context if available
       if (context?.type === 'page' && context?.detail) {
+        const limit = settings.contentLimit || 15000;
+        const detail = context.detail.length > limit
+          ? context.detail.substring(0, limit) + '\n\n[... truncated to ' + limit + ' chars ...]'
+          : context.detail;
         messages.splice(1, 0, {
           role: 'system',
-          content: `[CURRENT PAGE]\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nThe user may refer to content on this page. Use the page actions (snn_getPageInfo, snn_findElements, etc.) to explore it.`
+          content: `[PAGE CONTENT — ALREADY PROVIDED. DO NOT use getPageInfo, findElements, getElementText, or extractTable to re-read it. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
         });
       }
 
@@ -146,17 +150,38 @@ class SNNAgentLoop {
             // Map tool name to our action and execute
             const actionResult = await this._executeToolCall(fnName, fnArgs, iteration);
 
-            // ── Sanitize tool result before sending to LLM ──
-            // Strip base64 image data (screenshots, etc.) — the LLM can't see them
-            // and sending MBs of base64 wastes tokens and causes timeouts.
-            const sanitizedResult = this._sanitizeToolResultForLLM(fnName, actionResult);
-
-            // Add tool result to messages
-            messages.push({
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: typeof sanitizedResult === 'string' ? sanitizedResult : JSON.stringify(sanitizedResult)
-            });
+            // ── If screenshot was taken, inject it as a vision message for the LLM ──
+            if (fnName === 'snn_screenshot' && this._lastScreenshot) {
+              // Add a special tool result that tells the LLM it can see the image
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: JSON.stringify({
+                  success: true,
+                  screenshot: '[Image captured — visible in the next message]',
+                  message: 'A screenshot of the page was captured. The image will be provided for your analysis.'
+                })
+              });
+              // Then inject the actual image as a follow-up user message
+              messages.push({
+                role: 'user',
+                content: [
+                  { type: 'text', text: 'Here is the screenshot you just captured. Analyze it and continue with the task.' },
+                  { type: 'image_url', image_url: { url: this._lastScreenshot } }
+                ]
+              });
+              this._lastScreenshot = null; // consume it
+              this.sp._lastScreenshot = null; // sync with sidepanel
+            } else {
+              // ── Sanitize tool result before sending to LLM ──
+              const sanitizedResult = this._sanitizeToolResultForLLM(fnName, actionResult);
+              // Add tool result to messages
+              messages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: typeof sanitizedResult === 'string' ? sanitizedResult : JSON.stringify(sanitizedResult)
+              });
+            }
           }
 
           this._transition('OBSERVING', { iteration });
@@ -183,10 +208,10 @@ class SNNAgentLoop {
 
       this._transition('IDLE');
 
-      // If LLM produced a final answer, return it as chat response
-      // so the sidepanel renders it as a normal AI message
+      // If LLM produced a final answer without using tools,
+      // return the content so the sidepanel can stream it directly.
       if (finalContent && this._stepResults.length === 0) {
-        return { type: 'chat' };
+        return { type: 'chat', content: finalContent };
       }
 
       return {
@@ -343,22 +368,24 @@ class SNNAgentLoop {
 
 You are SNN Chat, a browser agent that can interact with web pages in real-time. You have access to tools (functions) that let you click, type, scroll, navigate, extract data, fill forms, and more.
 
-HOW TO WORK:
-1. When the user asks you to DO something on the page, USE THE TOOLS IMMEDIATELY. Do NOT ask "Want me to?" or "Shall I?" — just DO it. Describe briefly what you're doing, then call the tool.
+CRITICAL — WHEN TO USE TOOLS:
+- ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, fill a form, take a screenshot, etc.
+- For informational questions ("summarize this page", "what is this about?", "explain...", "what colors..."), the page content is ALREADY provided to you in the system messages. Answer DIRECTLY from that context — do NOT call getPageInfo, findElements, getElementText, or extractTable to re-read it.
+- If you already have the information needed to answer, JUST ANSWER. Don't reach for tools unnecessarily.
+
+WHEN YOU DO USE TOOLS:
+1. Describe briefly what you're doing, then call the tool.
 2. You can chain multiple tool calls: e.g., navigate → wait → click → findElements.
 3. After tools return results, synthesize a helpful response in the user's language.
-4. For selectors, prefer :text("exact text") for finding buttons/links by their visible text. Use :contains("partial") for partial matches. For pagination where the same text appears multiple times (e.g., page numbers "1","2","3"), use :nthText("2", 2) to get the 2nd occurrence.
-5. When navigating: if the user says "go to X page", use snn_navigate with the link text as the url parameter. The agent will automatically find the correct link.
-6. ALWAYS describe what you're about to do before calling tools.
-7. The click action now uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks like React, Vue, and DataTables/jQuery.
+4. For selectors, prefer :text("exact text") for finding buttons/links by their visible text. Use :contains("partial") for partial matches.
+5. When navigating: if the user says "go to X page", use snn_navigate.
+6. The click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks.
 
 CRITICAL RULES:
 - NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
 - NEVER say "I can help with that, would you like me to..." — instead say "Let me do that now" and call the tool.
-- NEVER just describe the page — always take action when the user's intent is clear.
 - If a tool call fails, try a different approach (different selector, different strategy). Don't give up after one failure.
-
-IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`;
+- For simple questions about page content: ANSWER FROM CONTEXT, don't use tools.`;
   }
 
   /**
@@ -478,6 +505,9 @@ IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`
         // ── Render screenshot image in the action entry ──
         if (actionName === 'screenshot' && result.result?.screenshot) {
           this.sp._agentUI.attachScreenshotToLastEntry(result.result.screenshot);
+          // ── Store screenshot for vision: next LLM call will include it ──
+          this._lastScreenshot = result.result.screenshot;
+          this.sp._lastScreenshot = result.result.screenshot; // also expose to sidepanel
         }
       }
       return result.result;
@@ -1094,6 +1124,7 @@ Respond with ONLY the JSON array. Example:
     this._cancelled = false;
     this._cancelReason = null;
     this._pendingResolve = null;
+    this._lastScreenshot = null;
   }
 
   // ── Utilities ───────────────────────────────────────────────────
