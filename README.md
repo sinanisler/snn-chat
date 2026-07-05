@@ -8,7 +8,7 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 ## Features
 
 - **Smart Sidebar**: Fixed top-right sidebar with full height display and customizable width (300-900px)
-- **Dual API Support**: Integrated with OpenAI and OpenRouter APIs with dynamic model loading
+- **Dual API Support**: Integrated with OpenRouter API with dynamic model loading
 - **Advanced Context Awareness**: Automatically extracts page content, monitors selections, and detects page changes
 - **Per-Domain Chat History**: Separate chat history for each website domain with session management
 - **Intelligent Page Detection**: Monitors SPA navigation and dynamic content changes
@@ -29,12 +29,9 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 ## Setup
 
 1. Click the extension icon or press `Ctrl+Shift+Y` to open the sidebar
-2. Click "Settings" in the sidebar to configure your API provider and key
-3. Choose between OpenAI or OpenRouter
-4. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys) or [OpenRouter](https://openrouter.ai/keys)
-5. Select your preferred AI model from the dynamically loaded list
-6. Customize your experience (theme, font size, shortcuts, etc.)
-7. Save your settings and start chatting!
+2. Click "Settings" in the sidebar to configure your API
+3. Get your API key from [OpenRouter](https://openrouter.ai/keys)
+4. Select your preferred AI model from the dynamically loaded list
 
 ## Usage
 
@@ -79,15 +76,16 @@ chrome-extension/
 The extension provides comprehensive settings accessible directly from the sidebar:
 
 ### API Settings
-- **Provider Selection**: Choose between OpenAI or OpenRouter
-- **API Keys**: Secure storage of your OpenAI or OpenRouter API key
-- **Dynamic Models**: Automatically loads available models from each provider
+- **Provider**: OpenRouter — access 200+ AI models through a single API
+- **API Keys**: Secure storage of your OpenRouter API key
+- **Dynamic Models**: Automatically loads available models from OpenRouter
 - **Connection Testing**: Test API connectivity before saving
 
 ### Chat Configuration
-- **Max Tokens**: Response length limit (100-4000)
-- **Temperature**: AI creativity level (0.0-1.0)
-- **Content Limit**: Page content extraction limit (1000-100000 words)
+- **Max Tokens**: Response length limit (256–131072)
+- **Temperature**: AI creativity level (0.0–2.0)
+- **Top P**: Nucleus sampling for response diversity
+- **Content Limit**: Page content extraction limit (500–100000 words)
 - **System Prompt**: Customize AI behavior with custom instructions
 
 ### Interface Customization
@@ -140,7 +138,7 @@ This is a vanilla JavaScript Chrome extension with no build process required:
 - **SNNChat Class**: Main application logic in `content/content.js`
 - **Background Service Worker**: Extension lifecycle and keyboard shortcuts
 - **Chrome Storage API**: Settings sync and local chat history storage
-- **Dynamic Model Loading**: Real-time API integration with OpenAI and OpenRouter
+- **Dynamic Model Loading**: Real-time API integration with OpenRouter
 
 ### Testing
 Test the extension manually by:
@@ -156,7 +154,7 @@ Any issues or bug reports → https://github.com/sinanisler/SNN-Chat/
 ## Privacy & Security
 
 - **Local Storage**: API keys and chat history stored securely using Chrome's storage API
-- **Minimal Data Transmission**: Data only sent to your chosen AI provider (OpenAI/OpenRouter)
+- **Minimal Data Transmission**: Data only sent to your chosen AI provider (OpenRouter)
 - **Domain Isolation**: Chat history separated by domain for privacy
 - **No Tracking**: No analytics, tracking, or data collection
 - **Secure Communication**: All API calls use HTTPS encryption

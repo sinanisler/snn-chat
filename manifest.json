@@ -1,11 +1,13 @@
-{  
+{
   "manifest_version": 3,
-  "name": "SNN Chat - AI Assistant, All OpenRouter and OpenAI Models",
-  "version": "1.6",
-  "description": "SNN Chat - AI-powered sidebar for web browsing with OpenAI and OpenRouter support",
+  "name": "SNN Chat - AI Assistant, All OpenRouter Models",
+  "version": "2.0",
+  "description": "SNN Chat - AI-powered side panel for web browsing with OpenRouter support",
   "permissions": [
+    "sidePanel",
+    "storage",
     "activeTab",
-    "storage"
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -14,17 +16,20 @@
     "service_worker": "background/background.js"
   },
   "action": {
+    "default_title": "Open SNN Chat",
     "default_icon": {
       "16": "assets/icons/icon16.png",
       "48": "assets/icons/icon48.png",
       "128": "assets/icons/icon128.png"
     }
   },
+  "side_panel": {
+    "default_path": "sidebar/sidepanel.html"
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["content/content.js"],
-      "css": ["content/content.css"],
       "run_at": "document_end"
     }
   ],
@@ -33,7 +38,7 @@
       "suggested_key": {
         "default": "Ctrl+Shift+Y"
       },
-      "description": "Toggle SNN Chat sidebar"
+      "description": "Toggle SNN Chat side panel"
     }
   },
   "web_accessible_resources": [
