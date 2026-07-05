@@ -13,6 +13,10 @@ class SNNSidePanel {
     this.pageContext = null;
     this.selection = null;
 
+    // ── Chat Lock: single session across all tabs ────────────
+    this._chatLockEnabled = false;
+    this._chatLockKey = 'snn_chat_history___locked___';
+
     // Active context that WILL be attached to the NEXT user message.
     this.activeContext = null;
     // Track whether context was already used by a message in current session
@@ -51,13 +55,18 @@ class SNNSidePanel {
       inputContextText: this.el('input-context-text'),
       dismissInputContext: this.el('dismiss-input-context'),
       // Tab indicator in header
-      tabDomain: this.el('tab-domain')
+      tabDomain: this.el('tab-domain'),
+      // Chat Lock
+      chatLockCheckbox: this.el('chat-lock-checkbox')
     };
   }
 
   // ── Init ────────────────────────────────────────────────────────
   async init() {
     await this.applySettings();
+
+    // ── Load Chat Lock state BEFORE loading sessions ──
+    await this._loadChatLockState();
 
     // ── Get OUR window ID (critical for multi-monitor filtering) ──
     try {
@@ -156,6 +165,9 @@ class SNNSidePanel {
     this.el('close-settings').addEventListener('click', () => this.closeSettings());
     this.el('close-history').addEventListener('click', () => this.closeHistory());
     this.els.dismissInputContext.addEventListener('click', () => this.dismissInputContext());
+
+    // Chat Lock checkbox
+    this.els.chatLockCheckbox.addEventListener('change', () => this._toggleChatLock());
 
     // Overlay backdrop clicks
     this.els.settingsOverlay.addEventListener('click', (e) => {
@@ -316,6 +328,35 @@ class SNNSidePanel {
   async _onTabSwitched(tabId, url, domain) {
     if (tabId === this.currentTabId) return; // Same tab, nothing to do
 
+    // ═══════════════════════════════════════════════════════════
+    // CHAT LOCK: bypass per-tab session switching entirely
+    // Only update tab reference — chat, session, history stay intact
+    // ═══════════════════════════════════════════════════════════
+    if (this._chatLockEnabled) {
+      // Do NOT cancel agent loop — it continues on the original tab
+      // Do NOT save/clear/load session — locked session persists
+
+      this.currentTabId = tabId;
+      this.currentDomain = domain || '';
+      // Keep currentSessionId, chatHistory, _historyKey unchanged
+
+      // Reset per-tab state: context/selection should refresh for new tab
+      this.pageContext = null;
+      this.selection = null;
+      this.activeContext = null;
+      this._contextConsumedInSession = false;
+      this.els.selectionBar.style.display = 'none';
+      this.els.inputContextIndicator.style.display = 'none';
+
+      // Update domain indicator and request fresh page context
+      this._updateTabIndicator();
+      chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
+      this.refreshActiveContext();
+
+      this.showToast(`Tab: ${this.currentDomain || 'new tab'} (🔒 locked)`);
+      return;
+    }
+
     // ── Cancel any running agent loop BEFORE clearing state ──
     if (this._agentLoop && this._agentLoop.isBusy) {
       this._agentLoop.cancel('tab-switch');
@@ -424,8 +465,8 @@ class SNNSidePanel {
       try {
         const agentResult = await this._agentLoop.run(message, contextSnapshot, this.currentTabId);
 
-        // Tab-switch guard
-        if (this.currentTabId !== sendTabId) return;
+        // Tab-switch guard: only discard if NOT in locked mode
+        if (!this._chatLockEnabled && this.currentTabId !== sendTabId) return;
 
         if (agentResult && agentResult.type === 'action') {
           // ── Handle capability queries ────────────────────
@@ -481,7 +522,7 @@ class SNNSidePanel {
       }
 
       // ── Tab-switch guard: discard if user switched tabs during API call ──
-      if (this.currentTabId !== sendTabId) return;
+      if (!this._chatLockEnabled && this.currentTabId !== sendTabId) return;
 
       if (settings.enableStreaming !== false) {
         // Streaming already rendered into DOM; just record in history
@@ -1557,12 +1598,25 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
 
   // ── Session Management ─────────────────────────────────────────
   get historyKey() {
+    // Chat Lock: use fixed key — same session across ALL tabs
+    if (this._chatLockEnabled) return this._historyKey || this._chatLockKey;
     const tabId = this.currentTabId || 'unknown';
     return this._historyKey || `snn_chat_history_${tabId}_${this.currentSessionId}`;
   }
   set historyKey(v) { this._historyKey = v; }
 
   async loadMostRecentSession() {
+    // Chat Lock: load from the fixed locked-session key
+    if (this._chatLockEnabled) {
+      const data = await chrome.storage.local.get([this._chatLockKey]);
+      if (data[this._chatLockKey]?.messages?.length) {
+        this._historyKey = this._chatLockKey;
+        this.currentSessionId = '__locked__';
+        this.chatHistory = data[this._chatLockKey].messages;
+        this.restoreChat();
+      }
+      return;
+    }
     if (!this.currentTabId) return;
     const all = await chrome.storage.local.get(null);
     const tabSessions = [];
@@ -1584,10 +1638,12 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
 
   async saveChatHistory() {
     if (!this.chatHistory.length) return;
+    // Chat Lock: always save to fixed key
+    const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
     await chrome.storage.local.set({
-      [this.historyKey]: {
+      [key]: {
         domain: this.currentDomain,
-        tabId: this.currentTabId,
+        tabId: this._chatLockEnabled ? null : this.currentTabId,
         lastUpdated: Date.now(),
         messages: this.chatHistory
       }
@@ -1595,6 +1651,22 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
   }
 
   async newSession() {
+    // Chat Lock: just clear chat, keep same locked session
+    if (this._chatLockEnabled) {
+      if (this.chatHistory.length) await this.saveChatHistory();
+      this.chatHistory = [];
+      this.totalTokensUsed = 0;
+      this._contextConsumedInSession = false;
+      this.activeContext = null;
+      this.els.chatMessages.innerHTML = '';
+      this.els.welcomeScreen.style.display = '';
+      this.els.smartPrompts.style.display = 'block';
+      this.els.tokenCounter.style.display = 'none';
+      this.refreshActiveContext();
+      await this.renderQuickActions();
+      this.showToast('Chat cleared (🔒 locked)');
+      return;
+    }
     if (this.chatHistory.length) await this.saveChatHistory();
     this.currentSessionId = this.generateId();
     const tabId = this.currentTabId || 'unknown';
@@ -1624,6 +1696,85 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
     this.renderQuickActions();
+  }
+
+  // ── Chat Lock ──────────────────────────────────────────────────
+
+  /**
+   * Load Chat Lock state from persistent storage.
+   * Called once during init(), BEFORE loadMostRecentSession().
+   */
+  async _loadChatLockState() {
+    const { snn_chat_lock } = await chrome.storage.sync.get('snn_chat_lock');
+    if (snn_chat_lock) {
+      this._chatLockEnabled = true;
+      this.els.chatLockCheckbox.checked = true;
+      this._historyKey = this._chatLockKey;
+      this.currentSessionId = '__locked__';
+    }
+  }
+
+  /**
+   * Persist Chat Lock state to sync storage so it survives
+   * browser restarts and side panel reopenings.
+   */
+  async _saveChatLockState() {
+    if (this._chatLockEnabled) {
+      await chrome.storage.sync.set({ snn_chat_lock: true });
+    } else {
+      await chrome.storage.sync.remove('snn_chat_lock');
+    }
+  }
+
+  /**
+   * Toggle Chat Lock on/off.
+   * LOCKING: saves current session, switches to unified locked session.
+   * UNLOCKING: saves locked session, switches back to per-tab mode.
+   */
+  async _toggleChatLock() {
+    const wasLocked = this._chatLockEnabled;
+    this._chatLockEnabled = this.els.chatLockCheckbox.checked;
+
+    if (this._chatLockEnabled && !wasLocked) {
+      // ═══ LOCKING: save current → switch to unified session ═══
+      await this.saveChatHistory();
+
+      const data = await chrome.storage.local.get([this._chatLockKey]);
+      if (data[this._chatLockKey]?.messages?.length) {
+        // Restore existing locked session
+        this.chatHistory = data[this._chatLockKey].messages;
+        this.restoreChat();
+      } else {
+        // Start fresh in locked mode
+        this.chatHistory = [];
+        this.els.chatMessages.innerHTML = '';
+        this.els.welcomeScreen.style.display = '';
+        this.els.smartPrompts.style.display = 'block';
+      }
+
+      this.currentSessionId = '__locked__';
+      this._historyKey = this._chatLockKey;
+      this._contextConsumedInSession = false;
+      this.totalTokensUsed = 0;
+      this.els.tokenCounter.style.display = 'none';
+      this.showToast('🔒 Chat Locked — one session across all tabs');
+    } else if (!this._chatLockEnabled && wasLocked) {
+      // ═══ UNLOCKING: save locked → back to per-tab ═══
+      await this.saveChatHistory();
+
+      this.currentSessionId = this.generateId();
+      this._historyKey = null;
+      this.chatHistory = [];
+      this.els.chatMessages.innerHTML = '';
+      this.els.welcomeScreen.style.display = '';
+      this.els.smartPrompts.style.display = 'block';
+      this.els.tokenCounter.style.display = 'none';
+
+      await this.loadMostRecentSession();
+      this.showToast('🔓 Chat Unlocked — per-tab sessions restored');
+    }
+
+    await this._saveChatLockState();
   }
 
   // ═══════════════════════════════════════════════════════════════

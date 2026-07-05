@@ -1045,6 +1045,8 @@ Respond with ONLY the JSON array. Example:
   // STALE STATE DETECTION
   // ═══════════════════════════════════════════════════════════════
   _checkTabStillValid() {
+    // Chat Lock: tab switches are allowed — agent keeps running on original tab
+    if (this.sp._chatLockEnabled) return true;
     if (this.sp.currentTabId !== this._sendTabId) {
       // Tab switched — cancel gracefully, don't show error cards
       this._cancelled = true;

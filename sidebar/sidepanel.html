@@ -58,7 +58,13 @@
         <button id="clear-context-btn" title="Clear chat">Clear</button>
         <button id="settings-btn" title="Settings">Settings</button>
       </div>
-      <div id="token-counter" class="sp-token-counter" style="display:none">0 tokens</div>
+      <div class="sp-input-row-right">
+        <label class="sp-chat-lock" title="Lock chat: single session across all tabs">
+          <input type="checkbox" id="chat-lock-checkbox">
+          <span>Chat Lock</span>
+        </label>
+        <div id="token-counter" class="sp-token-counter" style="display:none">0 tokens</div>
+      </div>
     </div>
     <div class="sp-input-wrapper">
       <textarea id="user-input" placeholder="Ask anything..." rows="1"></textarea>
