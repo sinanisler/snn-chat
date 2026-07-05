@@ -224,7 +224,7 @@ class SNNVoiceRelay {
   _setupListener() {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.action === 'voice:start') {
-        this._start(sendResponse);
+        this._start(message, sendResponse);
         return true; // keep channel open for async response
       }
       if (message.action === 'voice:stop') {
@@ -234,7 +234,7 @@ class SNNVoiceRelay {
     });
   }
 
-  async _start(sendResponse) {
+  async _start(message, sendResponse) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       sendResponse({ success: false, error: 'unsupported' });
@@ -261,6 +261,7 @@ class SNNVoiceRelay {
 
     this._lastFinalIdx = -1;
     this._lastInterim = '';
+    this._voiceGen = message.gen || 0;
 
     this.recognition.onresult = (e) => {
       let final = '', interim = '';
@@ -291,7 +292,7 @@ class SNNVoiceRelay {
     };
 
     this.recognition.onend = () => {
-      chrome.runtime.sendMessage({ action: 'voice:ended' }).catch(() => {});
+      chrome.runtime.sendMessage({ action: 'voice:ended', gen: this._voiceGen }).catch(() => {});
       this._cleanup();
     };
 

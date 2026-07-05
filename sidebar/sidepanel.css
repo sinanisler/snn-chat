@@ -156,7 +156,25 @@ body.theme-dark {
 }
 
 .sp-header-left { display: flex; gap: 8px; align-items: center; }
+.sp-header-center { flex: 1; text-align: center; min-width: 0; }
 .sp-header-right { display: flex; gap: 8px; align-items: center; }
+
+.sp-tab-domain {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sp-text-secondary);
+  background: var(--sp-context-bg);
+  border: 1px solid var(--sp-context-border);
+  padding: 3px 10px;
+  border-radius: 10px;
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+  text-transform: lowercase;
+}
 
 .sp-text-btn {
   background: none;
@@ -293,6 +311,87 @@ body.theme-dark {
   color: var(--sp-text-secondary);
   opacity: 0.55;
   margin-top: 6px;
+}
+
+/* ── Context Chip (in chat, before user bubble) ────────────────── */
+.sp-msg-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin-bottom: 2px;
+  background: var(--sp-context-bg);
+  border: 1px solid var(--sp-context-border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--sp-context-text);
+  align-self: flex-end;
+  max-width: 90%;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.sp-msg-context:hover { opacity: 1; }
+.sp-msg-context-icon { flex-shrink: 0; font-size: 13px; }
+.sp-msg-context-label {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--sp-text-secondary);
+  flex-shrink: 0;
+}
+.sp-msg-context-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Input Context Indicator ───────────────────────────────────── */
+.sp-input-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--sp-context-bg);
+  border-top: 1px solid var(--sp-context-border);
+  border-bottom: 1px solid var(--sp-context-border);
+  font-size: 13px;
+  flex-shrink: 0;
+  animation: contextSlideIn 0.2s ease;
+}
+@keyframes contextSlideIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.sp-input-context-icon { flex-shrink: 0; font-size: 14px; }
+.sp-input-context-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--sp-context-text);
+  font-weight: 500;
+}
+.sp-input-context-dismiss {
+  background: none;
+  border: none;
+  color: var(--sp-text-secondary);
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  line-height: 1;
+  opacity: 0.6;
+  transition: all 0.15s;
+}
+.sp-input-context-dismiss:hover {
+  opacity: 1;
+  background: var(--sp-btn-hover);
+  color: var(--sp-danger);
 }
 
 /* ── Quick Actions ────────────────────────────────────────────── */

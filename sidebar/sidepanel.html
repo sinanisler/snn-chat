@@ -14,6 +14,9 @@
       <button class="sp-text-btn" id="new-chat-btn">New</button>
       <button class="sp-text-btn" id="history-btn">History</button>
     </div>
+    <div class="sp-header-center">
+      <span class="sp-tab-domain" id="tab-domain" title="Active tab"></span>
+    </div>
     <div class="sp-header-right">
       <span class="sp-model-name" id="current-model">Loading...</span>
       <button class="sp-text-btn" id="model-settings-btn">Settings</button>
@@ -48,6 +51,13 @@
       <span class="sp-prompts-title">Quick Actions</span>
     </div>
     <div class="sp-prompts-grid" id="prompts-grid"></div>
+  </div>
+
+  <!-- Context Indicator (shows what context will be attached to next message) -->
+  <div class="sp-input-context" id="input-context-indicator" style="display:none">
+    <span class="sp-input-context-icon"></span>
+    <span class="sp-input-context-text" id="input-context-text"></span>
+    <button class="sp-input-context-dismiss" id="dismiss-input-context" title="Don't attach context">&times;</button>
   </div>
 
   <!-- Input Area -->

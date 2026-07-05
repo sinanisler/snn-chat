@@ -8,9 +8,17 @@ class SNNSidePanel {
     this.isLoading = false;
     this.totalTokensUsed = 0;
     this.currentDomain = '';
+    this.currentTabId = null;        // ← per-tab session tracking
     this.currentSessionId = this.generateId();
     this.pageContext = null;
     this.selection = null;
+
+    // Active context that WILL be attached to the NEXT user message.
+    // This is a snapshot resolved at send-time from pageContext + selection.
+    // { type: 'page'|'selection'|'none', summary: '...', detail: '...' }
+    this.activeContext = null;
+    // Track whether context was already used by a message in current session
+    this._contextConsumedInSession = false;
 
     this.cacheDom();
     this.setupListeners();
@@ -38,23 +46,52 @@ class SNNSidePanel {
       settingsOverlay: this.el('settings-overlay'),
       settingsBody: this.el('settings-body'),
       historyOverlay: this.el('history-overlay'),
-      historyBody: this.el('history-body')
+      historyBody: this.el('history-body'),
+      // Context indicator above input
+      inputContextIndicator: this.el('input-context-indicator'),
+      inputContextText: this.el('input-context-text'),
+      dismissInputContext: this.el('dismiss-input-context'),
+      // Tab indicator in header
+      tabDomain: this.el('tab-domain')
     };
   }
 
   // ── Init ────────────────────────────────────────────────────────
   async init() {
     await this.applySettings();
+
+    // ── Determine active tab BEFORE loading sessions ──
+    // The background stores active tab info in session storage.
+    const { snn_active_tab } = await chrome.storage.session.get('snn_active_tab');
+    if (snn_active_tab?.tabId) {
+      this.currentTabId = snn_active_tab.tabId;
+      this.currentDomain = snn_active_tab.domain || '';
+    }
+
+    // Fallback: query directly if storage is empty (first run)
+    if (!this.currentTabId) {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) {
+          this.currentTabId = tab.id;
+          this.currentDomain = new URL(tab.url).hostname;
+        }
+      } catch (e) { /* may fail without tabs permission */ }
+    }
+
     await this.loadContext();
     await this.loadMostRecentSession();
     this.renderQuickActions();
     this.setupVoice();
     this.setupContextWatcher();
+    this._setupTabTracking();
 
     // Show welcome or quick actions
     if (this.chatHistory.length === 0) {
       this.els.smartPrompts.style.display = 'block';
     }
+
+    this._updateTabIndicator();
   }
 
   // ── Event Listeners ─────────────────────────────────────────────
@@ -73,6 +110,7 @@ class SNNSidePanel {
     this.el('clear-selection').addEventListener('click', () => this.clearSelection());
     this.el('close-settings').addEventListener('click', () => this.closeSettings());
     this.el('close-history').addEventListener('click', () => this.closeHistory());
+    this.els.dismissInputContext.addEventListener('click', () => this.dismissInputContext());
 
     // Overlay backdrop clicks
     this.els.settingsOverlay.addEventListener('click', (e) => {
@@ -98,34 +136,185 @@ class SNNSidePanel {
   async loadContext() {
     const { snn_page_context } = await chrome.storage.session.get('snn_page_context');
     if (snn_page_context) {
-      this.pageContext = snn_page_context;
-      this.currentDomain = snn_page_context.domain;
-      this.updateContextBar();
+      // Only accept context from the current tab (or if no tabId was stored, accept it)
+      if (!snn_page_context.tabId || snn_page_context.tabId === this.currentTabId) {
+        this.pageContext = snn_page_context;
+        this.currentDomain = snn_page_context.domain || this.currentDomain;
+        this.updateContextBar();
+      }
     }
+    // Request fresh extraction from current tab's content script
+    chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
   }
 
   setupContextWatcher() {
     chrome.storage.session.onChanged.addListener((changes) => {
       if (changes.snn_page_context) {
-        this.pageContext = changes.snn_page_context.newValue;
+        const ctx = changes.snn_page_context.newValue;
+        // Only accept context from the currently active tab
+        if (ctx && ctx.tabId && ctx.tabId !== this.currentTabId) return;
+        this.pageContext = ctx;
         if (this.pageContext) {
-          this.currentDomain = this.pageContext.domain;
+          this.currentDomain = this.pageContext.domain || this.currentDomain;
           this.updateContextBar();
         }
+        this.refreshActiveContext();
       }
       if (changes.snn_selection) {
-        this.selection = changes.snn_selection.newValue;
+        const sel = changes.snn_selection.newValue;
+        // Only accept selection from the currently active tab
+        if (sel && sel.tabId && sel.tabId !== this.currentTabId) return;
+        this.selection = sel;
         if (this.selection) {
           this.updateSelectionBar();
         } else {
           this.els.selectionBar.style.display = 'none';
         }
+        this.refreshActiveContext();
+      }
+    });
+    // Initial active context
+    this.refreshActiveContext();
+  }
+
+  // ── Active Context Resolution ──────────────────────────────────
+  // Decides what context will be attached to the NEXT user message.
+  // Priority: selection > page context > nothing.
+  refreshActiveContext() {
+    // If context was already consumed in this session and nothing
+    // new selected, don't re-attach stale page context.
+    if (this.selection?.text) {
+      this.activeContext = {
+        type: 'selection',
+        summary: this.selection.text.length > 80
+          ? this.selection.text.substring(0, 80) + '...'
+          : this.selection.text,
+        detail: this.selection.text
+      };
+    } else if (this.pageContext?.content && !this._contextConsumedInSession) {
+      this.activeContext = {
+        type: 'page',
+        summary: (this.pageContext.title || 'This page') + ' · ' +
+                 (this.pageContext.wordCount || 0).toLocaleString() + ' words',
+        detail: this.pageContext.content,
+        title: this.pageContext.title,
+        wordCount: this.pageContext.wordCount
+      };
+    } else if (this.pageContext?.content && this._contextConsumedInSession) {
+      // Page context exists but already used — only attach if user explicitly
+      // selected something new. Otherwise no auto-context for ongoing chats.
+      this.activeContext = null;
+    } else {
+      this.activeContext = null;
+    }
+    this.updateInputContextIndicator();
+  }
+
+  // Show a subtle indicator above the input showing what will be attached
+  updateInputContextIndicator() {
+    if (this.activeContext) {
+      this.els.inputContextIndicator.style.display = 'flex';
+      const icon = this.activeContext.type === 'selection' ? '📝' : '📄';
+      this.els.inputContextIndicator.querySelector('.sp-input-context-icon').textContent = icon;
+      this.els.inputContextText.textContent = this.activeContext.summary;
+      this.els.inputContextText.title = this.activeContext.type === 'selection'
+        ? this.activeContext.detail
+        : (this.activeContext.title || '') + ' — ' + (this.activeContext.wordCount || 0) + ' words';
+    } else {
+      this.els.inputContextIndicator.style.display = 'none';
+    }
+  }
+
+  dismissInputContext() {
+    this.activeContext = null;
+    this._contextConsumedInSession = true;
+    this.els.inputContextIndicator.style.display = 'none';
+    // Also clear any selection
+    if (this.selection) this.clearSelection();
+  }
+
+  // ── Tab Tracking ────────────────────────────────────────────────
+  // Listens for tab-switch messages from the background service worker.
+  // When the user switches tabs, we save the current session and load
+  // the target tab's session (or start a fresh one).
+  _setupTabTracking() {
+    chrome.runtime.onMessage.addListener((message) => {
+      if (message.action === 'tabSwitched') {
+        this._onTabSwitched(message.tabId, message.url, message.domain);
+      }
+      if (message.action === 'tabClosed') {
+        // If the closed tab was our current one, the background will
+        // send a tabSwitched for the new active tab shortly after.
+        // We just clear stale reference.
+        if (message.tabId === this.currentTabId) {
+          this.currentTabId = null;
+        }
       }
     });
   }
 
+  async _onTabSwitched(tabId, url, domain) {
+    if (tabId === this.currentTabId) return; // Same tab, nothing to do
+
+    // Save current session before switching
+    if (this.chatHistory.length) {
+      await this.saveChatHistory();
+    }
+
+    // Switch to the new tab
+    this.currentTabId = tabId;
+    this.currentDomain = domain || '';
+    this.currentSessionId = this.generateId(); // default: new session
+    this._historyKey = null;                   // will be rebuilt from tabId
+    this.chatHistory = [];
+    this.totalTokensUsed = 0;
+    this._contextConsumedInSession = false;
+    this.activeContext = null;
+    this.pageContext = null;
+    this.selection = null;
+
+    // Clear UI
+    this.els.chatMessages.innerHTML = '';
+    this.els.welcomeScreen.style.display = '';
+    this.els.smartPrompts.style.display = 'block';
+    this.els.tokenCounter.style.display = 'none';
+    this.els.selectionBar.style.display = 'none';
+    this.els.inputContextIndicator.style.display = 'none';
+
+    // Show loading state in context bar
+    this.els.contextBar.style.display = 'flex';
+    this.els.contextText.textContent = 'Loading page context...';
+    this.els.contextWords.textContent = '';
+
+    // Request fresh page content extraction from the new tab
+    chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
+
+    // Load existing session for this tab (if any)
+    await this.loadMostRecentSession();
+
+    // Render quick actions if empty
+    if (this.chatHistory.length === 0) {
+      this.els.smartPrompts.style.display = 'block';
+    }
+
+    // Update tab domain indicator
+    this._updateTabIndicator();
+
+    // Show a subtle toast
+    this.showToast(`Switched to ${this.currentDomain || 'new tab'}`);
+  }
+
   updateContextBar() {
-    if (!this.pageContext) return;
+    if (!this.pageContext) {
+      // Show just the domain if we have it but no page context yet
+      if (this.currentDomain) {
+        this.els.contextBar.style.display = 'flex';
+        this.els.contextText.textContent = 'Loading...';
+        this.els.contextWords.textContent = '';
+      }
+      this._updateTabIndicator();
+      return;
+    }
     this.els.contextBar.style.display = 'flex';
     const title = this.pageContext.title || 'Unknown page';
     const truncated = title.length > 50 ? title.substring(0, 50) + '...' : title;
@@ -133,6 +322,15 @@ class SNNSidePanel {
     this.els.contextText.title = title;
     const wc = this.pageContext.wordCount || 0;
     this.els.contextWords.textContent = wc ? `${wc.toLocaleString()} words` : '';
+    this._updateTabIndicator();
+  }
+
+  // Show current tab domain in the header
+  _updateTabIndicator() {
+    if (this.els.tabDomain && this.currentDomain) {
+      this.els.tabDomain.textContent = this.currentDomain;
+      this.els.tabDomain.title = 'Active tab: ' + this.currentDomain;
+    }
   }
 
   updateSelectionBar() {
@@ -149,12 +347,16 @@ class SNNSidePanel {
     this.selection = null;
     this.els.selectionBar.style.display = 'none';
     chrome.runtime.sendMessage({ action: 'clearSelection' }).catch(() => {});
+    this.refreshActiveContext();
   }
 
   // ── Chat ────────────────────────────────────────────────────────
   async sendMessage() {
     const message = this.els.userInput.value.trim();
     if (!message || this.isLoading) return;
+
+    // ── Snapshot the context that will be attached to THIS message ──
+    const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
 
     this.isLoading = true;
     this.els.sendBtn.disabled = true;
@@ -163,24 +365,29 @@ class SNNSidePanel {
     this.els.smartPrompts.style.display = 'none';
     this.els.welcomeScreen.style.display = 'none';
 
-    this.addMessage('user', message);
+    // Mark context as consumed so page context won't re-attach automatically
+    if (contextSnapshot) {
+      this._contextConsumedInSession = true;
+    }
+
+    // Render user message with context chip
+    this.addMessage('user', message, null, contextSnapshot);
     await this.saveChatHistory();
 
     try {
       const settings = await this.getSettings();
-      let context = this.pageContext?.content || '';
-      let contextType = 'page';
+      let context = '';
+      let contextType = 'none';
 
-      // If user has selected text, prioritize that
-      if (this.selection?.text) {
-        context = this.selection.text;
-        contextType = 'selection';
+      if (contextSnapshot) {
+        context = contextSnapshot.detail || '';
+        contextType = contextSnapshot.type;
       }
 
       if (settings.enableStreaming !== false) {
         const response = await this.streamResponse(message, context, contextType);
         this.chatHistory.push(
-          { role: 'user', content: message, contextType },
+          { role: 'user', content: message, contextType, context: contextSnapshot },
           { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
         );
       } else {
@@ -189,7 +396,7 @@ class SNNSidePanel {
         this.removeLoadingMsg();
         this.addMessage('ai', response, this.lastTokenUsage);
         this.chatHistory.push(
-          { role: 'user', content: message, contextType },
+          { role: 'user', content: message, contextType, context: contextSnapshot },
           { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
         );
       }
@@ -199,6 +406,11 @@ class SNNSidePanel {
       this.removeLoadingMsg();
       this.addMessage('ai', `Error: ${error.message}`);
     }
+
+    // Clear active context after sending (selection consumed)
+    if (this.selection) this.clearSelection();
+    this.activeContext = null;
+    this.refreshActiveContext();
 
     this.isLoading = false;
     this.els.sendBtn.disabled = false;
@@ -359,8 +571,14 @@ class SNNSidePanel {
   }
 
   // ── Message Rendering ──────────────────────────────────────────
-  addMessage(role, content, tokenUsage) {
+  addMessage(role, content, tokenUsage, contextSnapshot) {
     this.els.welcomeScreen.style.display = 'none';
+
+    // ── Context chip: rendered BEFORE the user bubble ──
+    if (role === 'user' && contextSnapshot) {
+      this.renderContextChip(contextSnapshot);
+    }
+
     const div = document.createElement('div');
     div.className = `sp-msg sp-msg-${role}`;
     div.innerHTML = role === 'ai' ? this.parseMarkdown(content) : this.escapeHtml(content);
@@ -372,6 +590,37 @@ class SNNSidePanel {
     }
 
     this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+  }
+
+  // ── Context Chip rendering ─────────────────────────────────────
+  // Renders a small chip right before the user's message bubble
+  // showing what context (page or selection) was attached.
+  renderContextChip(ctx) {
+    const chip = document.createElement('div');
+    chip.className = 'sp-msg-context';
+
+    let icon, label, detail;
+    if (ctx.type === 'selection') {
+      icon = '📝';
+      label = 'Selected text';
+      detail = ctx.summary || ctx.detail?.substring(0, 60) || '';
+    } else {
+      icon = '📄';
+      label = 'Page context';
+      detail = ctx.title || ctx.summary || '';
+      if (ctx.wordCount) detail += ' · ' + ctx.wordCount.toLocaleString() + ' words';
+    }
+
+    chip.innerHTML = `
+      <span class="sp-msg-context-icon">${icon}</span>
+      <span class="sp-msg-context-label">${label}</span>
+      <span class="sp-msg-context-detail">${this.escapeHtml(detail)}</span>
+    `;
+    chip.title = ctx.type === 'selection'
+      ? 'Selected: ' + (ctx.detail || '')
+      : 'Page: ' + (ctx.title || '') + ' (' + (ctx.wordCount || 0) + ' words)';
+
+    this.els.chatMessages.appendChild(chip);
   }
 
   addLoadingMsg() {
@@ -934,19 +1183,31 @@ class SNNSidePanel {
     const all = await chrome.storage.local.get(null);
     const histories = [];
     for (const key in all) {
-      if (key.startsWith('snn_chat_history_') && all[key].messages?.length) {
-        const data = all[key];
-        const parts = key.replace('snn_chat_history_', '').split('_');
-        const sessionId = parts.pop();
-        const domain = parts.join('_');
-        const lastUser = [...data.messages].reverse().find(m => m.role === 'user');
-        histories.push({
-          key, domain, sessionId,
-          lastUpdated: data.lastUpdated || 0,
-          messageCount: data.messages.length,
-          lastMessage: lastUser?.content || ''
-        });
-      }
+      if (!key.startsWith('snn_chat_history_') || !all[key].messages?.length) continue;
+
+      const data = all[key];
+      // New format: snn_chat_history_{tabId}_{sessionId}
+      // Old format: snn_chat_history_{domain}_{sessionId}
+      // We try to parse both.
+      const suffix = key.replace('snn_chat_history_', '');
+      const parts = suffix.split('_');
+      const sessionId = parts.pop();
+      const domainOrTabId = parts.join('_');
+
+      // Determine if this is a tabId (numeric) or domain (string with dots)
+      const isTabId = /^\d+$/.test(domainOrTabId);
+      const domain = data.domain || (isTabId ? '(tab ' + domainOrTabId + ')' : domainOrTabId);
+
+      const lastUser = [...data.messages].reverse().find(m => m.role === 'user');
+      histories.push({
+        key,
+        domain,
+        sessionId,
+        tabId: isTabId ? parseInt(domainOrTabId) : null,
+        lastUpdated: data.lastUpdated || 0,
+        messageCount: data.messages.length,
+        lastMessage: lastUser?.content || ''
+      });
     }
     histories.sort((a, b) => b.lastUpdated - a.lastUpdated);
     return histories;
@@ -956,11 +1217,18 @@ class SNNSidePanel {
     await this.saveChatHistory();
     const data = await chrome.storage.local.get([key]);
     if (data[key]) {
-      this.chatHistory = data[key].messages || [];
-      this.currentDomain = domain;
+      const session = data[key];
+      this.chatHistory = session.messages || [];
+      this.currentDomain = session.domain || domain;
+      // If session has a tabId, update current tab
+      if (session.tabId) {
+        this.currentTabId = session.tabId;
+      }
       this.currentSessionId = key.split('_').pop();
       this.historyKey = key;
       this.totalTokensUsed = 0;
+      this._contextConsumedInSession = false;
+      this.activeContext = null;
       this.restoreChat();
       this.closeHistory();
       this.showToast('Session loaded');
@@ -995,7 +1263,8 @@ class SNNSidePanel {
     for (const key in all) {
       if (!key.startsWith('snn_chat_history_')) continue;
       const data = all[key];
-      const domain = key.replace('snn_chat_history_', '').split('_').slice(0, -1).join('_');
+      // Prefer stored domain, fallback to parsing key
+      const domain = data.domain || key.replace('snn_chat_history_', '').split('_').slice(0, -1).join('_');
       out += `Domain: ${domain}\n${'-'.repeat(40)}\n`;
       data.messages?.forEach(m => {
         out += `[${m.role.toUpperCase()}] ${m.content}\n\n`;
@@ -1017,33 +1286,44 @@ class SNNSidePanel {
     this.els.welcomeScreen.style.display = this.chatHistory.length === 0 ? '' : 'none';
     this.els.smartPrompts.style.display = this.chatHistory.length === 0 ? 'block' : 'none';
 
+    // Track if any message in this session already used context
+    let hasContextMessage = false;
+
     for (let i = 0; i < this.chatHistory.length; i++) {
       const msg = this.chatHistory[i];
       if (msg.role === 'user') {
-        this.addMessage('user', msg.content);
+        this.addMessage('user', msg.content, null, msg.context || null);
+        if (msg.context) hasContextMessage = true;
       } else if (msg.role === 'assistant') {
         this.addMessage('ai', msg.content, msg.tokenUsage);
       }
     }
+
+    // If any message already consumed context, mark session accordingly
+    this._contextConsumedInSession = hasContextMessage;
+    this.refreshActiveContext();
   }
 
   // ── Session Management ─────────────────────────────────────────
   get historyKey() {
-    return this._historyKey || `snn_chat_history_${this.currentDomain}_${this.currentSessionId}`;
+    const tabId = this.currentTabId || 'unknown';
+    return this._historyKey || `snn_chat_history_${tabId}_${this.currentSessionId}`;
   }
   set historyKey(v) { this._historyKey = v; }
 
   async loadMostRecentSession() {
+    if (!this.currentTabId) return;
     const all = await chrome.storage.local.get(null);
-    const domainSessions = [];
+    const tabSessions = [];
+    const prefix = `snn_chat_history_${this.currentTabId}_`;
     for (const key in all) {
-      if (key.startsWith(`snn_chat_history_${this.currentDomain}_`) && all[key].messages?.length) {
-        domainSessions.push({ key, lastUpdated: all[key].lastUpdated || 0, messages: all[key].messages });
+      if (key.startsWith(prefix) && all[key].messages?.length) {
+        tabSessions.push({ key, lastUpdated: all[key].lastUpdated || 0, messages: all[key].messages });
       }
     }
-    if (domainSessions.length) {
-      domainSessions.sort((a, b) => b.lastUpdated - a.lastUpdated);
-      const recent = domainSessions[0];
+    if (tabSessions.length) {
+      tabSessions.sort((a, b) => b.lastUpdated - a.lastUpdated);
+      const recent = tabSessions[0];
       this._historyKey = recent.key;
       this.currentSessionId = recent.key.split('_').pop();
       this.chatHistory = recent.messages;
@@ -1056,6 +1336,7 @@ class SNNSidePanel {
     await chrome.storage.local.set({
       [this.historyKey]: {
         domain: this.currentDomain,
+        tabId: this.currentTabId,
         lastUpdated: Date.now(),
         messages: this.chatHistory
       }
@@ -1065,13 +1346,17 @@ class SNNSidePanel {
   async newSession() {
     if (this.chatHistory.length) await this.saveChatHistory();
     this.currentSessionId = this.generateId();
-    this._historyKey = `snn_chat_history_${this.currentDomain}_${this.currentSessionId}`;
+    const tabId = this.currentTabId || 'unknown';
+    this._historyKey = `snn_chat_history_${tabId}_${this.currentSessionId}`;
     this.chatHistory = [];
     this.totalTokensUsed = 0;
+    this._contextConsumedInSession = false;
+    this.activeContext = null;
     this.els.chatMessages.innerHTML = '';
     this.els.welcomeScreen.style.display = '';
     this.els.smartPrompts.style.display = 'block';
     this.els.tokenCounter.style.display = 'none';
+    this.refreshActiveContext();
     await this.renderQuickActions();
     this.showToast('New chat started');
   }
@@ -1080,10 +1365,13 @@ class SNNSidePanel {
     if (this.chatHistory.length) this.saveChatHistory();
     this.chatHistory = [];
     this.totalTokensUsed = 0;
+    this._contextConsumedInSession = false;
+    this.activeContext = null;
     this.els.chatMessages.innerHTML = '';
     this.els.welcomeScreen.style.display = '';
     this.els.smartPrompts.style.display = 'block';
     this.els.tokenCounter.style.display = 'none';
+    this.refreshActiveContext();
     this.renderQuickActions();
   }
 
@@ -1132,6 +1420,7 @@ class SNNSidePanel {
 
   // Listen for voice results forwarded from content script via background
   _setupVoiceMessageListener() {
+    this._voiceGen = 0;        // incremented each new session, used to ignore stale events
     this._lastVoiceFinal = '';
     this._lastVoiceInterim = '';
     chrome.runtime.onMessage.addListener((message) => {
@@ -1174,6 +1463,8 @@ class SNNSidePanel {
           break;
 
         case 'voice:ended':
+          // Ignore stale ended events from previous sessions
+          if (message.gen !== this._voiceGen) break;
           this.els.voiceBtn.classList.remove('listening');
           this._voiceActive = false;
           this.els.userInput.placeholder = 'Ask anything...';
@@ -1186,16 +1477,23 @@ class SNNSidePanel {
     if (this._voiceActive) return;
     this.els.voiceBtn.classList.add('listening');
     this._voiceActive = true;
+    this._voiceGen++;
+    const gen = this._voiceGen;
 
     try {
-      const response = await chrome.runtime.sendMessage({ action: 'voice:start' });
+      const response = await chrome.runtime.sendMessage({ action: 'voice:start', gen });
       if (!response?.success) {
         this.els.voiceBtn.classList.remove('listening');
         this._voiceActive = false;
-        if (response?.error === 'denied') {
+        const err = response?.error || '';
+        if (err === 'denied') {
           this.showToast('Microphone access denied. Please allow mic access for this website.', 'error');
-        } else if (response?.error === 'no-mic') {
+        } else if (err === 'no-mic') {
           this.showToast('No microphone found.', 'error');
+        } else if (err === 'content-script-unavailable') {
+          this.showToast('Voice not available on this page. Refresh and try again.', 'error');
+        } else if (err) {
+          this.showToast('Voice start failed. Try again.', 'error');
         }
       }
     } catch (err) {
@@ -1207,6 +1505,7 @@ class SNNSidePanel {
 
   _stopVoice() {
     this._voiceActive = false;
+    this.els.voiceBtn.classList.remove('listening');
     chrome.runtime.sendMessage({ action: 'voice:stop' }).catch(() => {});
   }
 
