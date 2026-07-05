@@ -17,6 +17,9 @@ class SNNSidePanel {
     this._chatLockEnabled = false;
     this._chatLockKey = 'snn_chat_history___locked___';
 
+    // ── In-flight request cancellation ─────────────────────────
+    this._activeAbortController = null;
+
     // Active context that WILL be attached to the NEXT user message.
     this.activeContext = null;
     // Track whether context was already used by a message in current session
@@ -364,10 +367,13 @@ class SNNSidePanel {
       await new Promise(r => setTimeout(r, 100));
     }
 
-    // Save current session before switching
+    // Save current session BEFORE aborting/closing anything
     if (this.chatHistory.length) {
       await this.saveChatHistory();
     }
+
+    // ── Now safe to abort in-flight fetch and reset UI ──
+    this._resetLoadingState();
 
     // Switch to the new tab
     this.currentTabId = tabId;
@@ -461,6 +467,10 @@ class SNNSidePanel {
     // ── Snapshot tab so we can discard stale responses after tab switch ──
     const sendTabId = this.currentTabId;
 
+    // ── Create abort controller so we can cancel in-flight fetch on tab switch ──
+    this._activeAbortController = new AbortController();
+    const signal = this._activeAbortController.signal;
+
     this.isLoading = true;
     this.els.sendBtn.disabled = true;
     this.els.userInput.value = '';
@@ -475,6 +485,13 @@ class SNNSidePanel {
 
     // Render user message with context chip
     this.addMessage('user', message, null, contextSnapshot);
+
+    // ── Push user message to chatHistory NOW so it survives tab switches ──
+    this.chatHistory.push({
+      role: 'user', content: message,
+      contextType: contextSnapshot?.type || 'none',
+      context: contextSnapshot
+    });
     await this.saveChatHistory();
 
     // ── Try Agent Loop first ───────────────────────────────────
@@ -483,7 +500,7 @@ class SNNSidePanel {
         const agentResult = await this._agentLoop.run(message, contextSnapshot, this.currentTabId);
 
         // Tab-switch guard: only discard if NOT in locked mode
-        if (!this._chatLockEnabled && this.currentTabId !== sendTabId) return;
+        if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
 
         if (agentResult && agentResult.type === 'action') {
           // ── Handle capability queries ────────────────────
@@ -491,7 +508,6 @@ class SNNSidePanel {
             const capData = agentResult.results[0].result;
             this._renderCapabilitiesInChat(capData);
             this.chatHistory.push(
-              { role: 'user', content: message, contextType: contextSnapshot?.type || 'none', context: contextSnapshot },
               { role: 'assistant', content: this._formatCapabilitiesForHistory(capData) }
             );
             await this.saveChatHistory();
@@ -500,7 +516,6 @@ class SNNSidePanel {
           if (agentResult.llmResponse) {
             this.addMessage('ai', agentResult.llmResponse);
             this.chatHistory.push(
-              { role: 'user', content: message, contextType: contextSnapshot?.type || 'none', context: contextSnapshot },
               { role: 'assistant', content: agentResult.llmResponse }
             );
             await this.saveChatHistory();
@@ -531,26 +546,24 @@ class SNNSidePanel {
 
       let response;
       if (settings.enableStreaming !== false) {
-        response = await this.streamResponse(message, context, contextType);
+        response = await this.streamResponse(message, context, contextType, signal);
       } else {
         this.addLoadingMsg();
-        response = await this.callAPI(message, context, contextType);
+        response = await this.callAPI(message, context, contextType, signal);
         this.removeLoadingMsg();
       }
 
       // ── Tab-switch guard: discard if user switched tabs during API call ──
-      if (!this._chatLockEnabled && this.currentTabId !== sendTabId) return;
+      if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
 
       if (settings.enableStreaming !== false) {
         // Streaming already rendered into DOM; just record in history
         this.chatHistory.push(
-          { role: 'user', content: message, contextType, context: contextSnapshot },
           { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
         );
       } else {
         this.addMessage('ai', response, this.lastTokenUsage);
         this.chatHistory.push(
-          { role: 'user', content: message, contextType, context: contextSnapshot },
           { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
         );
       }
@@ -558,7 +571,9 @@ class SNNSidePanel {
       await this.saveChatHistory();
     } catch (error) {
       // ── Tab-switch guard for errors too ──
-      if (this.currentTabId !== sendTabId) return;
+      if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
+      // Don't show AbortError — it's intentional (tab switch cancelled the request)
+      if (error.name === 'AbortError') { this._resetLoadingState(); return; }
       this.removeLoadingMsg();
       this.addMessage('ai', `Error: ${error.message}`);
     }
@@ -574,9 +589,10 @@ class SNNSidePanel {
     this.isLoading = false;
     this.els.sendBtn.disabled = false;
     this.els.userInput.focus();
+    this._activeAbortController = null;
   }
 
-  async callAPI(message, context, contextType) {
+  async callAPI(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
     if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
@@ -618,7 +634,8 @@ class SNNSidePanel {
         'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
         'X-Title': 'SNN Chat'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
 
     if (!res.ok) {
@@ -636,7 +653,7 @@ class SNNSidePanel {
     return data.choices[0]?.message?.content || '';
   }
 
-  async streamResponse(message, context, contextType) {
+  async streamResponse(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
     if (!apiKey) throw new Error('OpenRouter API key not set.');
@@ -682,7 +699,8 @@ class SNNSidePanel {
         'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
         'X-Title': 'SNN Chat'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal
     });
 
     if (!res.ok) {
@@ -1788,6 +1806,22 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
     this.renderQuickActions();
+  }
+
+  /**
+   * Reset the loading/UI state. Call this whenever an in-flight
+   * sendMessage is abandoned (tab switch, cancellation, etc.) to
+   * unstick the send button and input.
+   */
+  _resetLoadingState() {
+    this.isLoading = false;
+    if (this.els.sendBtn) this.els.sendBtn.disabled = false;
+    this.removeLoadingMsg();
+    // Abort any in-flight fetch so tokens aren't wasted
+    if (this._activeAbortController) {
+      this._activeAbortController.abort();
+      this._activeAbortController = null;
+    }
   }
 
   // ── Session Lock ──────────────────────────────────────────────
