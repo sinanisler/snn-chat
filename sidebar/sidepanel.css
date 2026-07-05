@@ -309,7 +309,7 @@ body.theme-dark {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 14px;
+  padding: 8px 5px;
   background: var(--sp-chip-bg);
   border: 1px solid var(--sp-chip-border);
   border-radius: 8px;
