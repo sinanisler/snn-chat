@@ -91,16 +91,24 @@ class SNNAgentLoop {
 
       // Capability query — fetch capabilities and show as action result
       if (intent.type === 'capability_query') {
+        if (this.sp._agentUI) {
+          this.sp._agentUI.addActionHistoryEntry('getCapabilities', 'Listing what I can do', 'start');
+        }
         this._transition('EXECUTING', { step: 1, total: 1, step: { description: 'Listing capabilities' } });
         const capResult = await this._dispatchAction({ action: 'getCapabilities', id: this._generateId(), params: {}, timeout: 5000 });
         if (capResult.success) {
           this._stepResults.push({ step: { action: 'getCapabilities', description: 'Capabilities' }, result: capResult.result, attempts: 1 });
+          if (this.sp._agentUI) {
+            this.sp._agentUI.updateLastActionEntry('ok', `${(capResult.result.pageActions?.length || 0) + (capResult.result.browserActions?.length || 0)} actions available`);
+          }
           this._transition('REPORTING', { results: this._stepResults, plan: [{ action: 'getCapabilities' }] });
           if (this.onResult) this.onResult({ type: 'capabilities', data: capResult.result });
           this._transition('IDLE');
           return { type: 'action', subtype: 'capabilities', results: this._stepResults };
         }
-        // Fall back to chat if capabilities fetch failed
+        if (this.sp._agentUI) {
+          this.sp._agentUI.updateLastActionEntry('fail', 'Could not load capabilities');
+        }
         this._transition('IDLE');
         return { type: 'chat' };
       }
@@ -108,6 +116,9 @@ class SNNAgentLoop {
       // ═══════ PHASE 2: BUILD PLAN ═══════
       this._transition('PLANNING', { intent });
       this._plan = await this._buildPlan(intent, context);
+
+      // Enhance navigation plans by scanning page links first
+      this._plan = await this._enhanceNavigationPlan(this._plan);
 
       if (this._cancelled) return;
       if (!this._plan || this._plan.length === 0) {
@@ -164,6 +175,15 @@ class SNNAgentLoop {
       }
       this._transition('EXECUTING', { step: this._stepIndex + 1, total: this._plan.length, step: currentStep });
 
+      // ── Action history entry ──────────────────────────────
+      if (this.sp._agentUI) {
+        this.sp._agentUI.addActionHistoryEntry(
+          currentStep.action,
+          currentStep.description || currentStep.action,
+          'start'
+        );
+      }
+
       // ═══════ DISPATCH ═══════
       const result = await this._dispatchAction(currentStep);
 
@@ -174,11 +194,32 @@ class SNNAgentLoop {
         // Success → observe & verify
         this._transition('OBSERVING', { step: currentStep, result: result.result });
         this._stepResults.push({ step: currentStep, result: result.result, attempts: this._attemptCount + 1 });
+
+        // Update action history to success
+        if (this.sp._agentUI) {
+          const detail = this._formatActionResult(currentStep, result.result);
+          this.sp._agentUI.updateLastActionEntry('ok', detail);
+        }
+
+        // ── After navigation, re-scan links for remaining navigation steps ──
+        if (currentStep.action === 'navigate') {
+          // Re-enhance remaining plan steps with fresh page links
+          const remaining = this._plan.slice(this._stepIndex + 1);
+          const enhanced = await this._enhanceNavigationPlan(remaining);
+          // Replace remaining steps with enhanced ones
+          this._plan.splice(this._stepIndex + 1, remaining.length, ...enhanced);
+        }
+
         return true;
       }
 
       // ═══════ HANDLE ERROR ═══════
       const error = result.error || { code: 'UNKNOWN', message: 'Unknown error', retryable: true, suggestion: 'Try again.' };
+
+      // NEVER go silent — update action history as failed
+      if (this.sp._agentUI) {
+        this.sp._agentUI.updateLastActionEntry('fail', error.message);
+      }
 
       // NEVER go silent — notify immediately
       if (this.onError) this.onError({ step: currentStep, error, attempt: this._attemptCount + 1, maxRetries: this.MAX_RETRIES, phase: 'EXECUTING' });
@@ -394,6 +435,11 @@ If the user wants to PERFORM AN ACTION on the current webpage (click a button, t
 
 IMPORTANT — if the user says something like "click the login button" or "scroll down" or "find all links" or "what's on this page", these ARE actions. Parse them as actions even if phrased as questions. "What's on this page?" → getPageInfo. "Can you find the search box?" → findElements with appropriate selector.
 
+MULTI-STEP TASKS: If the user says "go to X then Y then Z" or "do A, then B, after that C", respond with a COMPLEX action:
+{"type":"action","complex":true,"action":"multi_step","description":"<summary of all steps>","params":{"description":"<full task description for planning>"}}
+
+CRITICAL FOR NAVIGATION: When the user says "go to homepage", "go to X page", "navigate to Y", use the navigate action. The page links will be auto-detected. Use descriptive elementDescription that matches what the link text might be (e.g., "homepage", "snn-brx", "codex").
+
 If the user is JUST chatting (asking for information about a topic, having a conversation, asking about the AI itself), respond with:
 {"type":"chat"}
 
@@ -472,16 +518,25 @@ Respond ONLY with the JSON object, nothing else.`;
     }
 
     // For complex queries, ask LLM to build a multi-step plan
-    if (intent.type === 'action' && intent.complex) {
+    if ((intent.type === 'action' && intent.complex) || intent.action === 'multi_step') {
       const settings = await this.sp.getSettings();
       const apiKey = settings.openrouterKey;
       if (!apiKey) return [];
 
-      const systemPrompt = `You are a planner for a browser agent. Given a user's goal, produce a JSON array of action steps. Each step: {"id":"sN","action":"<action_name>","description":"<human readable>","params":{...},"elementDescription":"<for retry>"}.
+      const systemPrompt = `You are a planner for a browser agent that CAN interact with web pages. Given a user's multi-step goal, produce a JSON array of action steps. Each step: {"id":"sN","action":"<action_name>","description":"<human readable — what this step does>","params":{...},"elementDescription":"<what element looks like, for navigation use the link text>"}.
 
-Available actions: navigate, click, type, scroll, scrollToElement, waitForElement, wait, pressKey, extractTable, findElements, getElementText, fillForm, selectDropdown, checkToggle, hover, evaluate, highlight, clearHighlights.
+AVAILABLE ACTIONS:
+Page: click, type, scroll, scrollToElement, highlight, findElements, getPageInfo, extractTable, getElementText, evaluate, pressKey, hover, waitForElement, wait, fillForm, selectDropdown, checkToggle, startPicker
+Browser: navigate (go to URL or page), openTab, goBack, goForward, reload, screenshot
 
-Respond with ONLY the JSON array. Keep steps minimal and focused.`;
+For NAVIGATION: When user says "go to X page", use {"action":"navigate","description":"Go to X page","params":{},"elementDescription":"X"}. The agent will automatically scan the page's navigation links and find the right URL. Do NOT guess URLs.
+
+For MULTI-STEP like "go to A, then B, then C": Create one navigate step per destination.
+
+IMPORTANT: Include a getPageInfo step FIRST if the plan involves finding elements on the page. Include waitForElement after navigation to wait for the page to load.
+
+Respond with ONLY the JSON array. Example:
+[{"id":"s1","action":"navigate","description":"Go to Homepage","params":{},"elementDescription":"homepage"},{"id":"s2","action":"waitForElement","description":"Wait for page to load","params":{"selector":"body","timeout":5000}},{"id":"s3","action":"navigate","description":"Go to Codex page","params":{},"elementDescription":"codex"}]`;
 
       const messages = [
         { role: 'system', content: systemPrompt },
@@ -573,6 +628,114 @@ Respond with ONLY the JSON array. Keep steps minimal and focused.`;
   // ── Utilities ───────────────────────────────────────────────────
   _generateId() { return Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8); }
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  /**
+   * Format an action result into a short user-readable string for chat history.
+   */
+  _formatActionResult(step, result) {
+    if (!result) return '';
+    switch (step.action) {
+      case 'click': return `Clicked ${result.element || step.params?.selector || 'element'}`;
+      case 'type': return `Typed "${(step.params?.text || '').substring(0, 40)}" into ${result.element || step.params?.selector || 'field'}`;
+      case 'scroll': return `Scrolled ${step.params?.direction || ''} ${step.params?.amount || ''}px`;
+      case 'scrollToElement': return `Scrolled to ${result.element || step.params?.selector || 'element'}`;
+      case 'highlight': return `Highlighted ${result.element || step.params?.selector || 'element'}`;
+      case 'findElements': return `Found ${result.total || 0} elements matching "${step.params?.selector || ''}"`;
+      case 'getPageInfo': return `Page: ${result.title || ''} — ${result.links || 0} links, ${result.forms || 0} forms`;
+      case 'extractTable': return `Extracted table with ${result.rowCount || 0} rows`;
+      case 'navigate': return `Navigated to ${result.url || step.params?.url || ''}`;
+      case 'openTab': return `Opened tab: ${result.url || step.params?.url || ''}`;
+      case 'screenshot': return `Screenshot captured`;
+      case 'fillForm': return `Filled ${result.succeeded || 0}/${result.total || 0} fields`;
+      case 'selectDropdown': return `Selected "${step.params?.value || ''}" in dropdown`;
+      case 'checkToggle': return `${result.checked ? 'Checked' : 'Unchecked'} toggle`;
+      case 'pressKey': return `Pressed ${step.params?.key || 'key'}`;
+      case 'getCapabilities': return `Listed capabilities (${(result.pageActions?.length || 0) + (result.browserActions?.length || 0)} actions)`;
+      default: return `${step.action} completed`;
+    }
+  }
+
+  /**
+   * Before multi-step navigation, scan the page for navigation links.
+   * Returns an array of { text, href } for visible nav links.
+   */
+  async _scanPageNavigation() {
+    try {
+      const result = await this._dispatchAction({
+        action: 'evaluate',
+        id: this._generateId(),
+        params: {
+          code: `
+            const links = [];
+            // Get header nav links
+            const navAreas = document.querySelectorAll('nav a, header a, .menu a, .navbar a, [role="navigation"] a, .nav a');
+            for (const a of navAreas) {
+              const text = (a.textContent || '').trim();
+              const href = a.href || '';
+              if (text && href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+                links.push({ text: text.substring(0, 80), href });
+              }
+            }
+            // Deduplicate by text
+            const seen = new Set();
+            const unique = links.filter(l => { const k = l.text.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+            return JSON.stringify(unique.slice(0, 30));
+          `
+        },
+        timeout: 5000
+      });
+
+      if (result.success && result.result?.result) {
+        try {
+          return JSON.parse(result.result.result);
+        } catch (e) { return []; }
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
+   * Enhance a navigation plan by first scanning page links,
+   * then matching user's target destinations to actual links.
+   */
+  async _enhanceNavigationPlan(plan) {
+    // Only enhance if plan contains navigation steps
+    const hasNavigation = plan.some(s => s.action === 'navigate' && !s.params?.url);
+    if (!hasNavigation) return plan;
+
+    // Scan page navigation
+    const links = await this._scanPageNavigation();
+    if (links.length === 0) return plan;
+
+    // Show navigation to user via UI
+    if (this.sp._agentUI) {
+      this.sp._agentUI.showPageNavigation(links);
+    }
+
+    // Try to match navigation steps to found links
+    return plan.map(step => {
+      if (step.action === 'navigate' && !step.params?.url && step.description) {
+        const desc = step.description.toLowerCase();
+        // Find best matching link
+        let bestMatch = null;
+        let bestScore = 0;
+        for (const link of links) {
+          const linkText = link.text.toLowerCase();
+          const linkHref = link.href.toLowerCase();
+          // Score: exact text match > contains text > contains in href
+          if (linkText === desc) { bestMatch = link; break; }
+          if (linkText.includes(desc)) { const s = desc.length / linkText.length; if (s > bestScore) { bestScore = s; bestMatch = link; } }
+          if (linkHref.includes(desc.replace(/\s+/g, '-'))) { const s = 0.5; if (s > bestScore) { bestScore = s; bestMatch = link; } }
+        }
+        if (bestMatch) {
+          return { ...step, params: { ...step.params, url: bestMatch.href }, description: `${step.description} → ${bestMatch.text}` };
+        }
+      }
+      return step;
+    });
+  }
 }
 
 // Export for use in sidepanel.js

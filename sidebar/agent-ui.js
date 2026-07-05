@@ -11,7 +11,7 @@ class SNNAgentUI {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // STATUS BAR — top of chat, shows current agent state
+  // STATUS BAR — above the input area (moved from top of chat)
   // ═══════════════════════════════════════════════════════════════
   renderStatusBar(state, detail = {}) {
     let bar = document.getElementById('snn-agent-status');
@@ -19,21 +19,27 @@ class SNNAgentUI {
       bar = document.createElement('div');
       bar.id = 'snn-agent-status';
       bar.className = 'snn-agent-status';
-      const chatArea = this.sp.els.chatMessages;
-      chatArea.parentNode.insertBefore(bar, chatArea);
+      // Insert above the input area (footer)
+      const inputArea = document.querySelector('.sp-input-area');
+      if (inputArea) {
+        inputArea.parentNode.insertBefore(bar, inputArea);
+      } else {
+        const chatArea = this.sp.els.chatMessages;
+        chatArea.parentNode.appendChild(bar);
+      }
     }
 
     const stateConfig = {
       IDLE:       { icon: '',   cls: '',           text: '' },
       PARSING:    { icon: '🔍', cls: 'status-parsing',   text: 'Analyzing your request...' },
       PLANNING:   { icon: '📋', cls: 'status-planning',  text: 'Building action plan...' },
-      EXECUTING:  { icon: '⚡', cls: 'status-executing', text: `Step ${detail.step || '?'}/${detail.total || '?'}: ${detail.step?.description || 'Working...'}` },
+      EXECUTING:  { icon: '⚡', cls: 'status-executing', text: `${detail.step?.description || 'Working...'}` },
       WAITING:    { icon: '⏳', cls: 'status-waiting',   text: 'Waiting for page...' },
       OBSERVING:  { icon: '👁', cls: 'status-observing', text: 'Checking result...' },
       RETRYING:   { icon: '🔄', cls: 'status-retrying',  text: `Retrying (${detail.attempt || '?'}/${detail.maxRetries || '?'})...` },
       REPORTING:  { icon: '📊', cls: 'status-reporting', text: 'Compiling results...' },
       FAILED:     { icon: '⚠️', cls: 'status-failed',    text: '' },
-      BLOCKED:    { icon: '🔒', cls: 'status-blocked',   text: 'Waiting for your permission...' },
+      BLOCKED:    { icon: '🔒', cls: 'status-blocked',   text: 'Waiting for permission...' },
       CANCELLED:  { icon: '✖',  cls: 'status-cancelled', text: 'Cancelled' }
     };
 
@@ -41,13 +47,15 @@ class SNNAgentUI {
 
     if (state === 'IDLE' || state === 'FAILED') {
       bar.style.display = 'none';
+      // Also hide progress
+      this.hideProgress();
     } else {
       bar.style.display = 'flex';
       bar.className = `snn-agent-status ${cfg.cls}`;
       bar.innerHTML = `
         <span class="snn-agent-status-icon">${cfg.icon}</span>
         <span class="snn-agent-status-text">${cfg.text}</span>
-        ${state === 'EXECUTING' ? `<span class="snn-agent-status-spinner"></span>` : ''}
+        ${state === 'EXECUTING' || state === 'WAITING' ? `<span class="snn-agent-status-spinner"></span>` : ''}
         <button class="snn-agent-status-cancel" title="Cancel (Escape)">✕</button>
       `;
       bar.querySelector('.snn-agent-status-cancel')?.addEventListener('click', () => {
@@ -57,7 +65,7 @@ class SNNAgentUI {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // PROGRESS BAR — shown below status bar for multi-step tasks
+  // PROGRESS BAR — shown above status bar for multi-step tasks
   // ═══════════════════════════════════════════════════════════════
   renderProgress(step, total, description) {
     let prog = document.getElementById('snn-agent-progress');
@@ -67,10 +75,7 @@ class SNNAgentUI {
       prog.className = 'snn-agent-progress';
       const statusBar = document.getElementById('snn-agent-status');
       if (statusBar) {
-        statusBar.after(prog);
-      } else {
-        const chatArea = this.sp.els.chatMessages;
-        chatArea.parentNode.insertBefore(prog, chatArea);
+        statusBar.parentNode.insertBefore(prog, statusBar);
       }
     }
 
@@ -88,6 +93,69 @@ class SNNAgentUI {
   hideProgress() {
     const prog = document.getElementById('snn-agent-progress');
     if (prog) prog.style.display = 'none';
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ACTION HISTORY ENTRY — a chat bubble showing what agent did
+  // ═══════════════════════════════════════════════════════════════
+  addActionHistoryEntry(action, description, status, detail = '') {
+    const entry = document.createElement('div');
+    entry.className = `snn-action-entry snn-action-${status}`; // status: 'start', 'ok', 'fail', 'info'
+
+    const icons = { start: '▶️', ok: '✅', fail: '❌', info: 'ℹ️' };
+    const icon = icons[status] || '•';
+
+    entry.innerHTML = `
+      <span class="snn-action-entry-icon">${icon}</span>
+      <span class="snn-action-entry-text">${this.sp.escapeHtml(description)}</span>
+      ${detail ? `<span class="snn-action-entry-detail">${this.sp.escapeHtml(detail)}</span>` : ''}
+    `;
+
+    this.sp.els.chatMessages.appendChild(entry);
+    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    return entry;
+  }
+
+  /**
+   * Update the last action history entry (e.g., change from ▶️ to ✅)
+   */
+  updateLastActionEntry(status, detail = '') {
+    const entries = this.sp.els.chatMessages.querySelectorAll('.snn-action-entry');
+    if (entries.length === 0) return;
+    const last = entries[entries.length - 1];
+    last.className = `snn-action-entry snn-action-${status}`;
+    const icons = { start: '▶️', ok: '✅', fail: '❌', info: 'ℹ️' };
+    const iconEl = last.querySelector('.snn-action-entry-icon');
+    if (iconEl) iconEl.textContent = icons[status] || '•';
+    if (detail) {
+      const detailEl = last.querySelector('.snn-action-entry-detail');
+      if (detailEl) detailEl.textContent = detail;
+      else {
+        const span = document.createElement('span');
+        span.className = 'snn-action-entry-detail';
+        span.textContent = detail;
+        last.appendChild(span);
+      }
+    }
+    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+  }
+
+  /**
+   * Show discovered page navigation / links in chat
+   */
+  showPageNavigation(links) {
+    if (!links || links.length === 0) return;
+    const entry = document.createElement('div');
+    entry.className = 'snn-page-nav';
+    const linkItems = links.slice(0, 8).map(l =>
+      `<span class="snn-page-nav-link" title="${this.sp.escapeHtml(l.href || '')}">${this.sp.escapeHtml(l.text || l.href || '?')}</span>`
+    ).join('');
+    entry.innerHTML = `
+      <div class="snn-page-nav-header">🧭 Found ${links.length} links in navigation</div>
+      <div class="snn-page-nav-links">${linkItems}</div>
+    `;
+    this.sp.els.chatMessages.appendChild(entry);
+    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -1579,8 +1579,29 @@ If you're not sure what to do, ask the user to clarify which element they want y
 
     // ── Error callback ─────────────────────────────────────────
     this._agentLoop.onError = (errorData) => {
-      // Show error card in chat
       if (this._agentUI) this._agentUI.renderErrorCard(errorData);
+    };
+
+    // ── Result callback ───────────────────────────────────────
+    this._agentLoop.onResult = (resultData) => {
+      if (resultData.type === 'action_results' && resultData.results) {
+        // Save action results as chat history
+        const summary = resultData.results.map(r =>
+          `${r.step.description || r.step.action}: ${r.result?._duration_ms ? (r.result._duration_ms + 'ms') : 'done'}`
+        ).join('\n');
+        if (summary) {
+          this.chatHistory.push(
+            { role: 'assistant', content: `[Agent Actions]\n${summary}`, tokenUsage: null }
+          );
+          this.saveChatHistory().catch(() => {});
+        }
+      }
+      if (resultData.type === 'capabilities') {
+        this.chatHistory.push(
+          { role: 'assistant', content: this._formatCapabilitiesForHistory(resultData.data), tokenUsage: null }
+        );
+        this.saveChatHistory().catch(() => {});
+      }
     };
 
     // ── Blocked callback ───────────────────────────────────────
