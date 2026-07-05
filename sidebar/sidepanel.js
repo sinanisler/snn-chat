@@ -469,10 +469,9 @@ class SNNSidePanel {
   async renderQuickActions() {
     const settings = await this.getSettings();
     const actions = settings.quickActions || this.getDefaultQuickActions();
-    this.els.promptsGrid.innerHTML = actions.map((a, i) => `
+    this.els.promptsGrid.innerHTML = actions.map((a) => `
       <button class="sp-prompt-chip" data-prompt="${this.escapeHtml(a.prompt)}">
-        ${a.icon ? `<span class="sp-prompt-icon">${a.icon}</span>` : ''}
-        <span>${a.text}</span>
+        ${a.text}
       </button>
     `).join('');
 
@@ -487,12 +486,10 @@ class SNNSidePanel {
 
   getDefaultQuickActions() {
     return [
-      { icon: '', text: 'Summarize', prompt: 'Summarize this page concisely.' },
-      { icon: '', text: 'Key points', prompt: 'Extract the key points from this page.' },
-      { icon: '', text: 'Explain simply', prompt: 'Explain this page in simple terms.' },
-      { icon: '', text: 'Bullet list', prompt: 'Summarize this page as bullet points.' },
-      { icon: '', text: 'Translate', prompt: 'Translate the main content of this page to Spanish.' },
-      { icon: '', text: 'What is this?', prompt: 'What is this page about? Give a brief overview.' }
+      { text: 'Summarize', prompt: 'Summarize this page concisely.' },
+      { text: 'Key points', prompt: 'Extract the key points from this page.' },
+      { text: 'Explain simply', prompt: 'Explain this page in simple terms.' },
+      { text: 'What is this?', prompt: 'What is this page about? Give a brief overview.' }
     ];
   }
 
@@ -804,7 +801,6 @@ class SNNSidePanel {
     if (!list) return;
     list.innerHTML = actions.map(a => `
       <div class="sp-qa-item">
-        <input type="text" value="${this.escapeHtml(a.icon)}" placeholder="" maxlength="2">
         <input type="text" value="${this.escapeHtml(a.text)}" placeholder="Name">
         <input type="text" value="${this.escapeHtml(a.prompt)}" placeholder="Prompt">
         <button class="sp-qa-remove">×</button>
@@ -820,14 +816,13 @@ class SNNSidePanel {
     const row = document.createElement('div');
     row.className = 'sp-qa-item';
     row.innerHTML = `
-      <input type="text" value="" placeholder="" maxlength="2">
       <input type="text" placeholder="Name">
       <input type="text" placeholder="Prompt">
       <button class="sp-qa-remove">×</button>
     `;
     row.querySelector('.sp-qa-remove').addEventListener('click', () => row.remove());
     list.appendChild(row);
-    row.querySelectorAll('input')[1].focus();
+    row.querySelector('input').focus();
   }
 
   getQuickActionsFromEditor() {
@@ -835,10 +830,9 @@ class SNNSidePanel {
     const actions = [];
     items.forEach(item => {
       const inputs = item.querySelectorAll('input');
-      const icon = inputs[0].value.trim();
-      const text = inputs[1].value.trim();
-      const prompt = inputs[2].value.trim();
-      if (text && prompt) actions.push({ icon: icon || '', text, prompt });
+      const text = inputs[0].value.trim();
+      const prompt = inputs[1].value.trim();
+      if (text && prompt) actions.push({ text, prompt });
     });
     return actions.length ? actions : this.getDefaultQuickActions();
   }
@@ -1098,68 +1092,23 @@ class SNNSidePanel {
   }
 
   // ── Voice Input ─────────────────────────────────────────────────
+  // Mic permission & speech recognition run in the content script
+  // (page context) so Chrome shows the normal in-page permission
+  // prompt — no redirect to chrome://settings.
   setupVoice() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      this.els.voiceBtn.style.display = 'none';
-      return;
+      // Still check API existence in side panel for early bail-out,
+      // but actual recognition happens in the content script.
     }
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    this.recognition = new SR();
-    this.recognition.continuous = true;
-    this.recognition.interimResults = true;
-    this.recognition.lang = navigator.language || 'en-US';
-    this._micPermissionGranted = false;  // track explicit mic permission
-    this._micStream = null;
 
-    this.recognition.onresult = (e) => {
-      let final = '', interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
-        else interim += e.results[i][0].transcript;
-      }
-      if (final) this.els.userInput.value += final;
-      if (interim) {
-        this.els.userInput.placeholder = interim;
-      } else {
-        this.els.userInput.placeholder = 'Ask anything...';
-      }
-      this.autoResize();
-    };
-
-    this.recognition.onend = () => {
-      this.els.voiceBtn.classList.remove('listening');
-      this.els.userInput.placeholder = 'Ask anything...';
-      this._releaseMicStream();
-    };
-
-    this.recognition.onerror = (e) => {
-      this.els.voiceBtn.classList.remove('listening');
-      this._releaseMicStream();
-      switch (e.error) {
-        case 'not-allowed':
-          this._micPermissionGranted = false;
-          this.showToast('Microphone access denied. Check chrome://settings/content/microphone and allow this extension.', 'error');
-          break;
-        case 'no-speech':
-          this.showToast('No speech detected. Try again.', 'error');
-          break;
-        case 'audio-capture':
-          this.showToast('No microphone found. Please connect a microphone.', 'error');
-          break;
-        case 'network':
-          this.showToast('Network error. Speech recognition requires an internet connection.', 'error');
-          break;
-        default:
-          console.warn('Speech recognition error:', e.error);
-          break;
-      }
-    };
+    this._voiceActive = false;
+    this._setupVoiceMessageListener();
 
     this.els.voiceBtn.addEventListener('click', () => {
-      if (this.els.voiceBtn.classList.contains('listening')) {
-        this.recognition.stop();
+      if (this._voiceActive) {
+        this._stopVoice();
       } else {
-        this._startVoiceRecognition();
+        this._startVoice();
       }
     });
 
@@ -1169,62 +1118,96 @@ class SNNSidePanel {
       if (e.code === 'Space' && document.activeElement !== this.els.userInput && !spaceDown) {
         spaceDown = true;
         e.preventDefault();
-        this._startVoiceRecognition();
+        this._startVoice();
       }
     });
     document.addEventListener('keyup', (e) => {
       if (e.code === 'Space' && spaceDown) {
         spaceDown = false;
-        this.recognition?.stop();
+        this._stopVoice();
         if (this.els.userInput.value.trim()) setTimeout(() => this.sendMessage(), 100);
       }
     });
   }
 
-  // Request mic permission explicitly before starting speech recognition.
-  // getUserMedia triggers Chrome's proper permission dialog; once granted,
-  // SpeechRecognition works reliably.
-  async _ensureMicPermission() {
-    if (this._micPermissionGranted) return true;
-    try {
-      // Request audio permission — this shows Chrome's native mic permission prompt
-      this._micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this._micPermissionGranted = true;
-      return true;
-    } catch (err) {
-      console.warn('Microphone permission denied:', err.name, err.message);
-      this._micPermissionGranted = false;
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        this.showToast('Microphone access denied. Go to chrome://settings/content/microphone to allow it.', 'error');
-      } else if (err.name === 'NotFoundError') {
-        this.showToast('No microphone found. Please connect one and try again.', 'error');
-      } else {
-        this.showToast('Could not access microphone: ' + err.message, 'error');
+  // Listen for voice results forwarded from content script via background
+  _setupVoiceMessageListener() {
+    this._lastVoiceFinal = '';
+    this._lastVoiceInterim = '';
+    chrome.runtime.onMessage.addListener((message) => {
+      switch (message.action) {
+        case 'voice:transcript': {
+          const f = message.final || '';
+          const im = message.interim || '';
+          // Dedup: skip identical duplicates
+          if (f === this._lastVoiceFinal && im === this._lastVoiceInterim) break;
+          this._lastVoiceFinal = f;
+          this._lastVoiceInterim = im;
+          if (f) this.els.userInput.value += f;
+          this.els.userInput.placeholder = im || 'Ask anything...';
+          this.autoResize();
+          break;
+        }
+
+        case 'voice:error':
+          this.els.voiceBtn.classList.remove('listening');
+          this._voiceActive = false;
+          switch (message.error) {
+            case 'not-allowed':
+            case 'denied':
+              this.showToast('Microphone access denied. Please allow mic access for this website.', 'error');
+              break;
+            case 'no-speech':
+              this.showToast('No speech detected. Try again.', 'error');
+              break;
+            case 'audio-capture':
+            case 'no-mic':
+              this.showToast('No microphone found. Please connect a microphone.', 'error');
+              break;
+            case 'network':
+              this.showToast('Network error. Speech recognition requires an internet connection.', 'error');
+              break;
+            default:
+              console.warn('Voice error:', message.error);
+              break;
+          }
+          break;
+
+        case 'voice:ended':
+          this.els.voiceBtn.classList.remove('listening');
+          this._voiceActive = false;
+          this.els.userInput.placeholder = 'Ask anything...';
+          break;
       }
-      return false;
-    }
+    });
   }
 
-  // Release the getUserMedia stream (stop the red "recording" dot in the tab)
-  _releaseMicStream() {
-    if (this._micStream) {
-      this._micStream.getTracks().forEach(track => track.stop());
-      this._micStream = null;
-    }
-  }
+  async _startVoice() {
+    if (this._voiceActive) return;
+    this.els.voiceBtn.classList.add('listening');
+    this._voiceActive = true;
 
-  async _startVoiceRecognition() {
-    if (!this.recognition) return;
-    // First, ensure we have explicit mic permission
-    const allowed = await this._ensureMicPermission();
-    if (!allowed) return;
     try {
-      this.recognition.start();
-      this.els.voiceBtn.classList.add('listening');
+      const response = await chrome.runtime.sendMessage({ action: 'voice:start' });
+      if (!response?.success) {
+        this.els.voiceBtn.classList.remove('listening');
+        this._voiceActive = false;
+        if (response?.error === 'denied') {
+          this.showToast('Microphone access denied. Please allow mic access for this website.', 'error');
+        } else if (response?.error === 'no-mic') {
+          this.showToast('No microphone found.', 'error');
+        }
+      }
     } catch (err) {
-      console.error('Failed to start speech recognition:', err);
-      this.showToast('Failed to start voice input. Try again.', 'error');
+      this.els.voiceBtn.classList.remove('listening');
+      this._voiceActive = false;
+      this.showToast('Could not start voice input. Refresh the page and try again.', 'error');
     }
+  }
+
+  _stopVoice() {
+    this._voiceActive = false;
+    chrome.runtime.sendMessage({ action: 'voice:stop' }).catch(() => {});
   }
 
   // ── Toast ───────────────────────────────────────────────────────

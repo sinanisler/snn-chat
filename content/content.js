@@ -208,7 +208,120 @@ class SNNContentExtractor {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Voice Relay — handles mic permission & speech recognition from
+// the PAGE context so the permission prompt appears on the website
+// (not a confusing redirect to chrome://settings).
+// ═══════════════════════════════════════════════════════════════════
+
+class SNNVoiceRelay {
+  constructor() {
+    this.recognition = null;
+    this.micStream = null;
+    this._setupListener();
+  }
+
+  _setupListener() {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.action === 'voice:start') {
+        this._start(sendResponse);
+        return true; // keep channel open for async response
+      }
+      if (message.action === 'voice:stop') {
+        this._stop();
+        sendResponse({ success: true });
+      }
+    });
+  }
+
+  async _start(sendResponse) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      sendResponse({ success: false, error: 'unsupported' });
+      return;
+    }
+
+    // ── Request mic permission from the PAGE origin ────────────
+    // This shows the NORMAL browser permission prompt on the
+    // website the user is viewing — no settings redirect!
+    try {
+      this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      sendResponse({
+        success: false,
+        error: err.name === 'NotAllowedError' ? 'denied' : 'no-mic'
+      });
+      return;
+    }
+
+    this.recognition = new SR();
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
+    this.recognition.lang = navigator.language || 'en-US';
+
+    this._lastFinalIdx = -1;
+    this._lastInterim = '';
+
+    this.recognition.onresult = (e) => {
+      let final = '', interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          final += e.results[i][0].transcript + ' ';
+          this._lastFinalIdx = i;
+        } else {
+          interim += e.results[i][0].transcript;
+        }
+      }
+      // Dedup: skip if nothing changed since last event
+      if (!final && interim === this._lastInterim) return;
+      this._lastInterim = interim;
+      chrome.runtime.sendMessage({
+        action: 'voice:transcript',
+        final,
+        interim
+      }).catch(() => {});
+    };
+
+    this.recognition.onerror = (e) => {
+      chrome.runtime.sendMessage({
+        action: 'voice:error',
+        error: e.error
+      }).catch(() => {});
+      this._cleanup();
+    };
+
+    this.recognition.onend = () => {
+      chrome.runtime.sendMessage({ action: 'voice:ended' }).catch(() => {});
+      this._cleanup();
+    };
+
+    try {
+      this.recognition.start();
+      sendResponse({ success: true });
+    } catch (err) {
+      this._cleanup();
+      sendResponse({ success: false, error: 'start-failed' });
+    }
+  }
+
+  _stop() {
+    if (this.recognition) {
+      try { this.recognition.stop(); } catch (e) { /* ignore */ }
+    }
+    this._cleanup();
+  }
+
+  _cleanup() {
+    if (this.micStream) {
+      this.micStream.getTracks().forEach(t => t.stop());
+      this.micStream = null;
+    }
+    this.recognition = null;
+  }
+}
+
 // ── Start ─────────────────────────────────────────────────────────
 if (chrome?.runtime?.id) {
   new SNNContentExtractor();
+  new SNNVoiceRelay();
 }

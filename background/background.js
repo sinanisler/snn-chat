@@ -7,14 +7,22 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error('Side panel setup:', error));
 
-// Also open via keyboard shortcut
+// Also toggle via keyboard shortcut
 chrome.commands.onCommand.addListener(async (command) => {
   if (command === 'toggle-sidebar') {
     try {
+      // Check if side panel is already open for this window
+      const isOpen = await chrome.sidePanel.getOptions({}).catch(() => null);
+      
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      await chrome.sidePanel.open({ windowId: tab.windowId });
+      if (!tab?.id || !tab?.windowId) {
+        console.warn('toggle-sidebar: no active tab available');
+        return;
+      }
+
+      await chrome.sidePanel.open({ tabId: tab.id, windowId: tab.windowId });
     } catch (error) {
-      console.error('Failed to open side panel via shortcut:', error);
+      console.error('Failed to toggle side panel via shortcut:', error);
     }
   }
 });
@@ -64,6 +72,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           .catch(() => {}); // Content script may not be loaded yet
       }
     });
+  }
+
+  // ── Voice Relay ──────────────────────────────────────────────
+  // Forward voice commands from side panel → content script
+  if (message.action === 'voice:start' || message.action === 'voice:stop') {
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, message).then((response) => {
+          sendResponse(response);
+        }).catch(() => {
+          sendResponse({ success: false, error: 'content-script-unavailable' });
+        });
+      } else {
+        sendResponse({ success: false, error: 'no-active-tab' });
+      }
+    });
+    return true; // keep channel open for async sendResponse
+  }
+
+  // Forward voice results from content script → side panel
+  if (message.action === 'voice:transcript' || message.action === 'voice:error' || message.action === 'voice:ended') {
+    chrome.runtime.sendMessage(message).catch(() => {});
   }
 });
 
