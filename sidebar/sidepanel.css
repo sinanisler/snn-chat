@@ -31,6 +31,7 @@ body.theme-light {
   --sp-input-focus: #0556c7;
   --sp-accent: #0556c7;
   --sp-accent-text: #ffffff;
+  --sp-link: #0556c7;
   --sp-user-msg-bg: #e8e8e8;
   --sp-user-msg-text: #1a1a1a;
   --sp-ai-msg-bg: #f7f7f7;
@@ -61,6 +62,7 @@ body.theme-dark {
   --sp-input-focus: #0556c7;
   --sp-accent: #0556c7;
   --sp-accent-text: #ffffff;
+  --sp-link: #6ba5ff;
   --sp-user-msg-bg: #383838;
   --sp-user-msg-text: #e0e0e0;
   --sp-ai-msg-bg: #2a2a2a;
@@ -92,6 +94,7 @@ body.theme-dark {
     --sp-input-focus: #0556c7;
     --sp-accent: #0556c7;
     --sp-accent-text: #ffffff;
+    --sp-link: #6ba5ff;
     --sp-user-msg-bg: #383838;
     --sp-user-msg-text: #e0e0e0;
     --sp-ai-msg-bg: #2a2a2a;
@@ -123,6 +126,7 @@ body.theme-dark {
     --sp-input-focus: #0556c7;
     --sp-accent: #0556c7;
     --sp-accent-text: #ffffff;
+    --sp-link: #0556c7;
     --sp-user-msg-bg: #e8e8e8;
     --sp-user-msg-text: #1a1a1a;
     --sp-ai-msg-bg: #f7f7f7;
@@ -803,11 +807,73 @@ body.theme-dark {
 .sp-msg-ai h1 { font-size: 1.3em; }
 .sp-msg-ai h2 { font-size: 1.15em; }
 .sp-msg-ai h3 { font-size: 1.05em; }
+.sp-msg-ai h4, .sp-msg-ai h5, .sp-msg-ai h6 { margin: 8px 0 4px; font-weight: 600; }
+.sp-msg-ai h4 { font-size: 1em; }
+.sp-msg-ai h5 { font-size: 0.95em; }
+.sp-msg-ai h6 { font-size: 0.9em; }
 .sp-msg-ai code { background: rgba(128,128,128,0.2); padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
 .sp-msg-ai pre { background: rgba(128,128,128,0.15); padding: 12px; border-radius: 6px; margin: 8px 0; overflow-x: auto; }
 .sp-msg-ai pre code { background: none; padding: 0; }
 .sp-msg-ai ul, .sp-msg-ai ol { margin: 6px 0; padding-left: 24px; }
+.sp-msg-ai li { margin: 2px 0; }
 .sp-msg-ai blockquote { border-left: 3px solid var(--sp-accent); padding-left: 12px; margin: 8px 0; opacity: 0.8; }
+/* Tables */
+.sp-msg-ai table { border-collapse: collapse; margin: 10px 0; width: 100%; font-size: 0.9em; display: block; overflow-x: auto; }
+.sp-msg-ai thead { border-bottom: 2px solid var(--sp-border); }
+.sp-msg-ai th, .sp-msg-ai td { border: 1px solid var(--sp-border); padding: 6px 12px; text-align: left; }
+.sp-msg-ai th { background: rgba(128,128,128,0.15); font-weight: 600; white-space: nowrap; }
+.sp-msg-ai tr:nth-child(even) td { background: rgba(128,128,128,0.05); }
+/* Task lists */
+.sp-msg-ai input[type="checkbox"] { margin-right: 6px; accent-color: var(--sp-accent); pointer-events: none; }
+/* Links */
+.sp-msg-ai a { color: var(--sp-link); text-decoration: underline; }
+.sp-msg-ai a:hover { opacity: 0.8; }
+/* Horizontal rule */
+.sp-msg-ai hr { border: none; border-top: 1px solid var(--sp-border); margin: 14px 0; }
+/* Images */
+.sp-msg-ai img { max-width: 100%; height: auto; border-radius: 6px; margin: 8px 0; }
+/* Paragraphs */
+.sp-msg-ai p { margin: 4px 0; }
+.sp-msg-ai p:first-child { margin-top: 0; }
+.sp-msg-ai p:last-child { margin-bottom: 0; }
+/* Strikethrough */
+.sp-msg-ai del { opacity: 0.7; }
+
+/* ── Mermaid Diagrams ─────────────────────────────────────────── */
+.sp-msg-ai pre.mermaid {
+  background: transparent;
+  padding: 0;
+  overflow: visible;
+}
+.sp-msg-ai pre.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+/* Light mode: mermaid uses base theme which is light */
+body.theme-dark .sp-msg-ai pre.mermaid svg .label,
+body.theme-dark .sp-msg-ai pre.mermaid svg .nodeLabel,
+body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel {
+  fill: #d4d4d4 !important;
+  color: #d4d4d4 !important;
+}
+body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel rect,
+body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
+  background: #2a2a2a !important;
+  fill: #2a2a2a !important;
+}
+@media (prefers-color-scheme: dark) {
+  body.theme-auto .sp-msg-ai pre.mermaid svg .label,
+  body.theme-auto .sp-msg-ai pre.mermaid svg .nodeLabel,
+  body.theme-auto .sp-msg-ai pre.mermaid svg .edgeLabel {
+    fill: #d4d4d4 !important;
+    color: #d4d4d4 !important;
+  }
+  body.theme-auto .sp-msg-ai pre.mermaid svg .edgeLabel rect,
+  body.theme-auto .sp-msg-ai pre.mermaid svg .edgeLabel span {
+    background: #2a2a2a !important;
+    fill: #2a2a2a !important;
+  }
+}
 
 /* ── Scrollbar ────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; }

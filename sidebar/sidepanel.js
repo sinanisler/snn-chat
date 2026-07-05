@@ -76,6 +76,39 @@ class SNNSidePanel {
       } catch (e) { /* may fail without tabs permission */ }
     }
 
+    // ── Configure marked (GFM: tables, task lists, strikethrough, etc.) ──
+    if (typeof marked !== 'undefined') {
+      marked.setOptions({
+        breaks: true,
+        gfm: true
+      });
+      // Mermaid integration: output <pre class="mermaid"> instead of <pre><code> for mermaid blocks
+      marked.use({
+        renderer: {
+          code(token) {
+            if (token.lang === 'mermaid') {
+              return `<pre class="mermaid">${token.text}</pre>`;
+            }
+            return false; // use default renderer for other code blocks
+          }
+        }
+      });
+    }
+
+    // ── Configure Mermaid ──
+    if (typeof mermaid !== 'undefined') {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'base',
+        securityLevel: 'strict',
+        themeVariables: {
+          primaryColor: '#0556c7',
+          primaryTextColor: '#fff',
+          lineColor: '#0556c7',
+        }
+      });
+    }
+
     await this.loadContext();
     await this.loadMostRecentSession();
     this.renderQuickActions();
@@ -534,6 +567,7 @@ class SNNSidePanel {
     }
 
     contentDiv.innerHTML = this.parseMarkdown(fullResponse);
+    this.renderMermaid(contentDiv);
     this.addMsgActions(msgDiv, fullResponse);
     this.addTokenInfo(msgDiv);
     this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
@@ -556,6 +590,7 @@ class SNNSidePanel {
     this.els.chatMessages.appendChild(div);
 
     if (role === 'ai') {
+      this.renderMermaid(div);
       this.addMsgActions(div, content);
       if (tokenUsage) this.addTokenInfo(div, tokenUsage);
     }
@@ -644,22 +679,28 @@ class SNNSidePanel {
     }
   }
 
-  // ── Markdown ────────────────────────────────────────────────────
+  // ── Markdown (powered by marked.js — GFM: tables, task lists, strikethrough, links, images) ──
   parseMarkdown(text) {
-    const escape = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    let html = escape(text);
-    html = html
-      .replace(/^### (.*$)/gm, '<h3>$1</h3>')
-      .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-      .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.+?)\*/g, '<em>$1</em>')
-      .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-      .replace(/`(.+?)`/g, '<code>$1</code>')
-      .replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>')
-      .replace(/^- (.*$)/gm, '<li>$1</li>')
-      .replace(/\n/g, '<br>');
-    return html;
+    if (typeof marked !== 'undefined') {
+      return marked.parse(text);
+    }
+    // Graceful fallback if library fails to load
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML.replace(/\n/g, '<br>');
+  }
+
+  // ── Mermaid Diagram Rendering ──────────────────────────────────
+  async renderMermaid(container) {
+    if (typeof mermaid === 'undefined') return;
+    const blocks = container.querySelectorAll('pre.mermaid');
+    if (blocks.length === 0) return;
+    try {
+      // mermaid.run() finds and renders all .mermaid elements
+      await mermaid.run({ nodes: Array.from(blocks) });
+    } catch (e) {
+      console.warn('Mermaid render failed:', e.message);
+    }
   }
 
   escapeHtml(s) {
