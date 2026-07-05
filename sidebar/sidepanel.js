@@ -316,6 +316,13 @@ class SNNSidePanel {
   async _onTabSwitched(tabId, url, domain) {
     if (tabId === this.currentTabId) return; // Same tab, nothing to do
 
+    // ── Cancel any running agent loop BEFORE clearing state ──
+    if (this._agentLoop && this._agentLoop.isBusy) {
+      this._agentLoop.cancel('tab-switch');
+      // Brief pause to let cancellation propagate
+      await new Promise(r => setTimeout(r, 100));
+    }
+
     // Save current session before switching
     if (this.chatHistory.length) {
       await this.saveChatHistory();
@@ -855,7 +862,7 @@ class SNNSidePanel {
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.enableQuickActions === undefined) s.enableQuickActions = true;
           if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
-          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 80;
+          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 300;
           if (s.autoScan === undefined) s.autoScan = true;
           if (s.disabledActions === undefined) s.disabledActions = [];
           if (s.agentPrompt === undefined) s.agentPrompt = this._getDefaultAgentPrompt();
@@ -958,7 +965,7 @@ class SNNSidePanel {
           <h4>HTML Element Scanning</h4>
           <div class="sp-field">
             <label>Max elements to scan per page</label>
-            <input type="number" id="s-html-parse-limit" value="${s.htmlParseLimit || 80}" min="10" max="500" step="10">
+            <input type="number" id="s-html-parse-limit" value="${s.htmlParseLimit || 300}" min="10" max="500" step="10">
             <small>How many links, buttons, and inputs to discover on each page. Higher = more thorough but slower. Set to 500 for full page scan.</small>
           </div>
           <div class="sp-field">
@@ -1332,7 +1339,7 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
       enableVoiceInput: getChecked('s-enable-voice-input'),
       quickActions: this.getQuickActionsFromEditor(),
       // Actions tab
-      htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 80,
+      htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 300,
       autoScan: getChecked('s-auto-scan'),
       agentPrompt: getVal('s-agent-prompt'),
       disabledActions: this._getDisabledActionsFromSettings()
@@ -1521,12 +1528,31 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
         if (msg.context) hasContextMessage = true;
       } else if (msg.role === 'assistant') {
         this.addMessage('ai', msg.content, msg.tokenUsage);
+      } else if (msg.role === 'agent-action') {
+        // Restore action history entry (colored status bubble)
+        this._renderPersistedActionEntry(msg);
       }
     }
 
     // If any message already consumed context, mark session accordingly
     this._contextConsumedInSession = hasContextMessage;
     this.refreshActiveContext();
+  }
+
+  /**
+   * Render a persisted agent-action entry (survives tab switches).
+   */
+  _renderPersistedActionEntry(msg) {
+    const entry = document.createElement('div');
+    entry.className = `snn-action-entry snn-action-${msg.status || 'info'}`;
+    const icons = { start: '▶️', ok: '✅', fail: '❌', info: 'ℹ️', cancelled: '⬅️' };
+    const icon = icons[msg.status] || '•';
+    entry.innerHTML = `
+      <span class="snn-action-entry-icon">${icon}</span>
+      <span class="snn-action-entry-text">${this.escapeHtml(msg.description || '')}</span>
+      ${msg.detail ? `<span class="snn-action-entry-detail">${this.escapeHtml(msg.detail)}</span>` : ''}
+    `;
+    this.els.chatMessages.appendChild(entry);
   }
 
   // ── Session Management ─────────────────────────────────────────

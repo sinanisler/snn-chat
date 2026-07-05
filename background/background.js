@@ -134,6 +134,35 @@ function showNotification(title, message, options = {}) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// HELPER: Resolve a potentially-relative URL against a tab's origin
+// ═══════════════════════════════════════════════════════════════════
+async function _makeAbsoluteUrl(rawUrl, tabId) {
+  if (!rawUrl) return rawUrl;
+  // Already absolute with scheme
+  if (/^https?:\/\//i.test(rawUrl)) return rawUrl;
+  // Absolute path — resolve against tab's origin
+  if (rawUrl.startsWith('/')) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab?.url) {
+        const origin = new URL(tab.url).origin;
+        return origin + rawUrl;
+      }
+    } catch (e) { /* fall through */ }
+  }
+  // Domain-like pattern — prepend https://
+  if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(\/.*)?$/.test(rawUrl)) {
+    return 'https://' + rawUrl;
+  }
+  // Bare word like "blog" or "library" — resolve against tab's current URL
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.url) return new URL('/' + rawUrl.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, ''), tab.url).href;
+  } catch (e) { /* give up */ }
+  return rawUrl;
+}
+
 // ═══════════════════════════════════════════════════════════════════// BACKGROUND-LEVEL AGENT ACTION HANDLER
 // ═══════════════════════════════════════════════════════════════
 async function _handleBgAgentAction(message, sendResponse) {
@@ -147,10 +176,11 @@ async function _handleBgAgentAction(message, sendResponse) {
         return;
 
       case 'agent:navigate': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No active tab.', retryable: false } }); return; }
-        await chrome.tabs.update(tab.id, { url: p.url });
-        sendResponse({ success: true, result: { navigated: true, url: p.url } });
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No target tab for navigation.', retryable: false } }); return; }
+        const url = await _makeAbsoluteUrl(p.url, tabId);
+        await chrome.tabs.update(tabId, { url });
+        sendResponse({ success: true, result: { navigated: true, url, tabId } });
         return;
       }
 
@@ -166,32 +196,34 @@ async function _handleBgAgentAction(message, sendResponse) {
         return;
 
       case 'agent:goBack': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
-        await chrome.tabs.goBack(tab.id);
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
+        await chrome.tabs.goBack(tabId);
         sendResponse({ success: true, result: { wentBack: true } });
         return;
       }
 
       case 'agent:goForward': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
-        await chrome.tabs.goForward(tab.id);
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
+        await chrome.tabs.goForward(tabId);
         sendResponse({ success: true, result: { wentForward: true } });
         return;
       }
 
       case 'agent:reload': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
-        await chrome.tabs.reload(tab.id);
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
+        await chrome.tabs.reload(tabId);
         sendResponse({ success: true, result: { reloaded: true } });
         return;
       }
 
       case 'agent:screenshot': {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id || !tab?.windowId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No visible tab to capture.', retryable: false } }); return; }
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No visible tab to capture.', retryable: false } }); return; }
+        const tab = await chrome.tabs.get(tabId);
+        if (!tab?.windowId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab window.', retryable: false } }); return; }
         const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: p.format || 'png' });
         sendResponse({ success: true, result: { screenshot: dataUrl, format: p.format || 'png' } });
         return;

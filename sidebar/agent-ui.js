@@ -95,10 +95,53 @@ class SNNAgentUI {
     if (prog) prog.style.display = 'none';
   }
 
+  /**
+   * Persist an action history entry to chatHistory so it survives tab switches.
+   * Called by addActionHistoryEntry for 'start', and updated by updateLastActionEntry.
+   */
+  _persistActionEntry(status, description, detail = '') {
+    // If starting a new action, only cancel the SINGLE most recent stale 'start'
+    // entry (the one that was interrupted). Completed entries are already 'ok'/'fail'.
+    if (status === 'start') {
+      for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
+        if (this.sp.chatHistory[i].role === 'agent-action' && this.sp.chatHistory[i].status === 'start') {
+          this.sp.chatHistory[i].status = 'cancelled';
+          this.sp.chatHistory[i].detail = 'Interrupted';
+          break; // Only cancel ONE — the most recent interrupted entry
+        }
+      }
+    }
+
+    // If updating (not 'start'), find and update the last agent-action entry
+    if (status !== 'start') {
+      for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
+        if (this.sp.chatHistory[i].role === 'agent-action') {
+          this.sp.chatHistory[i].status = status;
+          this.sp.chatHistory[i].detail = detail;
+          this.sp.chatHistory[i].description = description;
+          // Also save the final state
+          this.sp.saveChatHistory().catch(() => {});
+          return;
+        }
+      }
+    }
+    // New 'start' entry — append to chatHistory
+    this.sp.chatHistory.push({
+      role: 'agent-action',
+      action: '', description, status, detail,
+      timestamp: Date.now()
+    });
+    // Auto-save (fire and forget)
+    this.sp.saveChatHistory().catch(() => {});
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // ACTION HISTORY ENTRY — a chat bubble showing what agent did
   // ═══════════════════════════════════════════════════════════════
   addActionHistoryEntry(action, description, status, detail = '') {
+    // Persist to chatHistory for tab-switch survival
+    this._persistActionEntry(status, description, detail);
+
     const entry = document.createElement('div');
     entry.className = `snn-action-entry snn-action-${status}`; // status: 'start', 'ok', 'fail', 'info'
 
@@ -137,6 +180,10 @@ class SNNAgentUI {
         last.appendChild(span);
       }
     }
+    // Persist the ok/fail status to chatHistory so it survives tab switches
+    const textEl = last.querySelector('.snn-action-entry-text');
+    const desc = textEl ? textEl.textContent : '';
+    this._persistActionEntry(status, desc, detail);
     this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
   }
 

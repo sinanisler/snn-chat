@@ -1201,6 +1201,13 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   color: var(--sp-danger);
   border-left: 3px solid var(--sp-danger);
 }
+.snn-action-entry.snn-action-cancelled {
+  background: rgba(128,128,128,0.06);
+  color: var(--sp-text-secondary);
+  border-left: 3px solid var(--sp-border);
+  font-style: italic;
+  opacity: 0.7;
+}
 .snn-action-entry.snn-action-info {
   background: rgba(128,128,128,0.06);
   color: var(--sp-text-secondary);

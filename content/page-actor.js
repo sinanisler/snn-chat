@@ -117,28 +117,87 @@ class SNNPageActor {
   _resolveElement(selector, options = {}) {
     if (!selector) throw new Error('No selector provided');
 
-    // :text("exact text")
+    // :text("exact text") — tiered priority: most specific interactive elements first
     if (selector.startsWith(':text(')) {
       const text = selector.slice(6, -1).replace(/^["']|["']$/g, '');
-      for (const el of document.querySelectorAll('*')) {
-        if (el.children.length === 0 && el.textContent?.trim() === text) return el;
+
+      // Helper: find first visible element matching any of the given selectors whose
+      // trimmed textContent equals `text`. Prefer elements with no interactive children.
+      const findExact = (selList) => {
+        for (const el of document.querySelectorAll(selList)) {
+          if (el.textContent?.trim() === text && el.offsetParent !== null) {
+            // Skip if this is a container whose child already matches (avoid <li> wrapping <a>)
+            const hasInteractiveChild = el.querySelector('a, button, [role="button"], [role="link"]');
+            if (hasInteractiveChild && hasInteractiveChild.textContent?.trim() === text) continue;
+            return el;
+          }
+        }
+        return null;
+      };
+      const findContains = (selList) => {
+        for (const el of document.querySelectorAll(selList)) {
+          if (el.textContent?.trim().toLowerCase().includes(text.toLowerCase()) && el.offsetParent !== null) {
+            const hasInteractiveChild = el.querySelector('a, button, [role="button"], [role="link"]');
+            if (hasInteractiveChild && hasInteractiveChild.textContent?.trim().toLowerCase().includes(text.toLowerCase())) continue;
+            return el;
+          }
+        }
+        return null;
+      };
+
+      // Tier 1: Most specific — <a>, <button>, .paginate_button, [role="link"] (exact match)
+      let el = findExact('a, button, .paginate_button, [class*="pagination"] a, [class*="page"] a, nav a, .nav a, .menu a, header a');
+      if (el) return el;
+
+      // Tier 2: Role-based interactive elements (exact match)
+      el = findExact('[role="button"], [role="link"], [role="menuitem"], [role="tab"]');
+      if (el) return el;
+
+      // Tier 3: Any leaf element (no children) with exact text
+      for (const node of document.querySelectorAll('*')) {
+        if (node.children.length === 0 && node.textContent?.trim() === text && node.offsetParent !== null) return node;
       }
-      for (const el of document.querySelectorAll('button, a, input, label, span, p, h1, h2, h3, h4, h5, h6, li, td, th')) {
-        if (el.textContent?.trim().toLowerCase().includes(text.toLowerCase())) return el;
+
+      // Tier 4: Interactive elements with text containing the target (prioritize <a>, <button>)
+      el = findContains('a, button, .paginate_button, [class*="pagination"] a, [class*="page"] a, nav a');
+      if (el) return el;
+      el = findContains('[role="button"], [role="link"], [onclick], [class*="btn"], [class*="button"], [class*="page"], [class*="pagination"], [class*="tab"]');
+      if (el) return el;
+
+      // Tier 5: Any standard text element
+      for (const node of document.querySelectorAll('button, a, input, label, span, p, h1, h2, h3, h4, h5, h6, li, td, th')) {
+        if (node.textContent?.trim().toLowerCase().includes(text.toLowerCase()) && node.offsetParent !== null) return node;
       }
       throw new Error(`No element found with text "${text}"`);
     }
 
-    // :contains("partial text")
+    // :contains("partial text") — tiered priority same as :text()
     if (selector.startsWith(':contains(')) {
       const text = selector.slice(10, -1).replace(/^["']|["']$/g, '').toLowerCase();
       const candidates = [];
-      for (const el of document.querySelectorAll('button, a, input, label, span, p, h1, h2, h3, h4, h5, h6, li, td, th, div')) {
-        if (el.textContent?.toLowerCase().includes(text) && el.offsetParent !== null)
-          candidates.push(el);
-      }
-      candidates.sort((a, b) => a.textContent.length - b.textContent.length);
-      if (candidates[0]) return candidates[0];
+
+      const addCandidates = (selList, priority) => {
+        for (const el of document.querySelectorAll(selList)) {
+          if (el.textContent?.toLowerCase().includes(text) && el.offsetParent !== null) {
+            // Skip containers whose interactive child also matches
+            const hasInteractiveChild = el.querySelector('a, button, [role="button"], [role="link"]');
+            if (hasInteractiveChild && hasInteractiveChild.textContent?.toLowerCase().includes(text)) continue;
+            candidates.push({ el, priority, len: el.textContent.length });
+          }
+        }
+      };
+
+      // Tier 1: Most specific interactive
+      addCandidates('a, button, .paginate_button, [class*="pagination"] a, [class*="page"] a, nav a, .nav a, .menu a, header a', 1);
+      // Tier 2: Role-based
+      addCandidates('[role="button"], [role="link"], [role="menuitem"], [role="tab"]', 2);
+      // Tier 3: Broader interactive
+      addCandidates('[onclick], [class*="btn"], [class*="button"], [class*="page"], [class*="pagination"], [class*="tab"]', 3);
+      // Tier 4: Standard elements
+      addCandidates('button, a, input, label, span, p, h1, h2, h3, h4, h5, h6, li, td, th, div', 4);
+
+      candidates.sort((a, b) => a.priority - b.priority || a.len - b.len);
+      if (candidates[0]) return candidates[0].el;
       throw new Error(`No element found containing "${text}"`);
     }
 
@@ -151,6 +210,22 @@ class SNNPageActor {
       const all = document.querySelectorAll(sel);
       if (all.length <= idx || idx < 0) throw new Error(`"${sel}" has ${all.length} matches (wanted #${idx + 1})`);
       return all[idx];
+    }
+
+    // :nthText("text", N) — find Nth occurrence of exact text (for pagination: "2" appearing multiple times)
+    if (selector.startsWith(':nthText(')) {
+      const inner = selector.slice(10, -1);
+      const lastComma = inner.lastIndexOf(',');
+      const text = inner.slice(0, lastComma).trim().replace(/^["']|["']$/g, '');
+      const idx = parseInt(inner.slice(lastComma + 1).trim()) - 1;
+      const matches = [];
+      const interactiveSelectors = 'a, button, [role="button"], [role="link"], [onclick], ' +
+        '.paginate_button, [class*="btn"], [class*="button"], [class*="page"], [class*="pagination"]';
+      for (const el of document.querySelectorAll(interactiveSelectors)) {
+        if (el.textContent?.trim() === text && el.offsetParent !== null) matches.push(el);
+      }
+      if (matches.length <= idx || idx < 0) throw new Error(`Found ${matches.length} interactive elements with text "${text}" (wanted #${idx + 1})`);
+      return matches[idx];
     }
 
     // :xpath(...)
@@ -255,20 +330,68 @@ class SNNPageActor {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ACTION: Click
+  // ACTION: Click — Multi-strategy for SPA/dynamic pages
   // ═══════════════════════════════════════════════════════════════
   async click(selector, options = {}) {
     const el = this._resolveElement(selector, options);
     await this._ensureInteractable(el, options);
     const r = el.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    for (const T of [['pointerdown', PointerEvent], ['mousedown', MouseEvent], ['pointerup', PointerEvent], ['mouseup', MouseEvent], ['click', MouseEvent]]) {
-      el.dispatchEvent(new T[1](T[0], { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+
+    let clicked = false;
+
+    // ── Strategy 1: Full synthetic event sequence (works for vanilla JS & jQuery) ──
+    try {
+      for (const T of [['pointerdown', PointerEvent], ['mousedown', MouseEvent], ['pointerup', PointerEvent], ['mouseup', MouseEvent], ['click', MouseEvent]]) {
+        el.dispatchEvent(new T[1](T[0], { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window }));
+      }
+      clicked = true;
+    } catch (e) { /* continue */ }
+
+    // ── Strategy 2: Native .click() — triggers React/Vue synthetic handlers ──
+    try {
+      if (el.focus) el.focus();
+      el.click();
+      clicked = true;
+    } catch (e) { /* some elements throw on .click() */ }
+
+    // ── Strategy 3: Click the closest interactive ancestor (handles icon-inside-button) ──
+    if (!clicked || options.forceAncestor) {
+      let ancestor = el.parentElement;
+      for (let i = 0; i < 5 && ancestor; i++) {
+        const tag = ancestor.tagName.toLowerCase();
+        if (tag === 'a' || tag === 'button' || ancestor.getAttribute('role') === 'button' ||
+            ancestor.getAttribute('onclick') || ancestor.classList.contains('paginate_button') ||
+            /btn|button/i.test(ancestor.className || '')) {
+          const ar = ancestor.getBoundingClientRect();
+          const acx = ar.left + ar.width / 2, acy = ar.top + ar.height / 2;
+          try {
+            for (const T of [['pointerdown', PointerEvent], ['mousedown', MouseEvent], ['pointerup', PointerEvent], ['mouseup', MouseEvent], ['click', MouseEvent]]) {
+              ancestor.dispatchEvent(new T[1](T[0], { bubbles: true, cancelable: true, clientX: acx, clientY: acy, button: 0, view: window }));
+            }
+            if (ancestor.focus) ancestor.focus();
+            ancestor.click();
+            clicked = true;
+          } catch (e) { /* continue */ }
+          break;
+        }
+        ancestor = ancestor.parentElement;
+      }
     }
-    if (el.focus) el.focus();
-    try { el.click(); } catch (e) { /* some elements throw */ }
-    await this.wait(200);
-    return { action: 'click', element: this._describeElement(el), selector };
+
+    // ── Strategy 4: Keyboard activation (Enter/Space) — last resort for ARIA widgets ──
+    if (!clicked) {
+      try {
+        el.focus();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true, view: window }));
+        el.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true, view: window }));
+        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true, view: window }));
+        clicked = true;
+      } catch (e) { /* continue */ }
+    }
+
+    await this.wait(300); // Wait longer for SPA re-renders
+    return { action: 'click', element: this._describeElement(el), selector, strategyUsed: clicked ? 'success' : 'all-failed' };
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -26,12 +26,21 @@ class SNNAgentLoop {
     this._sendTabId = null;
     this._stepResults = [];
     this._cancelled = false;
+    this._cancelReason = null;  // 'user' | 'tab-switch' | null
     this._pendingResolve = null; // for BLOCKED state
 
     // ── Config ─────────────────────────────────────────────────
     this.MAX_RETRIES = 3;
     this.RETRY_DELAYS = [1000, 3000, 8000]; // ms base (jitter added)
     this.DEFAULT_TIMEOUT = 15000; // ms per action
+
+    // ── Background-level actions (handled by SW, not forwarded to page) ──
+    this._BG_ACTIONS = new Set([
+      'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
+      'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
+      'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
+      'agent:listActions', 'agent:getCapabilities'
+    ]);
 
     // ── Callbacks (set by sidepanel) ───────────────────────────
     this.onStateChange = null;   // (state, detail)
@@ -47,11 +56,14 @@ class SNNAgentLoop {
 
   /**
    * Cancel the current task. Safe to call from any state.
+   * @param {string} reason - 'user' or 'tab-switch'
    */
-  cancel() {
+  cancel(reason = 'user') {
     if (this._state === 'IDLE') return;
     this._cancelled = true;
-    this._transition('CANCELLED', { reason: 'User cancelled' });
+    this._cancelReason = reason;
+    const label = reason === 'tab-switch' ? 'Tab switched — task interrupted' : 'User cancelled';
+    this._transition('CANCELLED', { reason: label });
     // Resolve any pending BLOCKED promise
     if (this._pendingResolve) {
       this._pendingResolve('denied');
@@ -205,8 +217,8 @@ class SNNAgentLoop {
 
     const allTools = [
       // ── Page Interaction ──────────────────────────────────
-      { name: 'snn_click', desc: 'Click a button, link, or element on the page', params: {
-        selector: { type: 'string', desc: 'CSS selector, :text("exact"), :contains("partial"), :nth("a.button",2), or :role("button","Name")' }
+      { name: 'snn_click', desc: 'Click a button, link, or element on the page. Uses multi-strategy click (synthetic events + native click + ancestor click + keyboard) for SPA compatibility.', params: {
+        selector: { type: 'string', desc: 'CSS selector, :text("exact"), :contains("partial"), :nth("a.button",2), :nthText("2",2), or :role("button","Name")' }
       }, required: ['selector'] },
       { name: 'snn_type', desc: 'Type text into an input field or textarea', params: {
         selector: { type: 'string', desc: 'Selector for the input/textarea' },
@@ -327,12 +339,19 @@ class SNNAgentLoop {
 You are SNN Chat, a browser agent that can interact with web pages in real-time. You have access to tools (functions) that let you click, type, scroll, navigate, extract data, fill forms, and more.
 
 HOW TO WORK:
-1. When the user asks you to DO something on the page, USE THE TOOLS provided. Don't just describe what you would do — actually call the tools.
+1. When the user asks you to DO something on the page, USE THE TOOLS IMMEDIATELY. Do NOT ask "Want me to?" or "Shall I?" — just DO it. Describe briefly what you're doing, then call the tool.
 2. You can chain multiple tool calls: e.g., navigate → wait → click → findElements.
 3. After tools return results, synthesize a helpful response in the user's language.
-4. For selectors, prefer :text("exact text") for finding buttons/links by their visible text. Use :contains("partial") for partial matches.
+4. For selectors, prefer :text("exact text") for finding buttons/links by their visible text. Use :contains("partial") for partial matches. For pagination where the same text appears multiple times (e.g., page numbers "1","2","3"), use :nthText("2", 2) to get the 2nd occurrence.
 5. When navigating: if the user says "go to X page", use snn_navigate with the link text as the url parameter. The agent will automatically find the correct link.
 6. ALWAYS describe what you're about to do before calling tools.
+7. The click action now uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks like React, Vue, and DataTables/jQuery.
+
+CRITICAL RULES:
+- NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
+- NEVER say "I can help with that, would you like me to..." — instead say "Let me do that now" and call the tool.
+- NEVER just describe the page — always take action when the user's intent is clear.
+- If a tool call fails, try a different approach (different selector, different strategy). Don't give up after one failure.
 
 IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`;
   }
@@ -387,11 +406,38 @@ IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`
     }
 
     // Build step for tracking
+    let params = this._mapToolArgsToParams(actionName, fnArgs);
+    let description = this._describeToolCall(fnName, fnArgs);
+
+    // ── Navigate URL resolution: if URL is a text description (not a real URL), scan page links ──
+    if (actionName === 'navigate' && params.url && !this._looksLikeURL(params.url)) {
+      const scan = await this._scanAllActionableElements();
+      if (scan?.elements?.links?.length) {
+        const desc = params.url.toLowerCase();
+        let best = null, bestScore = 0;
+        for (const link of scan.elements.links) {
+          const t = (link.text || '').toLowerCase();
+          if (t === desc) { best = link; break; }
+          if (t.includes(desc)) { const s = desc.length / t.length; if (s > bestScore) { bestScore = s; best = link; } }
+          if ((link.href || '').toLowerCase().includes(desc.replace(/\s+/g, '-'))) { if (0.5 > bestScore) { bestScore = 0.5; best = link; } }
+        }
+        if (best?.href) {
+          params.url = best.href;
+          description = `${description} → ${best.text || best.href}`;
+        }
+      }
+      // ── Fallback: if page scan didn't resolve, construct absolute URL from tab origin ──
+      if (!this._looksLikeURL(params.url)) {
+        params.url = await this._buildNavigateFallbackUrl(params.url);
+        if (params.url) description = `${description} → ${params.url}`;
+      }
+    }
+
     const step = {
       id: this._generateId(),
       action: actionName,
-      description: this._describeToolCall(fnName, fnArgs),
-      params: this._mapToolArgsToParams(actionName, fnArgs),
+      description,
+      params,
       timeout: this.DEFAULT_TIMEOUT
     };
 
@@ -682,6 +728,15 @@ IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`
       }
     };
 
+    // ── Inject tabId for background actions that need a target tab ──
+    const TAB_DEPENDENT_ACTIONS = new Set([
+      'agent:navigate', 'agent:goBack', 'agent:goForward',
+      'agent:reload', 'agent:screenshot'
+    ]);
+    if (TAB_DEPENDENT_ACTIONS.has(message.action) && this._sendTabId) {
+      message.payload.tabId = this._sendTabId;
+    }
+
     try {
       // Race: response vs timeout
       const response = await this._sendWithTimeout(message, timeout);
@@ -717,10 +772,27 @@ IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`
       let settled = false;
       const timer = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, timeout);
 
-      chrome.runtime.sendMessage(message).then((response) => {
+      // Route page actions to the specific tab (not broadcast) to prevent cross-tab interference
+      const isBgAction = this._BG_ACTIONS.has(message.action);
+      const sendPromise = isBgAction
+        ? chrome.runtime.sendMessage(message)
+        : (this._sendTabId
+            ? chrome.tabs.sendMessage(this._sendTabId, message)
+            : Promise.reject(new Error('No target tab')));
+
+      sendPromise.then((response) => {
         if (!settled) { settled = true; clearTimeout(timer); resolve(response); }
       }).catch((err) => {
-        if (!settled) { settled = true; clearTimeout(timer); resolve({ success: false, error: { code: 'NETWORK_ERROR', message: err.message, retryable: true, suggestion: 'Check the connection and try again.' } }); }
+        if (!settled) {
+          settled = true; clearTimeout(timer);
+          if (!isBgAction && this._sendTabId) {
+            chrome.runtime.sendMessage(message).then((r) => { resolve(r); }).catch(() => {
+              resolve({ success: false, error: { code: 'NETWORK_ERROR', message: 'Could not reach the page. The tab may have closed.', retryable: false, suggestion: 'Reopen the page and try again.' } });
+            });
+          } else {
+            resolve({ success: false, error: { code: 'NETWORK_ERROR', message: err.message, retryable: true, suggestion: 'Check the connection and try again.' } });
+          }
+        }
       });
     });
   }
@@ -829,9 +901,12 @@ Available browser actions: navigate, openTab, closeTab, goBack, goForward, reloa
 
 Selector formats:
 - "#id" or ".class" — CSS
-- ":text('exact text')" — exact text match
-- ":contains('partial')" — partial text match
-- ":nth('a.button', 2)" — Nth match
+- ":text('exact text')" — exact text match (now prioritizes clickable elements like pagination)
+- ":contains('partial')" — partial text match (prioritizes interactive elements)
+- ":nthText('2', 2)" — Nth occurrence of exact text (use for pagination where same text appears multiple times)
+- ":nth('a.button', 2)" — Nth match of CSS selector
+- ":xpath('//div[@data-testid=\"foo\"]')" — XPath selector
+- ":role('button', 'Submit')" — find by ARIA role + accessible name
 
 Respond ONLY with the JSON object.`;
 
@@ -962,10 +1037,10 @@ Respond with ONLY the JSON array. Example:
   // ═══════════════════════════════════════════════════════════════
   _checkTabStillValid() {
     if (this.sp.currentTabId !== this._sendTabId) {
-      this._transition('FAILED', {
-        message: 'The active tab changed while SNN was working.',
-        suggestion: 'Switch back to the original tab and try again, or start a new task.'
-      });
+      // Tab switched — cancel gracefully, don't show error cards
+      this._cancelled = true;
+      this._cancelReason = 'tab-switch';
+      this._transition('CANCELLED', { reason: 'Tab switched — task interrupted' });
       return false;
     }
     return true;
@@ -1006,12 +1081,39 @@ Respond with ONLY the JSON array. Example:
     this._sendTabId = null;
     this._stepResults = [];
     this._cancelled = false;
+    this._cancelReason = null;
     this._pendingResolve = null;
   }
 
   // ── Utilities ───────────────────────────────────────────────────
   _generateId() { return Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8); }
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  /** Returns true if the string looks like a real URL (has scheme or common TLD pattern). */
+  _looksLikeURL(str) {
+    if (!str) return false;
+    // Full URLs with scheme
+    if (/^https?:\/\//i.test(str)) return true;
+    // Domain-like patterns: contains a dot with common TLD, or starts with /
+    if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(\/|$)/.test(str)) return true;
+    // Absolute paths
+    if (/^\//.test(str)) return true;
+    return false;
+  }
+
+  /** Fallback: construct an absolute URL from the current tab's origin + slugified text. */
+  async _buildNavigateFallbackUrl(rawText) {
+    if (!this._sendTabId) return rawText;
+    try {
+      const tab = await chrome.tabs.get(this._sendTabId);
+      if (tab?.url) {
+        const origin = new URL(tab.url).origin;
+        const slug = rawText.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        return origin + '/' + slug;
+      }
+    } catch (e) { /* tab might not be accessible */ }
+    return rawText;
+  }
 
   /**
    * Format an action result into a short user-readable string for chat history.
@@ -1046,13 +1148,15 @@ Respond with ONLY the JSON array. Example:
 
   /**
    * Scan ALL actionable elements on the page:
-   * links, buttons, inputs, forms, selects, textareas.
+   * links, buttons, inputs, forms, selects, textareas, AND
+   * generic clickable elements (spans, divs, lis with event handlers,
+   * cursor:pointer styles, role attributes, tabindex, onclick, etc.)
    * Respects the user's HTML parse limit setting.
    */
   async _scanAllActionableElements() {
     try {
       const settings = await this.sp.getSettings();
-      const limit = settings.htmlParseLimit || 80;
+      const limit = settings.htmlParseLimit || 300;
 
       const result = await this._dispatchAction({
         action: 'evaluate',
@@ -1060,58 +1164,157 @@ Respond with ONLY the JSON array. Example:
         params: {
           code: `(function() {
             const limit = ${limit};
-            const elements = { links: [], buttons: [], inputs: [], forms: [], selects: [] };
+            const elements = { links: [], buttons: [], inputs: [], forms: [], selects: [], clickables: [] };
+            const seenSelectors = new Set(); // deduplicate across categories
 
-            // Links (visible, with href)
-            const allLinks = document.querySelectorAll('a[href]');
+            function makeSelector(el) {
+              if (el.id) return '#' + CSS.escape(el.id);
+              if (el.name) return '[name="' + el.name + '"]';
+              if (el.className && typeof el.className === 'string') {
+                const cls = el.className.trim().split(/\\s+/)[0];
+                if (cls && cls.length < 40) return el.tagName.toLowerCase() + '.' + cls;
+              }
+              return el.tagName.toLowerCase();
+            }
+
+            function isVisible(el) {
+              if (!el || el.offsetParent === null) return false;
+              const s = window.getComputedStyle(el);
+              if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            }
+
+            // ── Links: <a> with href OR <a> without href (pagination, JS handlers) OR [role="link"] ──
+            const allLinks = document.querySelectorAll('a[href], a:not([href]), [role="link"]');
             for (const a of allLinks) {
               if (elements.links.length >= limit) break;
-              const text = (a.textContent || '').trim().substring(0, 80);
+              const text = (a.textContent || a.getAttribute('aria-label') || a.title || '').trim().substring(0, 80);
               const href = a.href || '';
-              if (text && href && !href.startsWith('javascript:') && a.offsetParent !== null) {
-                elements.links.push({ text, href: href.substring(0, 200), selector: a.id ? '#' + CSS.escape(a.id) : (a.className ? 'a.' + a.className.split(' ')[0] : 'a') });
+              const sel = makeSelector(a);
+              if (text && isVisible(a) && !href.startsWith('javascript:void') && !seenSelectors.has(sel)) {
+                seenSelectors.add(sel);
+                elements.links.push({
+                  text,
+                  href: href.substring(0, 200),
+                  selector: sel,
+                  tag: a.tagName.toLowerCase(),
+                  hasHref: !!a.href && a.href !== window.location.href + '#'
+                });
               }
             }
 
-            // Buttons
-            const allButtons = document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]');
+            // ── Buttons: <button>, [role="button"], input[type=submit|button|reset], plus any element with btn class ──
+            const buttonSelector = 'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], ' +
+              '[class*="btn"]:not(form):not(div.btn-group), [class*="button"]:not(form):not(div.button-group)';
+            const allButtons = document.querySelectorAll(buttonSelector);
             for (const b of allButtons) {
               if (elements.buttons.length >= limit) break;
-              const text = (b.textContent || b.value || b.getAttribute('aria-label') || '').trim().substring(0, 60);
-              if (text && b.offsetParent !== null) {
-                elements.buttons.push({ text, selector: b.id ? '#' + CSS.escape(b.id) : ':contains("' + text.substring(0, 30) + '")', type: b.tagName.toLowerCase() });
+              const text = (b.textContent || b.value || b.getAttribute('aria-label') || b.title || '').trim().substring(0, 60);
+              const sel = makeSelector(b);
+              if (text && isVisible(b) && !seenSelectors.has(sel)) {
+                seenSelectors.add(sel);
+                elements.buttons.push({
+                  text,
+                  selector: sel,
+                  type: b.tagName.toLowerCase(),
+                  role: b.getAttribute('role') || ''
+                });
               }
             }
 
-            // Inputs
-            const allInputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea');
+            // ── Clickables: ANY element that acts clickable but isn't a standard link/button ──
+            // Detects: onclick handlers, cursor:pointer, tabindex, data-click, ng-click, @click, etc.
+            const interactiveAttrs = ['onclick', 'ng-click', '@click', 'v-on:click', 'data-click', 'data-action', 'data-url'];
+            const allElements = document.querySelectorAll('*');
+            for (const el of allElements) {
+              if (elements.clickables.length >= limit) break;
+              const tag = el.tagName.toLowerCase();
+              // Skip already-covered types and non-interactive containers
+              if (/^(html|body|head|script|style|meta|link|br|hr|img|svg|path|g|circle|rect|polygon|polyline|line|text)$/i.test(tag)) continue;
+              if (/^(a|button|input|select|textarea|form|option|optgroup|label)$/i.test(tag)) continue;
+
+              const sel = makeSelector(el);
+              if (!isVisible(el) || seenSelectors.has(sel)) continue;
+
+              let reason = '';
+              // Check for click-handler attributes
+              for (const attr of interactiveAttrs) {
+                if (el.hasAttribute(attr)) { reason = attr; break; }
+              }
+              // Check for role=button/link on non-standard elements
+              if (!reason) {
+                const role = el.getAttribute('role');
+                if (role === 'button' || role === 'link' || role === 'menuitem' || role === 'tab' || role === 'option' || role === 'treeitem') {
+                  reason = 'role=' + role;
+                }
+              }
+              // Check for tabindex (keyboard-focusable = interactive)
+              if (!reason && el.hasAttribute('tabindex')) {
+                const ti = el.getAttribute('tabindex');
+                if (ti !== '-1') reason = 'tabindex=' + ti;
+              }
+              // Check for cursor:pointer style (very common for JS-clickable divs/spans)
+              if (!reason) {
+                const cs = window.getComputedStyle(el);
+                if (cs.cursor === 'pointer') reason = 'cursor:pointer';
+              }
+              // Check for data-* attributes commonly used for click handling
+              if (!reason) {
+                for (const attr of ['data-id', 'data-value', 'data-href', 'data-target', 'data-toggle', 'data-index']) {
+                  if (el.hasAttribute(attr)) { reason = attr; break; }
+                }
+              }
+
+              if (reason) {
+                const text = (el.textContent || el.getAttribute('aria-label') || el.title || '').trim().substring(0, 60);
+                // Only include if it has meaningful text or is a small self-contained element
+                if (text && text.length < 200) {
+                  seenSelectors.add(sel);
+                  elements.clickables.push({
+                    text,
+                    selector: sel,
+                    tag,
+                    reason,
+                    className: (typeof el.className === 'string' ? el.className.substring(0, 40) : '')
+                  });
+                }
+              }
+            }
+
+            // ── Inputs (text, email, number, etc.) ──
+            const allInputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea');
             for (const inp of allInputs) {
               if (elements.inputs.length >= limit) break;
               const label = inp.getAttribute('placeholder') || inp.getAttribute('aria-label') || inp.getAttribute('name') || inp.id || (inp.tagName + ' field');
-              if (inp.offsetParent !== null) {
-                elements.inputs.push({ label: label.substring(0, 60), type: inp.type || 'text', selector: inp.id ? '#' + CSS.escape(inp.id) : (inp.name ? '[name="' + inp.name + '"]' : inp.tagName.toLowerCase()), tag: inp.tagName.toLowerCase() });
+              const sel = makeSelector(inp);
+              if (isVisible(inp) && !seenSelectors.has(sel)) {
+                seenSelectors.add(sel);
+                elements.inputs.push({ label: label.substring(0, 60), type: inp.type || 'text', selector: sel, tag: inp.tagName.toLowerCase() });
               }
             }
 
-            // Forms
+            // ── Forms ──
             const allForms = document.querySelectorAll('form');
             for (const f of allForms) {
               if (elements.forms.length >= 10) break;
               const id = f.id || '';
               const action = f.action || '';
               const inputCount = f.querySelectorAll('input, textarea, select').length;
-              if (inputCount > 0) {
+              if (inputCount > 0 && isVisible(f)) {
                 elements.forms.push({ id: id.substring(0, 40), action: action.substring(0, 100), inputCount, selector: id ? '#' + CSS.escape(id) : 'form' });
               }
             }
 
-            // Selects
+            // ── Selects ──
             const allSelects = document.querySelectorAll('select');
             for (const s of allSelects) {
               if (elements.selects.length >= limit) break;
               const optCount = s.options.length;
-              if (s.offsetParent !== null) {
-                elements.selects.push({ optionCount: optCount, selector: s.id ? '#' + CSS.escape(s.id) : (s.name ? '[name="' + s.name + '"]' : 'select'), name: s.name || s.id || '' });
+              const sel = makeSelector(s);
+              if (isVisible(s) && !seenSelectors.has(sel)) {
+                seenSelectors.add(sel);
+                elements.selects.push({ optionCount: optCount, selector: sel, name: s.name || s.id || '' });
               }
             }
 
@@ -1121,11 +1324,12 @@ Respond with ONLY the JSON array. Example:
               totalInputs: elements.inputs.length,
               totalForms: elements.forms.length,
               totalSelects: elements.selects.length,
+              totalClickables: elements.clickables.length,
               elements: elements
             });
           })()`
         },
-        timeout: 8000
+        timeout: 10000
       });
 
       if (result.success && result.result?.result) {
@@ -1186,10 +1390,16 @@ Respond with ONLY the JSON array. Example:
         if (best) {
           return { ...step, params: { ...step.params, selector: best.selector || `:contains("${best.text.substring(0, 30)}")` }, description: `${step.description} → ${best.text}` };
         }
-        // Then links
+        // Then links (including pagination <a> tags without href)
         const linkBest = allLinks.find(l => l.text.toLowerCase().includes(desc));
         if (linkBest) {
           return { ...step, params: { ...step.params, selector: linkBest.selector || `:contains("${linkBest.text.substring(0, 30)}")` }, description: `${step.description} → ${linkBest.text}` };
+        }
+        // Then clickables (spans, divs, etc. with click handlers)
+        const allClickables = scan.elements.clickables || [];
+        const clickableBest = allClickables.find(c => c.text.toLowerCase().includes(desc));
+        if (clickableBest) {
+          return { ...step, params: { ...step.params, selector: clickableBest.selector || `:contains("${clickableBest.text.substring(0, 30)}")` }, description: `${step.description} → ${clickableBest.text}` };
         }
       }
 
