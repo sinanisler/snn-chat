@@ -1108,6 +1108,8 @@ class SNNSidePanel {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = navigator.language || 'en-US';
+    this._micPermissionGranted = false;  // track explicit mic permission
+    this._micStream = null;
 
     this.recognition.onresult = (e) => {
       let final = '', interim = '';
@@ -1127,19 +1129,37 @@ class SNNSidePanel {
     this.recognition.onend = () => {
       this.els.voiceBtn.classList.remove('listening');
       this.els.userInput.placeholder = 'Ask anything...';
+      this._releaseMicStream();
     };
 
     this.recognition.onerror = (e) => {
       this.els.voiceBtn.classList.remove('listening');
-      if (e.error === 'not-allowed') this.showToast('Microphone access denied', 'error');
+      this._releaseMicStream();
+      switch (e.error) {
+        case 'not-allowed':
+          this._micPermissionGranted = false;
+          this.showToast('Microphone access denied. Check chrome://settings/content/microphone and allow this extension.', 'error');
+          break;
+        case 'no-speech':
+          this.showToast('No speech detected. Try again.', 'error');
+          break;
+        case 'audio-capture':
+          this.showToast('No microphone found. Please connect a microphone.', 'error');
+          break;
+        case 'network':
+          this.showToast('Network error. Speech recognition requires an internet connection.', 'error');
+          break;
+        default:
+          console.warn('Speech recognition error:', e.error);
+          break;
+      }
     };
 
     this.els.voiceBtn.addEventListener('click', () => {
       if (this.els.voiceBtn.classList.contains('listening')) {
         this.recognition.stop();
       } else {
-        this.recognition.start();
-        this.els.voiceBtn.classList.add('listening');
+        this._startVoiceRecognition();
       }
     });
 
@@ -1149,8 +1169,7 @@ class SNNSidePanel {
       if (e.code === 'Space' && document.activeElement !== this.els.userInput && !spaceDown) {
         spaceDown = true;
         e.preventDefault();
-        this.recognition?.start();
-        this.els.voiceBtn.classList.add('listening');
+        this._startVoiceRecognition();
       }
     });
     document.addEventListener('keyup', (e) => {
@@ -1160,6 +1179,52 @@ class SNNSidePanel {
         if (this.els.userInput.value.trim()) setTimeout(() => this.sendMessage(), 100);
       }
     });
+  }
+
+  // Request mic permission explicitly before starting speech recognition.
+  // getUserMedia triggers Chrome's proper permission dialog; once granted,
+  // SpeechRecognition works reliably.
+  async _ensureMicPermission() {
+    if (this._micPermissionGranted) return true;
+    try {
+      // Request audio permission — this shows Chrome's native mic permission prompt
+      this._micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this._micPermissionGranted = true;
+      return true;
+    } catch (err) {
+      console.warn('Microphone permission denied:', err.name, err.message);
+      this._micPermissionGranted = false;
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        this.showToast('Microphone access denied. Go to chrome://settings/content/microphone to allow it.', 'error');
+      } else if (err.name === 'NotFoundError') {
+        this.showToast('No microphone found. Please connect one and try again.', 'error');
+      } else {
+        this.showToast('Could not access microphone: ' + err.message, 'error');
+      }
+      return false;
+    }
+  }
+
+  // Release the getUserMedia stream (stop the red "recording" dot in the tab)
+  _releaseMicStream() {
+    if (this._micStream) {
+      this._micStream.getTracks().forEach(track => track.stop());
+      this._micStream = null;
+    }
+  }
+
+  async _startVoiceRecognition() {
+    if (!this.recognition) return;
+    // First, ensure we have explicit mic permission
+    const allowed = await this._ensureMicPermission();
+    if (!allowed) return;
+    try {
+      this.recognition.start();
+      this.els.voiceBtn.classList.add('listening');
+    } catch (err) {
+      console.error('Failed to start speech recognition:', err);
+      this.showToast('Failed to start voice input. Try again.', 'error');
+    }
   }
 
   // ── Toast ───────────────────────────────────────────────────────
