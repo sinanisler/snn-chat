@@ -431,7 +431,16 @@ class SNNSidePanel {
             );
             await this.saveChatHistory();
           }
-          // Agent loop handled it — results were already rendered via callbacks
+          // ── Render LLM's synthesized response if present ──
+          if (agentResult.llmResponse) {
+            this.addMessage('ai', agentResult.llmResponse);
+            this.chatHistory.push(
+              { role: 'user', content: message, contextType: contextSnapshot?.type || 'none', context: contextSnapshot },
+              { role: 'assistant', content: agentResult.llmResponse }
+            );
+            await this.saveChatHistory();
+          }
+          // Agent loop handled it
           this.isLoading = false;
           this.els.sendBtn.disabled = false;
           this.els.userInput.focus();
@@ -846,6 +855,10 @@ class SNNSidePanel {
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.enableQuickActions === undefined) s.enableQuickActions = true;
           if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
+          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 80;
+          if (s.autoScan === undefined) s.autoScan = true;
+          if (s.disabledActions === undefined) s.disabledActions = [];
+          if (s.agentPrompt === undefined) s.agentPrompt = this._getDefaultAgentPrompt();
           if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
           resolve(s);
         });
@@ -861,6 +874,8 @@ class SNNSidePanel {
     document.body.className = `theme-${theme}`;
     document.documentElement.style.setProperty('--sp-font-size', `${settings.fontSize || 16}px`);
     this.updateModelDisplay(settings);
+    // Cache agent prompt for chat augmentation
+    this._agentPromptCache = settings.agentPrompt || this._getDefaultAgentPrompt();
   }
 
   updateModelDisplay(settings) {
@@ -880,6 +895,7 @@ class SNNSidePanel {
       <div class="sp-tabs">
         <button class="sp-tab active" data-tab="api">API</button>
         <button class="sp-tab" data-tab="chat">Chat</button>
+        <button class="sp-tab" data-tab="actions">Actions</button>
         <button class="sp-tab" data-tab="features">Features</button>
         <button class="sp-tab" data-tab="quickactions">Quick Actions</button>
         <button class="sp-tab" data-tab="appearance">Appearance</button>
@@ -934,6 +950,64 @@ class SNNSidePanel {
           <div class="sp-field">
             <input type="number" id="s-content-limit" value="${s.contentLimit || 15000}" min="500" max="100000">
           </div>
+        </div>
+      </div>
+
+      <div class="sp-tab-content" data-tab-content="actions">
+        <div class="sp-section">
+          <h4>HTML Element Scanning</h4>
+          <div class="sp-field">
+            <label>Max elements to scan per page</label>
+            <input type="number" id="s-html-parse-limit" value="${s.htmlParseLimit || 80}" min="10" max="500" step="10">
+            <small>How many links, buttons, and inputs to discover on each page. Higher = more thorough but slower. Set to 500 for full page scan.</small>
+          </div>
+          <div class="sp-field">
+            <label>Auto-scan on page load</label>
+            ${this.toggleHtml('s-auto-scan', 'Auto-discover page elements', 'Scan for clickable elements, links, and forms when a page loads', s.autoScan !== false)}
+          </div>
+        </div>
+        <div class="sp-section">
+          <h4>Enabled Page Actions</h4>
+          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:8px">Uncheck actions to prevent the agent from using them.</p>
+          ${this.toggleHtml('s-action-click', 'Click', 'Click buttons, links, and elements', s.disabledActions ? !s.disabledActions.includes('click') : true)}
+          ${this.toggleHtml('s-action-type', 'Type / Input', 'Type text into fields and forms', s.disabledActions ? !s.disabledActions.includes('type') : true)}
+          ${this.toggleHtml('s-action-scroll', 'Scroll', 'Scroll up, down, or to elements', s.disabledActions ? !s.disabledActions.includes('scroll') : true)}
+          ${this.toggleHtml('s-action-highlight', 'Highlight', 'Visually highlight page elements', s.disabledActions ? !s.disabledActions.includes('highlight') : true)}
+          ${this.toggleHtml('s-action-hover', 'Hover', 'Hover over elements to trigger tooltips', s.disabledActions ? !s.disabledActions.includes('hover') : true)}
+          ${this.toggleHtml('s-action-pressKey', 'Press Key', 'Send keyboard keys (Enter, Escape, etc.)', s.disabledActions ? !s.disabledActions.includes('pressKey') : true)}
+        </div>
+        <div class="sp-section">
+          <h4>Form & Data Actions</h4>
+          ${this.toggleHtml('s-action-fillForm', 'Fill Forms', 'Auto-fill multiple form fields', s.disabledActions ? !s.disabledActions.includes('fillForm') : true)}
+          ${this.toggleHtml('s-action-selectDropdown', 'Select Dropdowns', 'Choose options from select elements', s.disabledActions ? !s.disabledActions.includes('selectDropdown') : true)}
+          ${this.toggleHtml('s-action-checkToggle', 'Toggle Checkboxes', 'Check/uncheck checkboxes and radios', s.disabledActions ? !s.disabledActions.includes('checkToggle') : true)}
+          ${this.toggleHtml('s-action-extractTable', 'Extract Tables', 'Extract table data as structured text', s.disabledActions ? !s.disabledActions.includes('extractTable') : true)}
+          ${this.toggleHtml('s-action-findElements', 'Find Elements', 'Search page for matching elements', s.disabledActions ? !s.disabledActions.includes('findElements') : true)}
+          ${this.toggleHtml('s-action-getPageInfo', 'Page Info', 'Get summary of current page', s.disabledActions ? !s.disabledActions.includes('getPageInfo') : true)}
+        </div>
+        <div class="sp-section">
+          <h4>Navigation & Browser Actions</h4>
+          ${this.toggleHtml('s-action-navigate', 'Navigate', 'Go to URLs or page links', s.disabledActions ? !s.disabledActions.includes('navigate') : true)}
+          ${this.toggleHtml('s-action-openTab', 'Open Tabs', 'Open URLs in new tabs', s.disabledActions ? !s.disabledActions.includes('openTab') : true)}
+          ${this.toggleHtml('s-action-goBack', 'Go Back/Forward', 'Browser history navigation', s.disabledActions ? !s.disabledActions.includes('goBack') : true)}
+          ${this.toggleHtml('s-action-screenshot', 'Screenshot', 'Capture visible page area', s.disabledActions ? !s.disabledActions.includes('screenshot') : true)}
+          ${this.toggleHtml('s-action-reload', 'Reload Page', 'Refresh the current page', s.disabledActions ? !s.disabledActions.includes('reload') : true)}
+        </div>
+        <div class="sp-section">
+          <h4>Advanced</h4>
+          ${this.toggleHtml('s-action-evaluate', 'Execute JavaScript', 'Run custom JS on the page', s.disabledActions ? !s.disabledActions.includes('evaluate') : true)}
+          ${this.toggleHtml('s-action-startPicker', 'Element Picker', 'Hover to highlight, click to select elements', s.disabledActions ? !s.disabledActions.includes('startPicker') : true)}
+          ${this.toggleHtml('s-action-clipboard', 'Clipboard', 'Read from and write to clipboard', s.disabledActions ? !s.disabledActions.includes('getClipboard') : true)}
+          ${this.toggleHtml('s-action-monitor', 'DOM Monitoring', 'Watch for elements to appear/change', s.disabledActions ? !s.disabledActions.includes('startMonitoring') : true)}
+        </div>
+        <div class="sp-section">
+          <h4>Agent System Prompt</h4>
+          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">This prompt is prepended to every chat. It tells the AI what it can do on web pages.</p>
+          <div class="sp-field">
+            <textarea id="s-agent-prompt" rows="4" style="font-size:12px;font-family:monospace;">${this.escapeHtml(s.agentPrompt || this._getDefaultAgentPrompt())}</textarea>
+            <small>Edit carefully — this controls how the agent understands its capabilities.</small>
+          </div>
+          <button class="sp-btn sp-btn-secondary" id="s-reset-agent-prompt" style="margin-top:6px;">Reset to Default</button>
         </div>
       </div>
 
@@ -1043,6 +1117,12 @@ class SNNSidePanel {
     this.els.settingsBody.querySelector('#s-add-qa').addEventListener('click', () => this.addQuickActionRow());
     this.els.settingsBody.querySelector('#s-reset-qa').addEventListener('click', () => {
       this.renderQuickActionsEditor(this.getDefaultQuickActions());
+    });
+
+    // Reset agent prompt
+    this.els.settingsBody.querySelector('#s-reset-agent-prompt')?.addEventListener('click', () => {
+      const ta = this.els.settingsBody.querySelector('#s-agent-prompt');
+      if (ta) ta.value = this._getDefaultAgentPrompt();
     });
 
     // Export / Clear
@@ -1181,6 +1261,51 @@ class SNNSidePanel {
     return actions.length ? actions : this.getDefaultQuickActions();
   }
 
+  /**
+   * Collect which actions are disabled from the settings checkboxes.
+   * Returns an array of action names that are UNCHECKED.
+   */
+  _getDisabledActionsFromSettings() {
+    const s = this.els.settingsBody;
+    const allActions = [
+      'click', 'type', 'scroll', 'highlight', 'hover', 'pressKey',
+      'fillForm', 'selectDropdown', 'checkToggle', 'extractTable', 'findElements', 'getPageInfo',
+      'navigate', 'openTab', 'goBack', 'screenshot', 'reload',
+      'evaluate', 'startPicker', 'getClipboard', 'startMonitoring'
+    ];
+    const disabled = [];
+    for (const action of allActions) {
+      const el = s.querySelector(`#s-action-${action}`);
+      if (el && !el.checked) disabled.push(action);
+    }
+    return disabled;
+  }
+
+  /**
+   * Returns the default agent system prompt that tells the LLM what SNN can do.
+   */
+  _getDefaultAgentPrompt() {
+    return `[SYSTEM: You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You CAN perform these actions on the current page:
+• Click buttons, links, and elements
+• Type text into input fields and forms
+• Scroll the page up, down, or to elements
+• Highlight elements with visual overlays
+• Find and list elements matching selectors
+• Extract tables and structured data
+• Fill forms (single fields or entire forms)
+• Select dropdown options, toggle checkboxes
+• Press keyboard keys (Enter, Escape, Tab, etc.)
+• Hover over elements to trigger tooltips
+• Navigate to URLs, open new tabs, go back/forward
+• Take screenshots of the page
+• Execute custom JavaScript on the page
+• Enter element picker mode (hover to pick)
+• Monitor DOM changes
+• Download files, show notifications, set alarms
+
+When users ask "can you click X?" or "what can you do on this page?", respond with an OFFER to help using these capabilities. Say "Yes! I can click the Sign Up button for you. Want me to?" or "Let me take a screenshot of this page for you." NEVER say you cannot interact with the page. You CAN. If you need more info about the page to perform an action, use getPageInfo or findElements first. If you're not sure what to do, ask the user to clarify.]`;
+  }
+
   async saveSettings() {
     const s = this.els.settingsBody;
     const getVal = (id) => s.querySelector(`#${id}`)?.value || '';
@@ -1205,7 +1330,12 @@ class SNNSidePanel {
       enableStreaming: getChecked('s-enable-streaming'),
       enableQuickActions: getChecked('s-enable-quick-actions'),
       enableVoiceInput: getChecked('s-enable-voice-input'),
-      quickActions: this.getQuickActionsFromEditor()
+      quickActions: this.getQuickActionsFromEditor(),
+      // Actions tab
+      htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 80,
+      autoScan: getChecked('s-auto-scan'),
+      agentPrompt: getVal('s-agent-prompt'),
+      disabledActions: this._getDisabledActionsFromSettings()
     };
 
     if (!settings.openrouterKey) {
@@ -1479,30 +1609,9 @@ class SNNSidePanel {
    * This prevents the LLM from saying "I can't click/interact with the page."
    */
   _getAugmentedSystemPrompt(basePrompt) {
-    const snnCapabilities = `
-[SYSTEM: You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You CAN perform these actions on the current page:
-• Click buttons, links, and elements
-• Type text into input fields and forms
-• Scroll the page up, down, or to elements
-• Highlight elements with visual overlays
-• Find and list elements matching selectors
-• Extract tables and structured data
-• Fill forms (single fields or entire forms)
-• Select dropdown options, toggle checkboxes
-• Press keyboard keys (Enter, Escape, Tab, etc.)
-• Hover over elements to trigger tooltips
-• Navigate to URLs, open new tabs, go back/forward
-• Take screenshots
-• Execute custom JavaScript on the page
-• Enter element picker mode (hover to pick)
-• Monitor DOM changes
-• Download files, show notifications, set alarms
-
-When users ask "can you click X?" or "what can you do on this page?", respond with an OFFER to help using these capabilities. Say things like "Yes! I can click the Sign Up button for you. Want me to?" or "Let me take a screenshot of this page for you."
-NEVER say you cannot interact with the page. You CAN. If you need more info about the page to perform an action, use getPageInfo or findElements first.
-If you're not sure what to do, ask the user to clarify which element they want you to interact with.]`;
-
-    return snnCapabilities + '\n\n' + (basePrompt || 'You are a helpful AI assistant. Be concise and accurate.');
+    // Use the user's custom agent prompt from settings, or the default
+    const agentPrompt = this._agentPromptCache || this._getDefaultAgentPrompt();
+    return agentPrompt + '\n\n' + (basePrompt || 'You are a helpful AI assistant. Be concise and accurate.');
   }
 
   /**

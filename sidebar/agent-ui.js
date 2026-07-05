@@ -141,19 +141,54 @@ class SNNAgentUI {
   }
 
   /**
-   * Show discovered page navigation / links in chat
+   * Show ALL discovered actionable elements on the page in chat.
    */
-  showPageNavigation(links) {
-    if (!links || links.length === 0) return;
+  showPageElements(scan) {
+    if (!scan) return;
+    const el = scan.elements;
+    if (!el) return;
+
     const entry = document.createElement('div');
     entry.className = 'snn-page-nav';
-    const linkItems = links.slice(0, 8).map(l =>
-      `<span class="snn-page-nav-link" title="${this.sp.escapeHtml(l.href || '')}">${this.sp.escapeHtml(l.text || l.href || '?')}</span>`
-    ).join('');
-    entry.innerHTML = `
-      <div class="snn-page-nav-header">🧭 Found ${links.length} links in navigation</div>
-      <div class="snn-page-nav-links">${linkItems}</div>
-    `;
+
+    let html = `<div class="snn-page-nav-header">🧭 Page Elements — ${scan.totalLinks || 0} links, ${scan.totalButtons || 0} buttons, ${scan.totalInputs || 0} inputs, ${scan.totalForms || 0} forms</div>`;
+
+    // Links section
+    if (el.links && el.links.length > 0) {
+      html += '<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">🔗 Links</span><div class="snn-page-nav-links">';
+      html += el.links.slice(0, 12).map(l =>
+        `<span class="snn-page-nav-link" title="${this.sp.escapeHtml(l.href || '')}">${this.sp.escapeHtml(l.text || '?')}</span>`
+      ).join('');
+      if (el.links.length > 12) html += `<span class="snn-page-nav-link snn-page-nav-more">+${el.links.length - 12} more</span>`;
+      html += '</div></div>';
+    }
+
+    // Buttons section
+    if (el.buttons && el.buttons.length > 0) {
+      html += '<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">🔘 Buttons</span><div class="snn-page-nav-links">';
+      html += el.buttons.slice(0, 8).map(b =>
+        `<span class="snn-page-nav-link snn-page-nav-btn" title="${this.sp.escapeHtml(b.type || 'button')}">${this.sp.escapeHtml(b.text || '?')}</span>`
+      ).join('');
+      if (el.buttons.length > 8) html += `<span class="snn-page-nav-link snn-page-nav-more">+${el.buttons.length - 8} more</span>`;
+      html += '</div></div>';
+    }
+
+    // Inputs section (collapsed)
+    if (el.inputs && el.inputs.length > 0) {
+      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">📝 Inputs</span><span class="snn-page-nav-count">${el.inputs.length} fields detected</span></div>`;
+    }
+
+    // Forms section
+    if (el.forms && el.forms.length > 0) {
+      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">📋 Forms</span><span class="snn-page-nav-count">${el.forms.length} forms, ${el.forms.reduce((s,f) => s + (f.inputCount||0), 0)} total fields</span></div>`;
+    }
+
+    // Selects section
+    if (el.selects && el.selects.length > 0) {
+      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">📎 Dropdowns</span><span class="snn-page-nav-count">${el.selects.length} selects</span></div>`;
+    }
+
+    entry.innerHTML = html;
     this.sp.els.chatMessages.appendChild(entry);
     this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
   }
@@ -180,7 +215,8 @@ class SNNAgentUI {
       </div>
       <div class="snn-error-card-body">
         <p><strong>Tried to:</strong> ${step?.description || step?.action || 'Unknown action'}</p>
-        <p><strong>Failed after:</strong> ${totalAttempts || '?'} attempt${totalAttempts !== 1 ? 's' : ''}</p>
+        ${step?.action ? `<p><strong>Action type:</strong> <code>${this.sp.escapeHtml(step.action)}</code></p>` : ''}
+        <p><strong>Attempts:</strong> ${totalAttempts || (error?.attempt || '?')} ${totalAttempts > 1 ? 'attempts' : 'attempt'}</p>
         <div class="snn-error-code">
           <span class="snn-error-code-label">${error.code || 'ERROR'}</span>
           <span class="snn-error-code-msg">${error.message || 'Unknown error'}</span>
@@ -188,6 +224,7 @@ class SNNAgentUI {
         ${selectorsHtml}
         ${error.detail ? `<div class="snn-error-detail">${this.sp.escapeHtml(error.detail)}</div>` : ''}
         ${error.suggestion ? `<div class="snn-error-suggestion">💡 ${this.sp.escapeHtml(error.suggestion)}</div>` : ''}
+        ${message ? `<div class="snn-error-suggestion" style="margin-top:4px;">${this.sp.escapeHtml(message)}</div>` : ''}
       </div>
       <div class="snn-error-card-actions">
         <button class="snn-error-btn snn-error-btn-retry" data-action="retry">🔄 Retry</button>
