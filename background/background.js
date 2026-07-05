@@ -9,18 +9,18 @@ chrome.sidePanel
   .catch((error) => console.error('Side panel setup:', error));
 
 // Also toggle via keyboard shortcut
-chrome.commands.onCommand.addListener(async (command) => {
+// NOTE: Do NOT use async/await here — sidePanel.open() requires a user gesture
+// which is only preserved in synchronous-style callbacks from chrome.commands.
+chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-sidebar') {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id || !tab?.windowId) {
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      if (!tab?.windowId) {
         console.warn('toggle-sidebar: no active tab available');
         return;
       }
-      await chrome.sidePanel.open({ tabId: tab.id, windowId: tab.windowId });
-    } catch (error) {
-      console.error('Failed to toggle side panel via shortcut:', error);
-    }
+      chrome.sidePanel.open({ windowId: tab.windowId })
+        .catch((error) => console.error('Failed to toggle side panel via shortcut:', error));
+    });
   }
 });
 

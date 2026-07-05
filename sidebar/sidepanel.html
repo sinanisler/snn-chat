@@ -13,22 +13,12 @@
     <div class="sp-header-left">
       <button class="sp-text-btn" id="new-chat-btn">New</button>
       <button class="sp-text-btn" id="history-btn">History</button>
-    </div>
-    <div class="sp-header-center">
       <span class="sp-tab-domain" id="tab-domain" title="Active tab"></span>
     </div>
     <div class="sp-header-right">
-      <span class="sp-model-name" id="current-model">Loading...</span>
       <button class="sp-text-btn" id="model-settings-btn">Settings</button>
     </div>
   </header>
-
-  <!-- Page Context Bar -->
-  <div class="sp-context-bar" id="page-context-bar">
-    <span class="sp-context-label">Page:</span>
-    <span class="sp-context-text" id="context-text">No page context yet</span>
-    <span class="sp-context-words" id="context-words"></span>
-  </div>
 
   <!-- Selection Preview Bar -->
   <div class="sp-selection-bar" id="selection-bar" style="display:none">
@@ -42,6 +32,7 @@
     <div class="sp-welcome" id="welcome-screen">
       <h2>SNN Chat</h2>
       <p>Ask anything about this page or start a conversation.</p>
+      <span class="sp-welcome-model" id="current-model">Loading...</span>
     </div>
   </main>
 

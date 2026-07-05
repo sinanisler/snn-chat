@@ -155,9 +155,8 @@ body.theme-dark {
   gap: 12px;
 }
 
-.sp-header-left { display: flex; gap: 8px; align-items: center; }
-.sp-header-center { flex: 1; text-align: center; min-width: 0; }
-.sp-header-right { display: flex; gap: 8px; align-items: center; }
+.sp-header-left { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; }
+.sp-header-right { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 
 .sp-tab-domain {
   font-size: 11px;
@@ -168,12 +167,13 @@ body.theme-dark {
   padding: 3px 10px;
   border-radius: 10px;
   display: inline-block;
-  max-width: 160px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: 0.3px;
   text-transform: lowercase;
+  flex-shrink: 0;
 }
 
 .sp-text-btn {
@@ -195,19 +195,19 @@ body.theme-dark {
   color: var(--sp-text);
 }
 
-.sp-model-name {
-  color: var(--sp-text);
-  font-size: 14px;
-  font-weight: 500;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0.85;
+/* ── Model name in welcome screen ─────────────────────────────── */
+.sp-welcome-model {
+  display: block;
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--sp-text-secondary);
+  opacity: 0.55;
+  font-weight: 400;
+  letter-spacing: 0.3px;
 }
 
-/* ── Context & Selection Bars ─────────────────────────────────── */
-.sp-context-bar, .sp-selection-bar {
+/* ── Selection Bar ────────────────────────────────────────────── */
+.sp-selection-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -215,21 +215,12 @@ body.theme-dark {
   font-size: 13px;
   font-weight: 500;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--sp-border);
-}
-.sp-context-bar {
-  background: var(--sp-context-bg);
-  color: var(--sp-context-text);
-  border-bottom-color: var(--sp-context-border);
-}
-.sp-selection-bar {
+  border-bottom: 1px solid var(--sp-warning);
   background: var(--sp-warning);
   color: #fff;
-  border-bottom-color: var(--sp-warning);
 }
-.sp-context-label, .sp-selection-label { font-weight: 600; flex-shrink: 0; font-size: 13px; }
-.sp-context-text, .sp-selection-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.sp-context-words { opacity: 0.7; font-size: 12px; flex-shrink: 0; }
+.sp-selection-label { font-weight: 600; flex-shrink: 0; font-size: 13px; }
+.sp-selection-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .sp-selection-clear {
   background: none; border: none; color: inherit; font-size: 18px; font-weight: bold;
   cursor: pointer; padding: 2px 6px; border-radius: 4px; opacity: 0.8; flex-shrink: 0;
@@ -774,9 +765,9 @@ body.theme-dark {
 /* ── Toast ────────────────────────────────────────────────────── */
 .sp-toast {
   position: fixed;
-  bottom: 20px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%) translateY(20px);
+  transform: translate(-50%, -50%) scale(0.95);
   background: #2d3748;
   color: #fff;
   padding: 12px 24px;
@@ -789,7 +780,7 @@ body.theme-dark {
   pointer-events: none;
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
 }
-.sp-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.sp-toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .sp-toast.success { background: var(--sp-success); }
 .sp-toast.error { background: var(--sp-danger); }
 .sp-toast.warning { background: var(--sp-warning); color: #000; }

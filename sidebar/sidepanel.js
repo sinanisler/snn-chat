@@ -34,9 +34,6 @@ class SNNSidePanel {
       sendBtn: this.el('send-btn'),
       voiceBtn: this.el('voice-btn'),
       modelName: this.el('current-model'),
-      contextBar: this.el('page-context-bar'),
-      contextText: this.el('context-text'),
-      contextWords: this.el('context-words'),
       selectionBar: this.el('selection-bar'),
       selectionText: this.el('selection-text'),
       welcomeScreen: this.el('welcome-screen'),
@@ -140,7 +137,7 @@ class SNNSidePanel {
       if (!snn_page_context.tabId || snn_page_context.tabId === this.currentTabId) {
         this.pageContext = snn_page_context;
         this.currentDomain = snn_page_context.domain || this.currentDomain;
-        this.updateContextBar();
+        this._updateTabIndicator();
       }
     }
     // Request fresh extraction from current tab's content script
@@ -156,7 +153,7 @@ class SNNSidePanel {
         this.pageContext = ctx;
         if (this.pageContext) {
           this.currentDomain = this.pageContext.domain || this.currentDomain;
-          this.updateContextBar();
+          this._updateTabIndicator();
         }
         this.refreshActiveContext();
       }
@@ -281,10 +278,8 @@ class SNNSidePanel {
     this.els.selectionBar.style.display = 'none';
     this.els.inputContextIndicator.style.display = 'none';
 
-    // Show loading state in context bar
-    this.els.contextBar.style.display = 'flex';
-    this.els.contextText.textContent = 'Loading page context...';
-    this.els.contextWords.textContent = '';
+    // Update domain indicator immediately
+    this._updateTabIndicator();
 
     // Request fresh page content extraction from the new tab
     chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
@@ -297,32 +292,8 @@ class SNNSidePanel {
       this.els.smartPrompts.style.display = 'block';
     }
 
-    // Update tab domain indicator
-    this._updateTabIndicator();
-
     // Show a subtle toast
     this.showToast(`Switched to ${this.currentDomain || 'new tab'}`);
-  }
-
-  updateContextBar() {
-    if (!this.pageContext) {
-      // Show just the domain if we have it but no page context yet
-      if (this.currentDomain) {
-        this.els.contextBar.style.display = 'flex';
-        this.els.contextText.textContent = 'Loading...';
-        this.els.contextWords.textContent = '';
-      }
-      this._updateTabIndicator();
-      return;
-    }
-    this.els.contextBar.style.display = 'flex';
-    const title = this.pageContext.title || 'Unknown page';
-    const truncated = title.length > 50 ? title.substring(0, 50) + '...' : title;
-    this.els.contextText.textContent = truncated;
-    this.els.contextText.title = title;
-    const wc = this.pageContext.wordCount || 0;
-    this.els.contextWords.textContent = wc ? `${wc.toLocaleString()} words` : '';
-    this._updateTabIndicator();
   }
 
   // Show current tab domain in the header
