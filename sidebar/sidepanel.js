@@ -14,11 +14,13 @@ class SNNSidePanel {
     this.selection = null;
 
     // Active context that WILL be attached to the NEXT user message.
-    // This is a snapshot resolved at send-time from pageContext + selection.
-    // { type: 'page'|'selection'|'none', summary: '...', detail: '...' }
     this.activeContext = null;
     // Track whether context was already used by a message in current session
     this._contextConsumedInSession = false;
+
+    // ── Agent Loop Integration ─────────────────────────────────
+    this._agentLoop = null;
+    this._agentUI = null;
 
     this.cacheDom();
     this.setupListeners();
@@ -127,6 +129,7 @@ class SNNSidePanel {
     this.setupVoice();
     this.setupContextWatcher();
     this._setupTabTracking();
+    this._initAgentLoop();
 
     // Show welcome or quick actions
     if (this.chatHistory.length === 0) {
@@ -165,6 +168,12 @@ class SNNSidePanel {
     // Escape key
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        // Cancel agent loop if running
+        if (this._agentLoop && this._agentLoop.isBusy) {
+          this._agentLoop.cancel();
+          this.showToast('Cancelled');
+          return;
+        }
         if (this.els.settingsOverlay.classList.contains('visible')) this.closeSettings();
         else if (this.els.historyOverlay.classList.contains('visible')) this.closeHistory();
       }
@@ -403,6 +412,39 @@ class SNNSidePanel {
     this.addMessage('user', message, null, contextSnapshot);
     await this.saveChatHistory();
 
+    // ── Try Agent Loop first ───────────────────────────────────
+    if (this._agentLoop && !this._agentLoop.isBusy) {
+      try {
+        const agentResult = await this._agentLoop.run(message, contextSnapshot, this.currentTabId);
+
+        // Tab-switch guard
+        if (this.currentTabId !== sendTabId) return;
+
+        if (agentResult && agentResult.type === 'action') {
+          // ── Handle capability queries ────────────────────
+          if (agentResult.subtype === 'capabilities' && agentResult.results?.length > 0) {
+            const capData = agentResult.results[0].result;
+            this._renderCapabilitiesInChat(capData);
+            this.chatHistory.push(
+              { role: 'user', content: message, contextType: contextSnapshot?.type || 'none', context: contextSnapshot },
+              { role: 'assistant', content: this._formatCapabilitiesForHistory(capData) }
+            );
+            await this.saveChatHistory();
+          }
+          // Agent loop handled it — results were already rendered via callbacks
+          this.isLoading = false;
+          this.els.sendBtn.disabled = false;
+          this.els.userInput.focus();
+          if (this.selection) { this.clearSelection(); }
+          else { this.activeContext = null; this.refreshActiveContext(); }
+          return;
+        }
+        // agentResult.type === 'chat' or undefined → fall through to normal chat
+      } catch (agentErr) {
+        console.warn('Agent loop failed, falling back to chat:', agentErr.message);
+      }
+    }
+
     try {
       const settings = await this.getSettings();
       let context = '';
@@ -467,6 +509,7 @@ class SNNSidePanel {
 
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant. Be concise and accurate.';
+    systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
 
     let userMessage = message;
     if (context && contextType === 'selection') {
@@ -526,6 +569,7 @@ class SNNSidePanel {
 
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant.';
+    systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
     let userMessage = message;
 
     if (context && contextType === 'selection') {
@@ -1424,6 +1468,140 @@ class SNNSidePanel {
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
     this.renderQuickActions();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // AGENT LOOP INTEGRATION
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Build an augmented system prompt that tells the LLM what SNN can do.
+   * This prevents the LLM from saying "I can't click/interact with the page."
+   */
+  _getAugmentedSystemPrompt(basePrompt) {
+    const snnCapabilities = `
+[SYSTEM: You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You CAN perform these actions on the current page:
+• Click buttons, links, and elements
+• Type text into input fields and forms
+• Scroll the page up, down, or to elements
+• Highlight elements with visual overlays
+• Find and list elements matching selectors
+• Extract tables and structured data
+• Fill forms (single fields or entire forms)
+• Select dropdown options, toggle checkboxes
+• Press keyboard keys (Enter, Escape, Tab, etc.)
+• Hover over elements to trigger tooltips
+• Navigate to URLs, open new tabs, go back/forward
+• Take screenshots
+• Execute custom JavaScript on the page
+• Enter element picker mode (hover to pick)
+• Monitor DOM changes
+• Download files, show notifications, set alarms
+
+When users ask "can you click X?" or "what can you do on this page?", respond with an OFFER to help using these capabilities. Say things like "Yes! I can click the Sign Up button for you. Want me to?" or "Let me take a screenshot of this page for you."
+NEVER say you cannot interact with the page. You CAN. If you need more info about the page to perform an action, use getPageInfo or findElements first.
+If you're not sure what to do, ask the user to clarify which element they want you to interact with.]`;
+
+    return snnCapabilities + '\n\n' + (basePrompt || 'You are a helpful AI assistant. Be concise and accurate.');
+  }
+
+  /**
+   * Render the SNN capabilities list in the chat as a rich message.
+   */
+  _renderCapabilitiesInChat(capData) {
+    if (!capData || !capData.pageActions) return;
+
+    const div = document.createElement('div');
+    div.className = 'snn-result-card';
+
+    let actionsHtml = '<div class="snn-capabilities-grid">';
+    const allActions = [...(capData.pageActions || []), ...(capData.browserActions || [])];
+    for (const a of allActions.slice(0, 12)) {
+      actionsHtml += `<div class="snn-capability-chip"><strong>${a.action}</strong><span>${a.description}</span></div>`;
+    }
+    actionsHtml += `<div class="snn-capability-chip snn-capability-more">+${allActions.length - 12} more actions available</div>`;
+    actionsHtml += '</div>';
+
+    if (capData.selectorFormats) {
+      actionsHtml += '<div class="snn-capabilities-selectors"><strong>Selector formats:</strong> ';
+      actionsHtml += capData.selectorFormats.map(s => `<code>${this.escapeHtml(s)}</code>`).join(' · ');
+      actionsHtml += '</div>';
+    }
+
+    div.innerHTML = `
+      <div class="snn-result-card-header">
+        <span class="snn-result-card-icon">🤖</span>
+        <span class="snn-result-card-title">${this.escapeHtml(capData.description || 'Here\'s what I can do:')}</span>
+      </div>
+      <div class="snn-result-card-body">
+        ${actionsHtml}
+        <p style="margin-top:12px;font-size:14px;">Try saying: <em>"click the login button"</em>, <em>"scroll down"</em>, <em>"highlight all links"</em>, <em>"fill this form"</em>, or <em>"screenshot this page"</em>.</p>
+      </div>
+    `;
+
+    this.els.chatMessages.appendChild(div);
+    this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+  }
+
+  _formatCapabilitiesForHistory(capData) {
+    if (!capData) return 'SNN Chat capabilities listed.';
+    const count = (capData.pageActions?.length || 0) + (capData.browserActions?.length || 0);
+    return `[SNN Capabilities — ${count} actions available]\n\n${capData.description || ''}\n\nTry: "click the login button", "scroll down", "highlight all links", "fill this form", or "screenshot this page".`;
+  }
+
+  _initAgentLoop() {
+    if (typeof SNNAgentLoop === 'undefined' || typeof SNNAgentUI === 'undefined') {
+      console.warn('[SNN] Agent loop classes not loaded.');
+      return;
+    }
+
+    this._agentLoop = new SNNAgentLoop(this);
+    this._agentUI = new SNNAgentUI(this);
+
+    // ── State change callback ──────────────────────────────────
+    this._agentLoop.onStateChange = (newState, prevState, detail) => {
+      // Update status bar
+      if (this._agentUI) this._agentUI.renderStatusBar(newState, detail);
+
+      // Cleanup on terminal states
+      if (newState === 'IDLE' || newState === 'CANCELLED') {
+        if (this._agentUI) {
+          this._agentUI.hideProgress();
+          setTimeout(() => this._agentUI.renderStatusBar('IDLE'), 1500);
+        }
+      }
+    };
+
+    // ── Progress callback ──────────────────────────────────────
+    this._agentLoop.onProgress = (step, total, description) => {
+      if (this._agentUI) this._agentUI.renderProgress(step, total, description);
+    };
+
+    // ── Error callback ─────────────────────────────────────────
+    this._agentLoop.onError = (errorData) => {
+      // Show error card in chat
+      if (this._agentUI) this._agentUI.renderErrorCard(errorData);
+    };
+
+    // ── Blocked callback ───────────────────────────────────────
+    this._agentLoop.onBlocked = (question) => {
+      if (this._agentUI) {
+        return this._agentUI.showPermissionModal(question);
+      }
+      return Promise.resolve('denied');
+    };
+
+    // ── Error retry handlers ───────────────────────────────────
+    this._onErrorRetry = () => {
+      // Re-run the last task (stored in agent loop internals)
+      this.showToast('Retrying...');
+      // The agent loop will re-execute from failed step
+    };
+
+    this._onErrorTryDifferently = () => {
+      this.els.userInput.placeholder = 'How would you like me to try differently?';
+      this.els.userInput.focus();
+    };
   }
 
   generateId() {

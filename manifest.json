@@ -7,7 +7,12 @@
     "sidePanel",
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "contextMenus",
+    "alarms",
+    "notifications",
+    "downloads",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -29,7 +34,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/content.js"],
+      "js": ["content/content.js", "content/page-actor.js"],
       "run_at": "document_end"
     }
   ],
