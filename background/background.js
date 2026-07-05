@@ -27,41 +27,54 @@ chrome.commands.onCommand.addListener((command) => {
 // ── Tab Tracking ──────────────────────────────────────────────────
 // The side panel needs to know which tab is active so it can maintain
 // separate chat sessions per tab (not per domain!). We store the
-// active tab in session storage and broadcast tab switches.
+// active tab per window in session storage and broadcast tab switches.
+//
+// CRITICAL: chrome.runtime.sendMessage broadcasts to ALL extension
+// pages in ALL windows. Each side panel MUST filter by its own
+// windowId to avoid cross-window tab leaks (e.g. multi-monitor setups).
 
 const CONTEXT_KEY = 'snn_page_context';
 const SELECTION_KEY = 'snn_selection';
-const TAB_SWITCH_KEY = 'snn_active_tab';
+const TAB_SWITCH_PREFIX = 'snn_active_tab'; // per-window key: snn_active_tab_{windowId}
+
+function tabSwitchKey(windowId) {
+  return `${TAB_SWITCH_PREFIX}_${windowId}`;
+}
 
 async function notifyTabSwitch(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab?.url) return;
+    if (!tab?.url || !tab?.windowId) return;
     const domain = new URL(tab.url).hostname;
-    const info = { tabId, url: tab.url, domain, title: tab.title || '' };
-    await chrome.storage.session.set({ [TAB_SWITCH_KEY]: info });
-    // Broadcast to side panel
+    const info = { tabId, windowId: tab.windowId, url: tab.url, domain, title: tab.title || '' };
+    // Per-window storage so each side panel reads only its own window's active tab
+    await chrome.storage.session.set({ [tabSwitchKey(tab.windowId)]: info });
+    // Broadcast to ALL side panels — each MUST filter by windowId!
     chrome.runtime.sendMessage({ action: 'tabSwitched', ...info }).catch(() => {});
   } catch (e) {
     // Tab may have been closed between activation and query
   }
 }
 
-// Detect tab switches
+// Detect tab switches (fires for ALL windows)
 chrome.tabs.onActivated.addListener((activeInfo) => {
   notifyTabSwitch(activeInfo.tabId);
 });
 
-// Detect URL changes in the active tab (e.g. user clicks a link)
+// Detect URL changes in the active tab (e.g. user clicks a link, SPA navigation)
+// NOTE: fires for ALL windows; tab.active means active in ITS window, not necessarily
+// the window the side panel is in. Side panel filters by windowId.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && tab.active) {
     notifyTabSwitch(tabId);
   }
 });
 
-// On startup, notify the current active tab
-chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-  if (tab?.id) notifyTabSwitch(tab.id);
+// On startup, notify the active tab in each window
+chrome.tabs.query({ active: true }).then((tabs) => {
+  for (const tab of tabs) {
+    if (tab?.id) notifyTabSwitch(tab.id);
+  }
 });
 
 // ── Page Context Management ────────────────────────────────────────
@@ -150,11 +163,16 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     await chrome.storage.local.remove(keys);
   }
 
-  // If no tabs remain, clear session storage
+  // If no tabs remain, clear ALL session storage keys (including per-window active tab keys)
   const tabs = await chrome.tabs.query({});
   if (tabs.length === 0) {
-    chrome.storage.session.remove([CONTEXT_KEY, SELECTION_KEY, TAB_SWITCH_KEY])
-      .catch(() => {});
+    const sessionData = await chrome.storage.session.get(null);
+    const keysToRemove = Object.keys(sessionData).filter(k =>
+      k === CONTEXT_KEY || k === SELECTION_KEY || k.startsWith(TAB_SWITCH_PREFIX)
+    );
+    if (keysToRemove.length) {
+      chrome.storage.session.remove(keysToRemove).catch(() => {});
+    }
   }
 });
 

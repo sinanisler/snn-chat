@@ -57,12 +57,24 @@ class SNNSidePanel {
   async init() {
     await this.applySettings();
 
-    // ── Determine active tab BEFORE loading sessions ──
-    // The background stores active tab info in session storage.
-    const { snn_active_tab } = await chrome.storage.session.get('snn_active_tab');
-    if (snn_active_tab?.tabId) {
-      this.currentTabId = snn_active_tab.tabId;
-      this.currentDomain = snn_active_tab.domain || '';
+    // ── Get OUR window ID (critical for multi-monitor filtering) ──
+    try {
+      const win = await chrome.windows.getCurrent();
+      this.windowId = win.id;
+    } catch (e) {
+      this.windowId = null;
+    }
+
+    // ── Determine active tab for OUR window ──
+    // The background stores per-window: snn_active_tab_{windowId}
+    if (this.windowId != null) {
+      const key = `snn_active_tab_${this.windowId}`;
+      const data = await chrome.storage.session.get(key);
+      const snn_active_tab = data[key];
+      if (snn_active_tab?.tabId) {
+        this.currentTabId = snn_active_tab.tabId;
+        this.currentDomain = snn_active_tab.domain || '';
+      }
     }
 
     // Fallback: query directly if storage is empty (first run)
@@ -272,11 +284,13 @@ class SNNSidePanel {
 
   // ── Tab Tracking ────────────────────────────────────────────────
   // Listens for tab-switch messages from the background service worker.
-  // When the user switches tabs, we save the current session and load
-  // the target tab's session (or start a fresh one).
+  // CRITICAL: chrome.runtime.sendMessage broadcasts to ALL windows.
+  // We MUST filter by windowId to avoid cross-window tab leaks.
   _setupTabTracking() {
     chrome.runtime.onMessage.addListener((message) => {
       if (message.action === 'tabSwitched') {
+        // Only respond to tab switches in OUR window (critical for multi-monitor)
+        if (this.windowId != null && message.windowId !== this.windowId) return;
         this._onTabSwitched(message.tabId, message.url, message.domain);
       }
       if (message.action === 'tabClosed') {
