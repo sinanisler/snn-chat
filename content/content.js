@@ -3,6 +3,19 @@
 // Sends everything to background service worker via chrome.runtime.sendMessage.
 // The side panel UI is a separate chrome.sidePanel page — NO DOM injection.
 
+// ── Safe API wrapper — survives extension reloads/updates ─────────
+// chrome.runtime.sendMessage can throw SYNCHRONOUSLY when the
+// extension context is invalidated (not just reject the promise),
+// so .catch() alone is not enough. This wrapper guards both paths.
+function safeSendMessage(msg) {
+  if (!chrome?.runtime?.id) return;
+  try { chrome.runtime.sendMessage(msg).catch(() => {}); } catch (e) { /* context gone */ }
+}
+function safeAddListener(cb) {
+  if (!chrome?.runtime?.id) return;
+  try { chrome.runtime.onMessage.addListener(cb); } catch (e) { /* context gone */ }
+}
+
 class SNNContentExtractor {
   constructor() {
     if (!chrome?.runtime?.id) return;
@@ -20,7 +33,7 @@ class SNNContentExtractor {
 
   // ── Message Listener ────────────────────────────────────────────
   setupMessageListener() {
-    chrome.runtime.onMessage.addListener((message) => {
+    safeAddListener((message) => {
       if (message.action === 'extractContent') {
         this.extractAndSend();
       }
@@ -29,6 +42,7 @@ class SNNContentExtractor {
 
   // ── Page Content Extraction ──────────────────────────────────────
   async extractAndSend() {
+    if (!chrome?.runtime?.id) return; // bail early if context invalidated
     const title = document.title;
     const url = window.location.href;
     const hostname = window.location.hostname.toLowerCase();
@@ -55,12 +69,12 @@ class SNNContentExtractor {
     const wordCount = this.countWords(textContent);
     const content = `=== WEBPAGE CONTENT ===\nTitle: ${title}\nURL: ${url}\n\n${textContent}\n=== END ===`;
 
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       action: 'updatePageContext',
       title, url, content,
       domain: hostname,
       wordCount
-    }).catch(() => {});
+    });
   }
 
   // ── Site-Specific Extractors ─────────────────────────────────────
@@ -163,9 +177,9 @@ class SNNContentExtractor {
         const text = window.getSelection().toString().trim();
         if (text) {
           this.selectedText = text;
-          chrome.runtime.sendMessage({ action: 'updateSelection', text }).catch(() => {});
+          safeSendMessage({ action: 'updateSelection', text });
         } else {
-          chrome.runtime.sendMessage({ action: 'clearSelection' }).catch(() => {});
+          safeSendMessage({ action: 'clearSelection' });
         }
       }, 200);
     };
@@ -179,6 +193,7 @@ class SNNContentExtractor {
   setupNavigationDetection() {
     let lastUrl = location.href, lastTitle = document.title;
     const check = () => {
+      if (!chrome?.runtime?.id) return;
       if (location.href !== lastUrl || document.title !== lastTitle) {
         lastUrl = location.href;
         lastTitle = document.title;
@@ -192,6 +207,7 @@ class SNNContentExtractor {
     history.replaceState = function(...a) { origReplace.apply(history, a); setTimeout(check, 100); };
 
     const observer = new MutationObserver((mutations) => {
+      if (!chrome?.runtime?.id) return;
       for (const m of mutations) {
         if (m.type === 'childList') {
           for (const n of m.addedNodes) {
@@ -222,7 +238,7 @@ class SNNVoiceRelay {
   }
 
   _setupListener() {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    safeAddListener((message, sender, sendResponse) => {
       if (message.action === 'voice:start') {
         this._start(message, sendResponse);
         return true; // keep channel open for async response
@@ -276,23 +292,23 @@ class SNNVoiceRelay {
       // Dedup: skip if nothing changed since last event
       if (!final && interim === this._lastInterim) return;
       this._lastInterim = interim;
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         action: 'voice:transcript',
         final,
         interim
-      }).catch(() => {});
+      });
     };
 
     this.recognition.onerror = (e) => {
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         action: 'voice:error',
         error: e.error
-      }).catch(() => {});
+      });
       this._cleanup();
     };
 
     this.recognition.onend = () => {
-      chrome.runtime.sendMessage({ action: 'voice:ended', gen: this._voiceGen }).catch(() => {});
+      safeSendMessage({ action: 'voice:ended', gen: this._voiceGen });
       this._cleanup();
     };
 

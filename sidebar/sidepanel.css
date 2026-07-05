@@ -427,6 +427,13 @@ body.theme-dark {
   padding: 10px 14px;
   flex-shrink: 0;
   background: var(--sp-header-bg);
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+/* Session Lock active — subtle accent on the input area */
+.sp-input-area.sp-locked {
+  border-top-color: var(--sp-accent);
+  box-shadow: inset 0 2px 0 var(--sp-accent);
 }
 
 .sp-input-row {
@@ -454,7 +461,7 @@ body.theme-dark {
   gap: 10px;
 }
 
-.sp-chat-lock {
+.sp-session-lock {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -465,7 +472,7 @@ body.theme-dark {
   white-space: nowrap;
 }
 
-.sp-chat-lock input[type="checkbox"] {
+.sp-session-lock input[type="checkbox"] {
   width: 14px;
   height: 14px;
   accent-color: var(--sp-accent);
