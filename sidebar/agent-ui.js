@@ -188,6 +188,32 @@ class SNNAgentUI {
   }
 
   /**
+   * Attach a screenshot image to the last action entry so the user can see it.
+   */
+  attachScreenshotToLastEntry(dataUrl) {
+    const entries = this.sp.els.chatMessages.querySelectorAll('.snn-action-entry');
+    if (entries.length === 0) return;
+    const last = entries[entries.length - 1];
+    // Don't double-append
+    if (last.querySelector('.snn-screenshot-preview')) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'snn-screenshot-preview';
+    wrapper.style.cssText = 'margin-top:8px;max-width:100%;overflow:hidden;border-radius:6px;border:1px solid var(--border-color, #333);';
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = 'Screenshot';
+    img.style.cssText = 'display:block;max-width:100%;height:auto;cursor:pointer;border-radius:4px;';
+    img.title = 'Click to open full size';
+    img.addEventListener('click', () => {
+      const w = window.open('');
+      if (w) { w.document.write(`<img src="${dataUrl}" style="max-width:100%">`); }
+    });
+    wrapper.appendChild(img);
+    last.appendChild(wrapper);
+    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+  }
+
+  /**
    * Show ALL discovered actionable elements on the page in chat.
    */
   showPageElements(scan) {

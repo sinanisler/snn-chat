@@ -146,11 +146,16 @@ class SNNAgentLoop {
             // Map tool name to our action and execute
             const actionResult = await this._executeToolCall(fnName, fnArgs, iteration);
 
+            // ── Sanitize tool result before sending to LLM ──
+            // Strip base64 image data (screenshots, etc.) — the LLM can't see them
+            // and sending MBs of base64 wastes tokens and causes timeouts.
+            const sanitizedResult = this._sanitizeToolResultForLLM(fnName, actionResult);
+
             // Add tool result to messages
             messages.push({
               role: 'tool',
               tool_call_id: tc.id,
-              content: typeof actionResult === 'string' ? actionResult : JSON.stringify(actionResult)
+              content: typeof sanitizedResult === 'string' ? sanitizedResult : JSON.stringify(sanitizedResult)
             });
           }
 
@@ -256,7 +261,7 @@ class SNNAgentLoop {
       { name: 'snn_getElementText', desc: 'Get the full text content of a specific element', params: {
         selector: { type: 'string', desc: 'Selector for the element' }
       }, required: ['selector'] },
-      { name: 'snn_takeScreenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
+      { name: 'snn_screenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
 
       // ── Forms ─────────────────────────────────────────────
       { name: 'snn_fillForm', desc: 'Fill multiple form fields at once', params: {
@@ -470,6 +475,10 @@ IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`
       this._stepResults.push({ step, result: result.result, attempts: this._attemptCount + 1 });
       if (this.sp._agentUI) {
         this.sp._agentUI.updateLastActionEntry('ok', this._formatActionResult(step, result.result));
+        // ── Render screenshot image in the action entry ──
+        if (actionName === 'screenshot' && result.result?.screenshot) {
+          this.sp._agentUI.attachScreenshotToLastEntry(result.result.screenshot);
+        }
       }
       return result.result;
     } else {
@@ -523,7 +532,7 @@ IMPORTANT: Never say you cannot interact with the page. You CAN. Use the tools.`
       case 'snn_findElements': return `Find "${a.selector || 'elements'}"`;
       case 'snn_extractTable': return 'Extract table data';
       case 'snn_getElementText': return `Get text of ${a.selector || 'element'}`;
-      case 'snn_takeScreenshot': return 'Take screenshot';
+      case 'snn_screenshot': return 'Take screenshot';
       case 'snn_fillForm': return `Fill ${(a.fields || []).length} form fields`;
       case 'snn_selectDropdown': return `Select "${a.value || ''}" in dropdown`;
       case 'snn_checkToggle': return `${a.checked !== false ? 'Check' : 'Uncheck'} toggle`;
@@ -1113,6 +1122,34 @@ Respond with ONLY the JSON array. Example:
       }
     } catch (e) { /* tab might not be accessible */ }
     return rawText;
+  }
+
+  /**
+   * Strip large payloads (base64 images, etc.) from tool results before
+   * sending them to the LLM. The LLM can't process raw image data —
+   * it just wastes tokens and causes timeouts.
+   */
+  _sanitizeToolResultForLLM(fnName, result) {
+    if (!result || typeof result === 'string') return result;
+
+    const sanitized = { ...result };
+
+    // Strip base64 screenshot data
+    if (sanitized.screenshot && typeof sanitized.screenshot === 'string' && sanitized.screenshot.startsWith('data:')) {
+      const sizeKB = Math.round((sanitized.screenshot.length * 3) / 4 / 1024);
+      sanitized.screenshot = `[Screenshot captured: ${sizeKB}KB — visible to user, not to LLM]`;
+      sanitized._screenshotStripped = true;
+    }
+
+    // Generic: strip any other large base64 blobs
+    for (const key of Object.keys(sanitized)) {
+      if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:image')) {
+        const sizeKB = Math.round((sanitized[key].length * 3) / 4 / 1024);
+        sanitized[key] = `[Image: ${sizeKB}KB — stripped for LLM]`;
+      }
+    }
+
+    return sanitized;
   }
 
   /**
