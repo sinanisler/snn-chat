@@ -179,6 +179,7 @@ class SNNSidePanel {
 
   setupContextWatcher() {
     chrome.storage.session.onChanged.addListener((changes) => {
+      let needsRefresh = false;
       if (changes.snn_page_context) {
         const ctx = changes.snn_page_context.newValue;
         // Only accept context from the currently active tab
@@ -188,7 +189,7 @@ class SNNSidePanel {
           this.currentDomain = this.pageContext.domain || this.currentDomain;
           this._updateTabIndicator();
         }
-        this.refreshActiveContext();
+        needsRefresh = true;
       }
       if (changes.snn_selection) {
         const sel = changes.snn_selection.newValue;
@@ -200,7 +201,13 @@ class SNNSidePanel {
         } else {
           this.els.selectionBar.style.display = 'none';
         }
-        this.refreshActiveContext();
+        needsRefresh = true;
+      }
+      // Debounce: rapid storage changes (e.g. page+selection together,
+      // or multiple content extractions) only trigger one UI refresh.
+      if (needsRefresh) {
+        clearTimeout(this._ctxDebounce);
+        this._ctxDebounce = setTimeout(() => this.refreshActiveContext(), 150);
       }
     });
     // Initial active context
@@ -298,7 +305,6 @@ class SNNSidePanel {
     this._historyKey = null;                   // will be rebuilt from tabId
     this.chatHistory = [];
     this.totalTokensUsed = 0;
-    this._contextConsumedInSession = false;
     this.activeContext = null;
     this.pageContext = null;
     this.selection = null;
@@ -317,11 +323,14 @@ class SNNSidePanel {
     // Request fresh page content extraction from the new tab
     chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
 
-    // Load existing session for this tab (if any)
+    // Load existing session for this tab (if any).
+    // restoreChat() will correctly set _contextConsumedInSession
+    // based on whether the restored history already used context.
     await this.loadMostRecentSession();
 
-    // Render quick actions if empty
+    // If no session was restored, ensure context can attach fresh
     if (this.chatHistory.length === 0) {
+      this._contextConsumedInSession = false;
       this.els.smartPrompts.style.display = 'block';
     }
 
@@ -361,6 +370,8 @@ class SNNSidePanel {
 
     // ── Snapshot the context that will be attached to THIS message ──
     const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
+    // ── Snapshot tab so we can discard stale responses after tab switch ──
+    const sendTabId = this.currentTabId;
 
     this.isLoading = true;
     this.els.sendBtn.disabled = true;
@@ -388,16 +399,25 @@ class SNNSidePanel {
         contextType = contextSnapshot.type;
       }
 
+      let response;
       if (settings.enableStreaming !== false) {
-        const response = await this.streamResponse(message, context, contextType);
+        response = await this.streamResponse(message, context, contextType);
+      } else {
+        this.addLoadingMsg();
+        response = await this.callAPI(message, context, contextType);
+        this.removeLoadingMsg();
+      }
+
+      // ── Tab-switch guard: discard if user switched tabs during API call ──
+      if (this.currentTabId !== sendTabId) return;
+
+      if (settings.enableStreaming !== false) {
+        // Streaming already rendered into DOM; just record in history
         this.chatHistory.push(
           { role: 'user', content: message, contextType, context: contextSnapshot },
           { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
         );
       } else {
-        this.addLoadingMsg();
-        const response = await this.callAPI(message, context, contextType);
-        this.removeLoadingMsg();
         this.addMessage('ai', response, this.lastTokenUsage);
         this.chatHistory.push(
           { role: 'user', content: message, contextType, context: contextSnapshot },
@@ -407,14 +427,19 @@ class SNNSidePanel {
 
       await this.saveChatHistory();
     } catch (error) {
+      // ── Tab-switch guard for errors too ──
+      if (this.currentTabId !== sendTabId) return;
       this.removeLoadingMsg();
       this.addMessage('ai', `Error: ${error.message}`);
     }
 
     // Clear active context after sending (selection consumed)
-    if (this.selection) this.clearSelection();
-    this.activeContext = null;
-    this.refreshActiveContext();
+    if (this.selection) {
+      this.clearSelection(); // calls refreshActiveContext() internally
+    } else {
+      this.activeContext = null;
+      this.refreshActiveContext();
+    }
 
     this.isLoading = false;
     this.els.sendBtn.disabled = false;
@@ -1373,8 +1398,8 @@ class SNNSidePanel {
     this.showToast('New chat started');
   }
 
-  clearChat() {
-    if (this.chatHistory.length) this.saveChatHistory();
+  async clearChat() {
+    if (this.chatHistory.length) await this.saveChatHistory();
     this.chatHistory = [];
     this.totalTokensUsed = 0;
     this._contextConsumedInSession = false;
