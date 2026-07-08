@@ -514,6 +514,16 @@ body.theme-dark {
 .sp-input-wrapper textarea:focus { border-color: var(--sp-input-focus); }
 .sp-input-wrapper textarea::placeholder { color: var(--sp-text-secondary); opacity: 0.55; }
 
+/* ── Flash animation when a query arrives from context menu ──── */
+.sp-input-wrapper.sp-input-flash {
+  animation: sp-flash-pulse 0.5s ease-out;
+}
+@keyframes sp-flash-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(5, 86, 199, 0.5); }
+  50%  { box-shadow: 0 0 0 8px rgba(5, 86, 199, 0.15); }
+  100% { box-shadow: 0 0 0 0 rgba(5, 86, 199, 0); }
+}
+
 .sp-send-btn {
   background: var(--sp-accent);
   color: var(--sp-accent-text);

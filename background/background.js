@@ -15,12 +15,11 @@ chrome.sidePanel
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-sidebar') {
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-      if (!tab?.windowId) {
+      if (!tab?.id) {
         console.warn('toggle-sidebar: no active tab available');
         return;
       }
-      chrome.sidePanel.open({ windowId: tab.windowId })
-        .catch((error) => console.error('Failed to toggle side panel via shortcut:', error));
+      _openSidePanelForTab(tab);
     });
   }
 });
@@ -88,6 +87,47 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// ── Robust side-panel opener ──────────────────────────────────
+// Tries windowId first, falls back to tabId, then tries the
+// focused window. Logs errors so we can diagnose failures
+// instead of silently swallowing them.
+async function _openSidePanelForTab(tab) {
+  if (!tab?.id) {
+    console.error('[SNN] _openSidePanelForTab: no tab provided');
+    return;
+  }
+
+  // Primary: open by windowId (works in most Chrome versions)
+  if (tab.windowId) {
+    try {
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+      return; // success
+    } catch (e) {
+      console.warn('[SNN] sidePanel.open(windowId) failed:', e.message);
+    }
+  }
+
+  // Fallback 1: open by tabId
+  try {
+    await chrome.sidePanel.open({ tabId: tab.id });
+    return; // success
+  } catch (e) {
+    console.warn('[SNN] sidePanel.open(tabId) failed:', e.message);
+  }
+
+  // Fallback 2: try opening the side panel for the focused window
+  try {
+    const wins = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    const currentWin = wins.find(w => w.focused) || wins[0];
+    if (currentWin?.id) {
+      await chrome.sidePanel.open({ windowId: currentWin.id });
+      return;
+    }
+  } catch (e) {
+    console.error('[SNN] All sidePanel.open attempts failed:', e.message);
+  }
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab?.id) return;
 
@@ -114,8 +154,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     chrome.storage.session.set({
       snn_context_menu_prompt: { prompt, tabId: tab.id, timestamp: Date.now() }
     }).then(() => {
-      // Open side panel
-      chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+      // Open the side panel — robust helper with fallbacks
+      _openSidePanelForTab(tab);
     });
   }
 });
@@ -478,8 +518,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // ═══════════════════════════════════════════════════════════════════
 chrome.notifications.onClicked.addListener((notificationId) => {
   chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-    if (tab?.windowId) {
-      chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+    if (tab?.id) {
+      _openSidePanelForTab(tab);
     }
   });
 });
