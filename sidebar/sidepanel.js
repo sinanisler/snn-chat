@@ -275,12 +275,30 @@ class SNNSidePanel {
       // storage and will be picked up at the end of sendMessage().
       if (this.isLoading) return;
 
-      const data = await chrome.storage.session.get('snn_context_menu_prompt');
-      const entry = data.snn_context_menu_prompt;
-      if (!entry || !entry.prompt) return;
+      // ── Retry loop: the background stores the prompt right after
+      //     calling sidePanel.open(), so there's a tiny race window
+      //     where storage hasn't landed yet.  Poll a few times.
+      let data = await chrome.storage.session.get('snn_context_menu_prompt');
+      let entry = data.snn_context_menu_prompt;
+      let retries = 0;
+      while ((!entry || !entry.prompt) && retries < 5) {
+        await new Promise(r => setTimeout(r, 100));
+        data = await chrome.storage.session.get('snn_context_menu_prompt');
+        entry = data.snn_context_menu_prompt;
+        retries++;
+      }
 
-      // Only process prompts for the current tab (guard cross-tab leakage)
-      if (entry.tabId && entry.tabId !== this.currentTabId) return;
+      if (!entry || !entry.prompt) return; // nothing to do
+
+      // Only process prompts for the current tab (guard cross-tab leakage).
+      // If we haven't resolved currentTabId yet, accept anyway — better to
+      // answer the wrong tab than silently swallow the user's query.
+      if (this.currentTabId != null && entry.tabId != null && entry.tabId !== this.currentTabId) {
+        console.warn('[SNN] Context-menu prompt for tab', entry.tabId, 'but we are on tab', this.currentTabId, '— skipping');
+        // Clear stale prompt so it doesn't stick around forever
+        await chrome.storage.session.remove('snn_context_menu_prompt');
+        return;
+      }
 
       // Consume immediately so it never fires twice
       await chrome.storage.session.remove('snn_context_menu_prompt');

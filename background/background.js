@@ -88,43 +88,70 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // ── Robust side-panel opener ──────────────────────────────────
+// MUST be called synchronously from a user-gesture handler
+// (contextMenus.onClicked, action.onClicked, commands.onCommand).
 // Tries windowId first, falls back to tabId, then tries the
-// focused window. Logs errors so we can diagnose failures
-// instead of silently swallowing them.
+// focused window as a last resort.
 async function _openSidePanelForTab(tab) {
   if (!tab?.id) {
     console.error('[SNN] _openSidePanelForTab: no tab provided');
     return;
   }
 
-  // Primary: open by windowId (works in most Chrome versions)
+  // Try all approaches; first success wins, fastest fallback saves the day.
+  // We race windowId vs tabId instead of sequencing them so that if one
+  // hangs (e.g. windowId on some Chrome versions) the other kicks in quickly.
+  const candidates = [];
+
+  // Approach 1: open by windowId (most reliable in modern Chrome)
   if (tab.windowId) {
+    candidates.push(
+      chrome.sidePanel.open({ windowId: tab.windowId }).then(() => 'windowId')
+    );
+  }
+
+  // Approach 2: open by tabId (fallback for older Chrome / edge cases)
+  candidates.push(
+    chrome.sidePanel.open({ tabId: tab.id }).then(() => 'tabId')
+  );
+
+  // Race the two approaches — whichever succeeds first
+  if (candidates.length > 0) {
     try {
-      await chrome.sidePanel.open({ windowId: tab.windowId });
-      return; // success
+      const winner = await Promise.any(candidates);
+      console.log('[SNN] Side panel opened via', winner);
+      return;
     } catch (e) {
-      console.warn('[SNN] sidePanel.open(windowId) failed:', e.message);
+      // All fast approaches failed — log and fall through to last resort
+      console.warn('[SNN] Fast sidePanel.open approaches failed:', e?.message || e);
     }
   }
 
-  // Fallback 1: open by tabId
-  try {
-    await chrome.sidePanel.open({ tabId: tab.id });
-    return; // success
-  } catch (e) {
-    console.warn('[SNN] sidePanel.open(tabId) failed:', e.message);
-  }
-
-  // Fallback 2: try opening the side panel for the focused window
+  // Approach 3 (last resort): open for the focused window
   try {
     const wins = await chrome.windows.getAll({ windowTypes: ['normal'] });
     const currentWin = wins.find(w => w.focused) || wins[0];
     if (currentWin?.id) {
       await chrome.sidePanel.open({ windowId: currentWin.id });
+      console.log('[SNN] Side panel opened via focused-window fallback');
       return;
     }
   } catch (e) {
-    console.error('[SNN] All sidePanel.open attempts failed:', e.message);
+    console.error('[SNN] All sidePanel.open attempts failed:', e?.message || e);
+  }
+
+  // Ultimate fallback: try one more time with a fresh options reset.
+  // Some Chrome versions need setOptions + open sequenced explicitly.
+  try {
+    await chrome.sidePanel.setOptions({ enabled: true });
+    if (tab.windowId) {
+      await chrome.sidePanel.open({ windowId: tab.windowId });
+    } else {
+      await chrome.sidePanel.open({ tabId: tab.id });
+    }
+    console.log('[SNN] Side panel opened via setOptions+open fallback');
+  } catch (e) {
+    console.error('[SNN] All side-panel open attempts exhausted:', e?.message || e);
   }
 }
 
@@ -150,13 +177,21 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 
   if (prompt) {
-    // Store the prompt so the side panel can pick it up
+    // ═══════════════════════════════════════════════════════════
+    // CRITICAL: chrome.sidePanel.open() MUST be called
+    // SYNCHRONOUSLY within the user-gesture event handler.
+    // Calling it inside a .then() callback loses the gesture
+    // context and the call silently fails.  We open the panel
+    // FIRST, then fire-and-forget the prompt into storage.
+    // ═══════════════════════════════════════════════════════════
+    _openSidePanelForTab(tab);
+
+    // Fire-and-forget: store the prompt so the side panel picks it up.
+    // The side panel calls _checkContextMenuPrompt() on init AND listens
+    // for storage changes, so it will catch this regardless of timing.
     chrome.storage.session.set({
       snn_context_menu_prompt: { prompt, tabId: tab.id, timestamp: Date.now() }
-    }).then(() => {
-      // Open the side panel — robust helper with fallbacks
-      _openSidePanelForTab(tab);
-    });
+    }).catch(err => console.warn('[SNN] Failed to store context-menu prompt:', err?.message || err));
   }
 });
 
