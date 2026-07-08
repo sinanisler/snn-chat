@@ -2057,6 +2057,15 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
   }
 
   // ── Session Management ─────────────────────────────────────────
+
+  /**
+   * Key in chrome.storage.local that points to the currently-active
+   * session key. This survives sidebar close/reopen so we always
+   * restore the session the user was last working in — even if it
+   * has fewer messages or an older timestamp than another session.
+   */
+  static ACTIVE_SESSION_PTR = 'snn_active_session';
+
   get historyKey() {
     // Session Lock: use fixed key — same session across ALL tabs
     if (this._chatLockEnabled) return this._historyKey || this._chatLockKey;
@@ -2096,6 +2105,29 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
       return;
     }
     if (!this.currentTabId) return;
+
+    // ── First: check the active-session pointer ────────────────
+    // This is the authoritative record of which session the user
+    // was last working in. It survives sidebar close/reopen and
+    // new-session creation (newSession writes it immediately).
+    const ptrData = await chrome.storage.local.get([SNNSidePanel.ACTIVE_SESSION_PTR]);
+    const activePtr = ptrData[SNNSidePanel.ACTIVE_SESSION_PTR];
+    if (activePtr?.key) {
+      const sessionData = await chrome.storage.local.get([activePtr.key]);
+      const session = sessionData[activePtr.key];
+      if (session && session.messages?.length) {
+        this._historyKey = activePtr.key;
+        this.currentSessionId = this._extractSessionIdFromKey(activePtr.key);
+        this.chatHistory = session.messages;
+        this.restoreChat();
+        return;
+      }
+      // Pointer exists but session is empty or missing — clear the
+      // stale pointer and fall through to normal discovery.
+      await chrome.storage.local.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
+    }
+
+    // ── Fallback: discover most-recent session by timestamp ────
     const all = await chrome.storage.local.get(null);
     const tabSessions = [];
     const prefix = `snn_chat_history_${this.currentTabId}_`;
@@ -2111,7 +2143,21 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
       this.currentSessionId = this._extractSessionIdFromKey(recent.key);
       this.chatHistory = recent.messages;
       this.restoreChat();
+      // Also write the pointer so future loads pick this session
+      await this._saveActiveSessionPtr();
     }
+  }
+
+  /**
+   * Persist a pointer to the currently-active session so it survives
+   * sidebar close/reopen. Called after newSession, saveChatHistory,
+   * and clearChat so the pointer always reflects reality.
+   */
+  async _saveActiveSessionPtr() {
+    const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
+    await chrome.storage.local.set({
+      [SNNSidePanel.ACTIVE_SESSION_PTR]: { key, tabId: this.currentTabId, at: Date.now() }
+    });
   }
 
   async saveChatHistory() {
@@ -2130,6 +2176,9 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
         messages: this.chatHistory
       }
     });
+    // Keep the active-session pointer in sync so reopen always
+    // restores this session (survives newSession + close/reopen).
+    await this._saveActiveSessionPtr();
   }
 
   async newSession() {
@@ -2149,7 +2198,9 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
       this.showToast('Chat cleared (🔒 session locked)');
       return;
     }
+    // ── Save old session first ────────────────────────────────
     if (this.chatHistory.length) await this.saveChatHistory();
+    // ── Create brand-new session identity ─────────────────────
     this.currentSessionId = this.generateId();
     const tabId = this.currentTabId || 'unknown';
     this._historyKey = `snn_chat_history_${tabId}_${this.currentSessionId}`;
@@ -2157,6 +2208,10 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     this.totalTokensUsed = 0;
     this._contextConsumedInSession = false;
     this.activeContext = null;
+    // ── Persist the pointer NOW so reopen picks up THIS session ──
+    // (even though chatHistory is empty — the pointer is what matters)
+    await this._saveActiveSessionPtr();
+    // ── Clear UI ──────────────────────────────────────────────
     this.els.chatMessages.innerHTML = '';
     this.els.welcomeScreen.style.display = '';
     this.els.smartPrompts.style.display = 'block';
@@ -2178,6 +2233,8 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
     this.renderQuickActions();
+    // Keep the active-session pointer in sync
+    this._saveActiveSessionPtr();
   }
 
   /**
@@ -2271,6 +2328,10 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
       this.els.welcomeScreen.style.display = '';
       this.els.smartPrompts.style.display = 'block';
       this.els.tokenCounter.style.display = 'none';
+
+      // Clear the active-session pointer so we fall back to
+      // per-tab timestamp discovery (not the locked session).
+      await chrome.storage.local.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
 
       await this.loadMostRecentSession();
       this._updateLockVisuals();
