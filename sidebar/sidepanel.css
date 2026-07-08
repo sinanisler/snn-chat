@@ -931,13 +931,13 @@ body.theme-dark {
   display: inline-block;
   padding: 3px 8px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
 }
 .sp-model-tag-input {
   background: rgba(5,86,199,0.12);
-  color: var(--sp-accent);
+  color: rgb(90, 136, 185);
   border: 1px solid rgba(5,86,199,0.25);
 }
 .sp-model-tag-output {

@@ -198,7 +198,7 @@ class SNNAgentUI {
     if (last.querySelector('.snn-screenshot-preview')) return;
     const wrapper = document.createElement('div');
     wrapper.className = 'snn-screenshot-preview';
-    wrapper.style.cssText = 'margin-top:8px;max-width:100%;overflow:hidden;border-radius:6px;border:1px solid var(--border-color, #333);';
+    wrapper.style.cssText = 'margin-top:8px;max-width:150px;overflow:hidden;border-radius:6px;border:1px solid var(--border-color, #333);';
     const img = document.createElement('img');
     img.src = dataUrl;
     img.alt = 'Screenshot';
