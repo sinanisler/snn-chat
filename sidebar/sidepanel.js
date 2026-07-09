@@ -1547,6 +1547,9 @@ class SNNSidePanel {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      // Cache model data for fetchModelInfo() lookup
+      this._modelsData = {};
+      data.data.forEach(m => { this._modelsData[m.id] = m; });
       const datalist = this.els.settingsBody.querySelector('#openrouter-models');
       if (datalist) {
         datalist.innerHTML = '';
@@ -1556,6 +1559,10 @@ class SNNSidePanel {
           opt.textContent = `${m.name} (${m.id})`;
           datalist.appendChild(opt);
         });
+      }
+      // Refresh model info if a model is already selected
+      if (this.els.settingsBody.querySelector('#s-openrouter-model')?.value.trim()) {
+        this.fetchModelInfo();
       }
     } catch (e) {
       console.error('Failed to load models:', e);
@@ -1571,7 +1578,6 @@ class SNNSidePanel {
     }
 
     infoDiv.style.display = 'block';
-    infoDiv.innerHTML = '<div class="sp-model-info-loading">Loading model info...</div>';
 
     try {
       const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key')?.value.trim();
@@ -1580,66 +1586,78 @@ class SNNSidePanel {
         return;
       }
 
-      const res = await fetch(`https://openrouter.ai/api/v1/models/${encodeURIComponent(modelId)}`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      const data = json.data;
-      if (!data) throw new Error('No model data');
-
-      let html = '';
-
-      // Description
-      if (data.description) {
-        html += `<div class="sp-model-info-desc">${this.escapeHtml(data.description.substring(0, 400))}${data.description.length > 400 ? '...' : ''}</div>`;
+      // Look up from cached models list — no separate API call needed
+      const data = this._modelsData?.[modelId];
+      if (!data) {
+        // Fallback: try a direct API call if model not in cache
+        infoDiv.innerHTML = '<div class="sp-model-info-loading">Loading model info...</div>';
+        const res = await fetch(`https://openrouter.ai/api/v1/models/${encodeURI(modelId)}`, {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const fetched = json.data;
+        if (!fetched) throw new Error('No model data');
+        this._renderModelInfo(infoDiv, fetched);
+        return;
       }
 
-      // Architecture / modalities
-      const arch = data.architecture;
-      if (arch) {
-        // Input modalities
-        if (arch.input_modalities && arch.input_modalities.length > 0) {
-          html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
-          for (const mod of arch.input_modalities) {
-            html += `<span class="sp-model-tag sp-model-tag-input">${this.escapeHtml(mod)}</span>`;
-          }
-          html += '</div></div>';
-        }
-        // Output modalities
-        if (arch.output_modalities && arch.output_modalities.length > 0) {
-          html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Output:</span><div class="sp-model-info-tags">';
-          for (const mod of arch.output_modalities) {
-            html += `<span class="sp-model-tag sp-model-tag-output">${this.escapeHtml(mod)}</span>`;
-          }
-          html += '</div></div>';
-        }
-      }
-
-      // Supported parameters (from first endpoint)
-      const endpoint = data.endpoints?.[0];
-      if (endpoint?.supported_parameters && endpoint.supported_parameters.length > 0) {
-        html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Params:</span><div class="sp-model-info-tags">';
-        for (const param of endpoint.supported_parameters) {
-          html += `<span class="sp-model-tag sp-model-tag-param">${this.escapeHtml(param)}</span>`;
-        }
-        html += '</div></div>';
-      }
-
-      // Context length
-      if (endpoint?.context_length) {
-        html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Context:</span><span class="sp-model-info-value">${(endpoint.context_length / 1024).toFixed(0)}K tokens</span></div>`;
-      }
-
-      // Max completion tokens
-      if (endpoint?.max_completion_tokens) {
-        html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Max output:</span><span class="sp-model-info-value">${endpoint.max_completion_tokens.toLocaleString()} tokens</span></div>`;
-      }
-
-      infoDiv.innerHTML = html || '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
+      this._renderModelInfo(infoDiv, data);
     } catch (e) {
       infoDiv.innerHTML = `<div class="sp-model-info-error">Could not load model info: ${this.escapeHtml(e.message)}</div>`;
     }
+  }
+
+  _renderModelInfo(infoDiv, data) {
+    let html = '';
+
+    // Description
+    if (data.description) {
+      html += `<div class="sp-model-info-desc">${this.escapeHtml(data.description.substring(0, 400))}${data.description.length > 400 ? '...' : ''}</div>`;
+    }
+
+    // Architecture / modalities
+    const arch = data.architecture;
+    if (arch) {
+      if (arch.input_modalities && arch.input_modalities.length > 0) {
+        html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
+        for (const mod of arch.input_modalities) {
+          html += `<span class="sp-model-tag sp-model-tag-input">${this.escapeHtml(mod)}</span>`;
+        }
+        html += '</div></div>';
+      }
+      if (arch.output_modalities && arch.output_modalities.length > 0) {
+        html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Output:</span><div class="sp-model-info-tags">';
+        for (const mod of arch.output_modalities) {
+          html += `<span class="sp-model-tag sp-model-tag-output">${this.escapeHtml(mod)}</span>`;
+        }
+        html += '</div></div>';
+      }
+    }
+
+    // Supported parameters — from model level (list format) or endpoints[0] (single format)
+    const supportedParams = data.supported_parameters || data.endpoints?.[0]?.supported_parameters;
+    if (supportedParams && supportedParams.length > 0) {
+      html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Params:</span><div class="sp-model-info-tags">';
+      for (const param of supportedParams) {
+        html += `<span class="sp-model-tag sp-model-tag-param">${this.escapeHtml(param)}</span>`;
+      }
+      html += '</div></div>';
+    }
+
+    // Context length — from top_provider (list format) or endpoints[0] (single format)
+    const ctxLen = data.top_provider?.context_length || data.endpoints?.[0]?.context_length;
+    if (ctxLen) {
+      html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Context:</span><span class="sp-model-info-value">${(ctxLen / 1024).toFixed(0)}K tokens</span></div>`;
+    }
+
+    // Max completion tokens
+    const maxOut = data.top_provider?.max_completion_tokens || data.endpoints?.[0]?.max_completion_tokens;
+    if (maxOut) {
+      html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Max output:</span><span class="sp-model-info-value">${maxOut.toLocaleString()} tokens</span></div>`;
+    }
+
+    infoDiv.innerHTML = html || '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
   }
 
   async testConnection() {
