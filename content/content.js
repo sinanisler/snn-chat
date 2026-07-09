@@ -48,6 +48,47 @@ class SNNContentExtractor {
     const hostname = window.location.hostname.toLowerCase();
     let textContent = '';
 
+    // ── PDF Detection ───────────────────────────────────────────
+    // Chrome's PDF viewer embeds the PDF in an <embed> tag.
+    // The DOM has NO text nodes for PDF content, so DOM scraping returns 0 words.
+    // Instead, we send the PDF URL to background.js which uses an offscreen
+    // document + PDF.js to extract the actual text.
+    if (this._isPdfPage()) {
+      console.log('[SNN Content] PDF detected — delegating to background PDF.js extraction');
+      
+      // For file:// URLs, the service worker can't fetch them.
+      // We need to fetch the PDF from the page context and pass the bytes.
+      if (url.startsWith('file://')) {
+        try {
+          const response = await fetch(url);
+          const arrayBuffer = await response.arrayBuffer();
+          safeSendMessage({
+            action: 'extractPdfText',
+            url: url,
+            title: title,
+            pdfData: Array.from(new Uint8Array(arrayBuffer))
+          });
+        } catch (err) {
+          console.error('[SNN Content] Failed to fetch local PDF:', err.message);
+          // Fallback: send URL anyway, background will try to fetch it
+          safeSendMessage({
+            action: 'extractPdfText',
+            url: url,
+            title: title
+          });
+        }
+      } else {
+        safeSendMessage({
+          action: 'extractPdfText',
+          url: url,
+          title: title
+        });
+      }
+      return; // Background will store context when extraction completes
+    }
+
+    // ── Normal HTML page extraction ────────────────────────────
+
     const methods = [
       () => this.extractSiteSpecific(hostname),
       () => this.extractGeneric(),
@@ -166,6 +207,26 @@ class SNNContentExtractor {
   truncate(text, limit) {
     const words = (text || '').trim().split(/\s+/);
     return words.length <= limit ? text : words.slice(0, limit).join(' ');
+  }
+
+  // ── PDF Detection ────────────────────────────────────────────────
+  /**
+   * Detect if the current page is a PDF rendered by Chrome's built-in viewer.
+   * Chrome PDF viewer URLs: file:///...pdf, https://...pdf, or chrome-extension://...pdf
+   * with an <embed type="application/pdf"> element.
+   */
+  _isPdfPage() {
+    // Check for PDF embed element (Chrome's built-in viewer)
+    const embed = document.querySelector('embed[type="application/pdf"]');
+    if (embed) return true;
+
+    // Check URL ends with .pdf (including file:// URLs)
+    if (/\.pdf(\?.*)?(#.*)?$/i.test(window.location.href)) return true;
+
+    // Check document.contentType (may not be reliable for all cases)
+    if (document.contentType === 'application/pdf') return true;
+
+    return false;
   }
 
   // ── Text Selection Monitoring ────────────────────────────────────

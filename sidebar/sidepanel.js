@@ -659,7 +659,11 @@ class SNNSidePanel {
         }
         // agentResult.type === 'chat' without content → fall through to normal chat
       } catch (agentErr) {
-        console.warn('Agent loop failed, falling back to chat:', agentErr.message);
+        // Agent loop threw an unhandled error — do NOT fall through to regular chat.
+        // The error was already surfaced to the user via onError callback.
+        console.warn('Agent loop failed:', agentErr.message);
+        this._resetLoadingState();
+        return;
       }
     }
 
@@ -750,9 +754,9 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach last screenshot as vision content if available ──
+    // ── Attach last screenshot as vision content if model supports it ──
     const screenshotData = this._lastScreenshot;
-    if (screenshotData) {
+    if (screenshotData && this._modelSupportsVision(model)) {
       messages[messages.length - 1] = {
         role: 'user',
         content: [
@@ -821,14 +825,14 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach last screenshot as vision content if available ──
-    const screenshotData = this._lastScreenshot;
-    if (screenshotData) {
+    // ── Attach last screenshot as vision content if model supports it ──
+    const screenshotData2 = this._lastScreenshot;
+    if (screenshotData2 && this._modelSupportsVision(model)) {
       messages[messages.length - 1] = {
         role: 'user',
         content: [
           { type: 'text', text: userMessage },
-          { type: 'image_url', image_url: { url: screenshotData } }
+          { type: 'image_url', image_url: { url: screenshotData2 } }
         ]
       };
       this._lastScreenshot = null; // consume it
@@ -1159,7 +1163,7 @@ class SNNSidePanel {
 
   getDefaultQuickActions() {
     return [
-      { text: 'Summarize', prompt: 'Summarize this page concisely.' },
+      { text: 'Summarize', prompt: 'Summarize this content concisely.' },
       { text: 'Key points', prompt: 'Extract the key points from this page.' },
       { text: 'Explain simply', prompt: 'Explain this page in simple terms.' },
       { text: 'What is this?', prompt: 'What is this page about? Give a brief overview.' }
@@ -1196,6 +1200,35 @@ class SNNSidePanel {
     this.updateModelDisplay(settings);
     // Cache agent prompt for chat augmentation
     this._agentPromptCache = settings.agentPrompt || this._getDefaultAgentPrompt();
+
+    // ── Dynamic dark-mode indicator class on body ───────────────
+    this._updateDarkModeClass(theme);
+    this._watchSystemColorScheme(theme);
+  }
+
+  // ── Dark-mode class helper ──────────────────────────────────────
+  // Adds/removes `is-dark-mode` on body so CSS can target dark palette
+  // without duplicating variable blocks. Also useful for JS guards.
+  _updateDarkModeClass(theme) {
+    const isDark =
+      theme === 'dark' ||
+      (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    document.body.classList.toggle('is-dark-mode', !!isDark);
+  }
+
+  // ── Watch system color-scheme changes (only when theme=auto) ────
+  _watchSystemColorScheme(theme) {
+    // Remove any previous listener
+    if (this._darkModeQuery) {
+      this._darkModeQuery.removeEventListener('change', this._darkModeQueryHandler);
+      this._darkModeQuery = null;
+      this._darkModeQueryHandler = null;
+    }
+    if (theme === 'auto') {
+      this._darkModeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      this._darkModeQueryHandler = () => this._updateDarkModeClass('auto');
+      this._darkModeQuery.addEventListener('change', this._darkModeQueryHandler);
+    }
   }
 
   updateModelDisplay(settings) {
@@ -1355,13 +1388,12 @@ class SNNSidePanel {
           ${this.toggleHtml('s-action-monitor', 'DOM Monitoring', 'Watch for elements to appear/change', s.disabledActions ? !s.disabledActions.includes('startMonitoring') : true)}
         </div>
         <div class="sp-section">
-          <h4>Agent System Prompt</h4>
-          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">This prompt is prepended to every chat. It tells the AI what it can do on web pages.</p>
+          <h4>Custom Instruction <span style="font-weight:400;color:var(--sp-text-secondary)">(optional)</span></h4>
+          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">Add a personal touch — appended to every request. Leave empty for default behavior.</p>
           <div class="sp-field">
-            <textarea id="s-agent-prompt" rows="4" style="font-size:12px;font-family:monospace;">${this.escapeHtml(s.agentPrompt || this._getDefaultAgentPrompt())}</textarea>
-            <small>Edit carefully — this controls how the agent understands its capabilities.</small>
+            <textarea id="s-agent-prompt" rows="2" placeholder="e.g. Always respond in Spanish. or Use emojis freely." style="font-size:12px;font-family:monospace;">${this.escapeHtml(s.agentPrompt || '')}</textarea>
           </div>
-          <button class="sp-btn sp-btn-secondary" id="s-reset-agent-prompt" style="margin-top:6px;">Reset to Default</button>
+          <button class="sp-btn sp-btn-secondary" id="s-reset-agent-prompt" style="margin-top:6px;">Clear</button>
         </div>
       </div>
 
@@ -1432,10 +1464,10 @@ class SNNSidePanel {
       this.renderQuickActionsEditor(this.getDefaultQuickActions());
     });
 
-    // Reset agent prompt
+    // Clear agent prompt (was "Reset to Default")
     this.els.settingsBody.querySelector('#s-reset-agent-prompt')?.addEventListener('click', () => {
       const ta = this.els.settingsBody.querySelector('#s-agent-prompt');
-      if (ta) ta.value = this._getDefaultAgentPrompt();
+      if (ta) ta.value = '';
     });
 
     // Export / Clear
@@ -1758,25 +1790,9 @@ class SNNSidePanel {
    * Returns the default agent system prompt that tells the LLM what SNN can do.
    */
   _getDefaultAgentPrompt() {
-    return `[SYSTEM: You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You CAN perform these actions on the current page:
-• Click buttons, links, and elements
-• Type text into input fields and forms
-• Scroll the page up, down, or to elements
-• Highlight elements with visual overlays
-• Find and list elements matching selectors
-• Extract tables and structured data
-• Fill forms (single fields or entire forms)
-• Select dropdown options, toggle checkboxes
-• Press keyboard keys (Enter, Escape, Tab, etc.)
-• Hover over elements to trigger tooltips
-• Navigate to URLs, open new tabs, go back/forward
-• Take screenshots of the page
-• Execute custom JavaScript on the page
-• Enter element picker mode (hover to pick)
-• Monitor DOM changes
-• Download files, show notifications, set alarms
-
-When users ask "can you click X?" or "what can you do on this page?", respond with an OFFER to help using these capabilities. Say "Yes! I can click the Sign Up button for you. Want me to?" or "Let me take a screenshot of this page for you." NEVER say you cannot interact with the page. You CAN. If you need more info about the page to perform an action, use getPageInfo or findElements first. If you're not sure what to do, ask the user to clarify.]`;
+    // Minimal identity stamp — the heavy behavioral instructions live in agent-loop.js.
+    // Users can customize via Settings → Custom Instruction to add a personal touch.
+    return 'You are SNN Chat, a browser agent that can interact with web pages in real-time. Be concise and helpful.';
   }
 
   async saveSettings() {
@@ -2130,17 +2146,19 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     // new-session creation (newSession writes it immediately).
     const ptrData = await chrome.storage.local.get([SNNSidePanel.ACTIVE_SESSION_PTR]);
     const activePtr = ptrData[SNNSidePanel.ACTIVE_SESSION_PTR];
-    if (activePtr?.key) {
+    // Only trust the pointer if it belongs to THIS tab — prevents cross-tab session leakage
+    if (activePtr?.key && activePtr.tabId === this.currentTabId) {
       const sessionData = await chrome.storage.local.get([activePtr.key]);
       const session = sessionData[activePtr.key];
-      if (session && session.messages?.length) {
+      // Accept the session even if empty (newSession creates empty sessions)
+      if (session) {
         this._historyKey = activePtr.key;
         this.currentSessionId = this._extractSessionIdFromKey(activePtr.key);
-        this.chatHistory = session.messages;
+        this.chatHistory = session.messages || [];
         this.restoreChat();
         return;
       }
-      // Pointer exists but session is empty or missing — clear the
+      // Pointer exists but session record is missing entirely — clear the
       // stale pointer and fall through to normal discovery.
       await chrome.storage.local.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
     }
@@ -2179,7 +2197,6 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
   }
 
   async saveChatHistory() {
-    if (!this.chatHistory.length) return;
     // Session Lock: always save to fixed key; otherwise per-tab key
     const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
     // Persist the computed key so subsequent saves target the same session
@@ -2226,8 +2243,18 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
     this.totalTokensUsed = 0;
     this._contextConsumedInSession = false;
     this.activeContext = null;
+    // ── Persist the empty session record so the pointer resolves ──
+    // If we don't write this, loadMostRecentSession() sees an empty/missing
+    // session, deletes the pointer, and falls back to the OLD session.
+    await chrome.storage.local.set({
+      [this._historyKey]: {
+        domain: this.currentDomain,
+        tabId: this.currentTabId,
+        lastUpdated: Date.now(),
+        messages: []
+      }
+    });
     // ── Persist the pointer NOW so reopen picks up THIS session ──
-    // (even though chatHistory is empty — the pointer is what matters)
     await this._saveActiveSessionPtr();
     // ── Clear UI ──────────────────────────────────────────────
     this.els.chatMessages.innerHTML = '';
@@ -2416,9 +2443,23 @@ When users ask "can you click X?" or "what can you do on this page?", respond wi
    * This prevents the LLM from saying "I can't click/interact with the page."
    */
   _getAugmentedSystemPrompt(basePrompt) {
-    // Use the user's custom agent prompt from settings, or the default
-    const agentPrompt = this._agentPromptCache || this._getDefaultAgentPrompt();
-    return agentPrompt + '\n\n' + (basePrompt || 'You are a helpful AI assistant. Be concise and accurate.');
+    // Core identity + user's custom touch (if any) + base system prompt
+    const identity = this._agentPromptCache || this._getDefaultAgentPrompt();
+    const parts = [identity];
+    // Only add base prompt if it's meaningfully different from identity
+    const base = basePrompt || 'You are a helpful AI assistant. Be concise and accurate.';
+    if (base !== identity) parts.push(base);
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Check if a model supports image/vision input.
+   * Text-only models (DeepSeek, Llama, Mistral, etc.) return false.
+   */
+  _modelSupportsVision(modelId) {
+    if (!modelId) return false;
+    const m = modelId.toLowerCase();
+    return /gemini|gpt-4o|gpt-4-vision|gpt-4-turbo|claude|llava|pixtral|vision|multimodal|qwen.*vl/i.test(m);
   }
 
   /**

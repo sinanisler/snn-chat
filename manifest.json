@@ -12,7 +12,8 @@
     "alarms",
     "notifications",
     "downloads",
-    "tabs"
+    "tabs",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -53,7 +54,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sidebar/*", "assets/*"],
+      "resources": ["sidebar/*", "assets/*", "offscreen/*", "lib/*"],
       "matches": ["<all_urls>"]
     }
   ]

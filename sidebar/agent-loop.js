@@ -50,6 +50,18 @@ class SNNAgentLoop {
     this.onBlocked = null;       // (question) → returns Promise<'approved'|'denied'>
   }
 
+  /**
+   * Check if the current model supports image/vision input.
+   * Returns false for text-only models (DeepSeek, Llama, Mistral, etc.)
+   * so we don't crash with 404 when injecting screenshot images.
+   */
+  _modelSupportsVision(modelId) {
+    if (!modelId) return false;
+    const m = modelId.toLowerCase();
+    // Known vision-capable model families
+    return /gemini|gpt-4o|gpt-4-vision|gpt-4-turbo|claude|llava|pixtral|vision|multimodal|qwen.*vl/i.test(m);
+  }
+
   // ── Public API ──────────────────────────────────────────────────
   get state() { return this._state; }
   get isBusy() { return this._state !== 'IDLE' && this._state !== 'FAILED'; }
@@ -150,26 +162,38 @@ class SNNAgentLoop {
             // Map tool name to our action and execute
             const actionResult = await this._executeToolCall(fnName, fnArgs, iteration);
 
-            // ── If screenshot was taken, inject it as a vision message for the LLM ──
+            // ── If screenshot was taken and model supports vision, inject the image ──
+            // Text-only models (DeepSeek, etc.) get a text summary instead — no 404.
             if (fnName === 'snn_screenshot' && this._lastScreenshot) {
-              // Add a special tool result that tells the LLM it can see the image
-              messages.push({
-                role: 'tool',
-                tool_call_id: tc.id,
-                content: JSON.stringify({
-                  success: true,
-                  screenshot: '[Image captured — visible in the next message]',
-                  message: 'A screenshot of the page was captured. The image will be provided for your analysis.'
-                })
-              });
-              // Then inject the actual image as a follow-up user message
-              messages.push({
-                role: 'user',
-                content: [
-                  { type: 'text', text: 'Here is the screenshot you just captured. Analyze it and continue with the task.' },
-                  { type: 'image_url', image_url: { url: this._lastScreenshot } }
-                ]
-              });
+              if (this._modelSupportsVision(settings.openrouterModel)) {
+                messages.push({
+                  role: 'tool',
+                  tool_call_id: tc.id,
+                  content: JSON.stringify({
+                    success: true,
+                    screenshot: '[Image captured — visible in the next message]',
+                    message: 'A screenshot of the page was captured. The image will be provided for your analysis.'
+                  })
+                });
+                messages.push({
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: 'Here is the screenshot you just captured. Analyze it and continue with the task.' },
+                    { type: 'image_url', image_url: { url: this._lastScreenshot } }
+                  ]
+                });
+              } else {
+                // Text-only model: tell the LLM the screenshot was captured, skip image
+                messages.push({
+                  role: 'tool',
+                  tool_call_id: tc.id,
+                  content: JSON.stringify({
+                    success: true,
+                    screenshot: '[Screenshot captured and displayed to the user]',
+                    message: 'A screenshot of the page was captured successfully. The user can see it in the chat.'
+                  })
+                });
+              }
               this._lastScreenshot = null; // consume it
               this.sp._lastScreenshot = null; // sync with sidepanel
             } else {
@@ -312,6 +336,19 @@ class SNNAgentLoop {
       { name: 'snn_goForward', desc: 'Go forward in browser history', params: {}, required: [] },
       { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] },
 
+      // ── Batch & Scroll ────────────────────────────────────
+      { name: 'snn_scrollAndAct', desc: 'Scroll through a virtual-list / infinite-scroll / lazy-rendering page and perform an action on matching elements as they load. Handles scroll pacing, render waiting, and deduplication. Use this for batch operations that span beyond the visible viewport — clicking many items, extracting data from feeds, etc. ONE call replaces dozens of individual scroll+click cycles.', params: {
+        selector: { type: 'string', desc: 'CSS selector for the elements to act on (e.g., "button[aria-label=\'Like\']", ".heart-icon")' },
+        maxItems: { type: 'integer', desc: 'Maximum items to process before stopping (default 50)' },
+        action: { type: 'string', desc: '"click" (default) or "extract" to collect element data instead' },
+        containerSelector: { type: 'string', desc: 'Optional: CSS selector for the scrollable container/feed element. Auto-detected if omitted.' },
+        expandSelector: { type: 'string', desc: 'Optional: selector for "Show more" / "Load more" / "Expand" buttons to click when encountered' },
+        clickDelay: { type: 'integer', desc: 'Base delay in ms between actions (default 400). Actual delay = clickDelay + random(0, clickJitter).' },
+        clickJitter: { type: 'integer', desc: 'Random extra ms added to clickDelay for human-like pacing (default 600).' },
+        maxScrolls: { type: 'integer', desc: 'Maximum scroll steps before giving up (default 40).' },
+        stopWhen: { type: 'string', desc: 'Optional JS expression evaluated per item. Return true to stop early. Receives `el` and `index`.' }
+      }, required: ['selector'] },
+
       // ── Advanced ──────────────────────────────────────────
       { name: 'snn_evaluate', desc: 'Execute custom JavaScript on the page and return the result', params: {
         code: { type: 'string', desc: 'JavaScript code to execute. Use document.querySelector() etc.' }
@@ -363,10 +400,11 @@ class SNNAgentLoop {
    * Build the system prompt for the tool-calling LLM.
    */
   _buildToolSystemPrompt(settings) {
-    const agentPrompt = settings.agentPrompt || this.sp._getDefaultAgentPrompt?.() || '';
-    return `${agentPrompt}
+    // Core behavioral prompt lives HERE in code — not in user-editable settings.
+    // The user's custom instruction (if any) is appended as seasoning at the end.
+    const userInstruction = (settings.agentPrompt || '').trim();
 
-You are SNN Chat, a browser agent that can interact with web pages in real-time. You have access to tools (functions) that let you click, type, scroll, navigate, extract data, fill forms, and more.
+    let prompt = `You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You can click buttons, type into fields, scroll, navigate to URLs, fill forms, take screenshots, extract data, find elements, execute JavaScript, and more. You have access to tools (functions) for all of these.
 
 CRITICAL — WHEN TO USE TOOLS:
 - ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, fill a form, take a screenshot, etc.
@@ -374,18 +412,27 @@ CRITICAL — WHEN TO USE TOOLS:
 - If you already have the information needed to answer, JUST ANSWER. Don't reach for tools unnecessarily.
 
 WHEN YOU DO USE TOOLS:
-1. Describe briefly what you're doing, then call the tool.
+1. Say something brief like "On it!" then call the tool immediately.
 2. You can chain multiple tool calls: e.g., navigate → wait → click → findElements.
 3. After tools return results, synthesize a helpful response in the user's language.
 4. For selectors, prefer :text("exact text") for finding buttons/links by their visible text. Use :contains("partial") for partial matches.
 5. When navigating: if the user says "go to X page", use snn_navigate.
 6. The click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks.
+7. For batch operations on virtual-list / infinite-scroll pages (social feeds, comment threads, search results, product listings, any page that loads content as you scroll): use snn_scrollAndAct. It handles scrolling, render waiting, deduplication, and pacing automatically. ONE call replaces many individual scroll+click cycles. Use it whenever the user asks to act on "all", "the first N", "many", or "every" item in a scrollable feed.
 
 CRITICAL RULES:
 - NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
-- NEVER say "I can help with that, would you like me to..." — instead say "Let me do that now" and call the tool.
+- NEVER say "I can help with that, would you like me to..." or "Want me to?" — instead say "Let me do that now" and call the tool.
 - If a tool call fails, try a different approach (different selector, different strategy). Don't give up after one failure.
-- For simple questions about page content: ANSWER FROM CONTEXT, don't use tools.`;
+- For simple questions about page content: ANSWER FROM CONTEXT, don't use tools.
+- NEVER say you cannot interact with the page — you CAN.`;
+
+    // Append user's custom instruction if they've set one (and it's not the default identity stamp)
+    if (userInstruction && userInstruction !== this.sp._getDefaultAgentPrompt?.()) {
+      prompt += `\n\n[USER'S CUSTOM INSTRUCTION: ${userInstruction}]`;
+    }
+
+    return prompt;
   }
 
   /**
@@ -470,7 +517,7 @@ CRITICAL RULES:
       action: actionName,
       description,
       params,
-      timeout: this.DEFAULT_TIMEOUT
+      timeout: actionName === 'scrollAndAct' ? 180000 : this.DEFAULT_TIMEOUT
     };
 
     this._plan.push(step);
@@ -541,6 +588,19 @@ CRITICAL RULES:
       case 'openTab': return { url: args.url || '' };
       case 'evaluate': return { code: args.code || '' };
       case 'copyToClipboard': return { text: args.text || '' };
+      case 'scrollAndAct': return {
+        selector: args.selector || '',
+        options: {
+          maxItems: args.maxItems ?? 50,
+          action: args.action || 'click',
+          containerSelector: args.containerSelector || null,
+          expandSelector: args.expandSelector || null,
+          clickDelay: args.clickDelay ?? 400,
+          clickJitter: args.clickJitter ?? 600,
+          maxScrolls: args.maxScrolls ?? 40,
+          stopWhen: args.stopWhen || null
+        }
+      };
       default: return args || {};
     }
   }
@@ -575,6 +635,7 @@ CRITICAL RULES:
       case 'snn_startPicker': return 'Element picker mode';
       case 'snn_copyToClipboard': return 'Copy to clipboard';
       case 'snn_getCapabilities': return 'List capabilities';
+      case 'snn_scrollAndAct': return `Scroll & ${a.action || 'click'} "${a.selector || 'elements'}" (up to ${a.maxItems || 50} items)`;
       default: return fnName;
     }
   }
@@ -751,7 +812,10 @@ CRITICAL RULES:
   // DISPATCH ACTION TO CONTENT SCRIPT (via background)
   // ═══════════════════════════════════════════════════════════════
   async _dispatchAction(step) {
-    const timeout = step.timeout || this.DEFAULT_TIMEOUT;
+    // scrollAndAct needs a long timeout — it's an autonomous scroll loop
+    const isLongRunning = step.action === 'scrollAndAct';
+    const defaultTimeout = isLongRunning ? 180000 : this.DEFAULT_TIMEOUT; // 3 min vs 15s
+    const timeout = step.timeout || defaultTimeout;
 
     // Build message
     const message = {

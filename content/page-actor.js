@@ -58,6 +58,7 @@ class SNNPageActor {
         case 'agent:getViewportInfo':  result = this.getViewportInfo(); break;
         case 'agent:startMonitoring':  result = this.startMonitoring(payload.selector, payload.options); break;
         case 'agent:stopMonitoring':   this.stopMonitoring(); result = { stopped: true }; break;
+        case 'agent:scrollAndAct':     result = await this.scrollAndAct(payload.selector, payload.options); break;
         default:
           return this._respond(sendResponse, false, { code: 'UNKNOWN_ACTION', message: `Unknown action: "${action}"`, retryable: false, suggestion: 'Check available actions.' }, stepId);
       }
@@ -779,6 +780,228 @@ class SNNPageActor {
       maxScrollY: Math.round(document.documentElement.scrollHeight - window.innerHeight),
       darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ACTION: Scroll & Act — autonomous scroll→find→act loop for
+  // virtual-list / infinite-scroll / lazy-rendering pages.
+  // Scrolls through the page, waits for new content to render,
+  // finds fresh matching elements, acts on them, tracks processed
+  // items to avoid duplicates. Returns summary when done.
+  // ═══════════════════════════════════════════════════════════════
+  async scrollAndAct(selector, options = {}) {
+    const {
+      maxItems     = 50,
+      maxScrolls   = 40,
+      clickDelay   = 400,          // ms between actions
+      clickJitter  = 600,          // random extra ms added to clickDelay
+      scrollPause  = 1200,         // ms to wait for render after scroll
+      scrollAmount = 0.75,         // fraction of viewport height per scroll
+      containerSelector = null,    // element to observe for mutations (auto-detect if null)
+      dedupAttr    = 'data-snn-done',
+      expandSelector = null,       // selector for "show more" / "load more" buttons to click
+      action       = 'click',      // 'click' | 'extract'
+      stopWhen     = null,         // optional JS expression evaluated per item; return true to stop
+      maxEmptyScrolls = 3          // consecutive scrolls with zero new items before giving up
+    } = options;
+
+    let acted = 0, scrolls = 0, emptyStreak = 0;
+    const processed = new WeakSet(); // track elements across re-renders where possible
+
+    // ── Resolve container ──────────────────────────────────────
+    let container = containerSelector
+      ? document.querySelector(containerSelector)
+      : null;
+    if (!container) {
+      // Auto-detect: prefer a scrollable feed/thread container
+      const candidates = document.querySelectorAll(
+        '[role="feed"], [role="list"], [id*="content"], [id*="items"], [id*="results"], [class*="feed"], [class*="thread"], [class*="items"], main, article'
+      );
+      for (const c of candidates) {
+        if (c.scrollHeight > window.innerHeight * 2) { container = c; break; }
+      }
+      if (!container) container = document.body;
+    }
+
+    // ── Helpers ────────────────────────────────────────────────
+    const findFresh = () => {
+      const all = document.querySelectorAll(selector);
+      const fresh = [];
+      for (const el of all) {
+        if (processed.has(el)) continue;
+        if (!el.offsetParent) continue;
+        // Also skip if any ancestor is marked done (catches re-rendered subtrees)
+        let ancestor = el.parentElement;
+        let ancestorDone = false;
+        for (let i = 0; i < 8 && ancestor; i++) {
+          if (ancestor.hasAttribute?.(dedupAttr)) { ancestorDone = true; break; }
+          ancestor = ancestor.parentElement;
+        }
+        if (ancestorDone) continue;
+        fresh.push(el);
+      }
+      return fresh;
+    };
+
+    const markDone = (el) => {
+      processed.add(el);
+      try { el.setAttribute(dedupAttr, '1'); } catch (_) { /* SVG elements may not support setAttribute */ }
+      // Also mark the closest container row/card so re-renders of the same item are skipped
+      const row = el.closest('[class*="item"], [class*="row"], [class*="card"], [class*="post"], [class*="comment"], [class*="thread"], [class*="entry"], li, article');
+      if (row) {
+        try { row.setAttribute(dedupAttr, '1'); } catch (_) { /* ignore */ }
+      }
+    };
+
+    const doClick = async (el) => {
+      el.scrollIntoView({ behavior: 'instant', block: 'center' });
+      await this.wait(80);
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      // Fast synthetic click (single strategy for speed in batch loops)
+      try {
+        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 }));
+        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 }));
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window }));
+      } catch (_) { /* continue */ }
+      try { if (el.focus) el.focus(); } catch (_) { /* SVG etc. */ }
+      try { el.click(); } catch (_) { /* some elements throw */ }
+    };
+
+    const doExtract = (el) => ({
+      tag: el.tagName?.toLowerCase() || '?',
+      id: el.id || null,
+      className: typeof el.className === 'string' ? el.className.split(/\s+/).slice(0, 3).join(' ') : null,
+      text: (el.textContent || '').trim().substring(0, 300),
+      href: el.href || null,
+      attributes: this._getKeyAttributes(el)
+    });
+
+    const sendProgress = () => {
+      try {
+        chrome.runtime.sendMessage({
+          action: 'agent:scrollAndActProgress',
+          selector, acted, scrolls, emptyStreak,
+          totalScrolled: Math.round(window.scrollY),
+          maxScroll: Math.round(document.documentElement.scrollHeight - window.innerHeight),
+          timestamp: Date.now()
+        }).catch(() => {});
+      } catch (_) { /* context invalidated */ }
+    };
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // ── Main scroll loop ───────────────────────────────────────
+    const extracted = [];
+
+    while (acted < maxItems && scrolls < maxScrolls && emptyStreak < maxEmptyScrolls) {
+      // ── Expand "show more" / "load more" if present ──────────
+      if (expandSelector) {
+        try {
+          const expandBtns = document.querySelectorAll(expandSelector);
+          for (const btn of expandBtns) {
+            if (btn.offsetParent) {
+              btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+              await sleep(200);
+              try { btn.click(); } catch (_) { /* ignore */ }
+              await this._waitForRenderStability(container, scrollPause);
+            }
+          }
+        } catch (_) { /* ignore */ }
+      }
+
+      // ── Find fresh targets in current viewport ───────────────
+      const fresh = findFresh();
+      if (fresh.length === 0) {
+        // None in viewport — scroll to load more
+        window.scrollBy(0, Math.round(window.innerHeight * scrollAmount));
+        // Also try scrolling the container if it's the scrollable element
+        if (container !== document.body && container.scrollHeight > container.clientHeight) {
+          container.scrollBy(0, Math.round(container.clientHeight * scrollAmount));
+        }
+        scrolls++;
+        await this._waitForRenderStability(container, scrollPause);
+        emptyStreak++;
+        sendProgress();
+        continue;
+      }
+
+      emptyStreak = 0;
+
+      // ── Act on each fresh element ────────────────────────────
+      for (const el of fresh) {
+        if (acted >= maxItems) break;
+
+        // Optional early-stop condition
+        if (stopWhen) {
+          try {
+            const shouldStop = new Function('el', 'index', 'return ' + stopWhen)(el, acted);
+            if (shouldStop) { acted = maxItems; break; }
+          } catch (_) { /* ignore bad expression */ }
+        }
+
+        markDone(el);
+
+        if (action === 'extract') {
+          extracted.push(doExtract(el));
+        } else {
+          await doClick(el);
+        }
+
+        acted++;
+        sendProgress();
+
+        // Human-like jittered delay between actions
+        const delay = clickDelay + Math.random() * clickJitter;
+        await sleep(delay);
+      }
+
+      // ── Scroll for next batch ────────────────────────────────
+      window.scrollBy(0, Math.round(window.innerHeight * scrollAmount));
+      if (container !== document.body && container.scrollHeight > container.clientHeight) {
+        container.scrollBy(0, Math.round(container.clientHeight * scrollAmount));
+      }
+      scrolls++;
+      await this._waitForRenderStability(container, scrollPause);
+      sendProgress();
+    }
+
+    // ── Build final summary ────────────────────────────────────
+    let terminatedBecause;
+    if (acted >= maxItems) terminatedBecause = 'maxItems';
+    else if (emptyStreak >= maxEmptyScrolls) terminatedBecause = 'noNewItems';
+    else terminatedBecause = 'maxScrolls';
+
+    return {
+      action: 'scrollAndAct',
+      selector,
+      acted,
+      scrolls,
+      emptyStreak,
+      terminatedBecause,
+      viewportHeight: window.innerHeight,
+      pageScrollY: Math.round(window.scrollY),
+      pageMaxScroll: Math.round(document.documentElement.scrollHeight - window.innerHeight),
+      ...(action === 'extract' ? { extracted } : {})
+    };
+  }
+
+  /**
+   * Wait for DOM mutations to settle after a scroll — signals that
+   * the virtual list / infinite scroll has finished rendering new items.
+   * Uses MutationObserver with a debounce window.
+   */
+  _waitForRenderStability(container, settleMs = 1200) {
+    return new Promise((resolve) => {
+      let timer;
+      const obs = new MutationObserver(() => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { obs.disconnect(); resolve(); }, settleMs);
+      });
+      obs.observe(container, { childList: true, subtree: true });
+      // Fallback: resolve even if no mutations occur (static content)
+      timer = setTimeout(() => { obs.disconnect(); resolve(); }, settleMs + 200);
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════

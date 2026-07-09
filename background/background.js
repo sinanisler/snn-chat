@@ -29,6 +29,71 @@ const CONTEXT_KEY = 'snn_page_context';
 const SELECTION_KEY = 'snn_selection';
 const TAB_SWITCH_PREFIX = 'snn_active_tab';
 const ACTION_QUEUE_KEY = 'snn_action_queue'; // pending agent actions
+const OFFSCREEN_DOC_PATH = 'offscreen/offscreen.html';
+
+// ── Offscreen Document Management (for PDF.js text extraction) ────
+let _creatingOffscreen = null; // Promise to avoid concurrent creation
+
+async function _hasOffscreenDocument() {
+  // Check all extension contexts for our offscreen document
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_DOC_PATH)]
+  });
+  return contexts.length > 0;
+}
+
+async function _setupOffscreenDocument() {
+  // Already exists?
+  if (await _hasOffscreenDocument()) return;
+
+  // Already being created? Wait for it
+  if (_creatingOffscreen) {
+    await _creatingOffscreen;
+    return;
+  }
+
+  // Create the offscreen document
+  _creatingOffscreen = chrome.offscreen.createDocument({
+    url: OFFSCREEN_DOC_PATH,
+    reasons: ['DOM_PARSER'],
+    justification: 'Extract text from PDF files using PDF.js for AI chat context'
+  });
+
+  try {
+    await _creatingOffscreen;
+    console.log('[SNN] Offscreen document created for PDF extraction');
+  } catch (err) {
+    console.error('[SNN] Failed to create offscreen document:', err.message);
+    throw err;
+  } finally {
+    _creatingOffscreen = null;
+  }
+}
+
+/**
+ * Extract text from a PDF using the offscreen document.
+ * @param {string} pdfUrl - URL of the PDF file
+ * @param {ArrayBuffer} [pdfData] - Pre-fetched PDF bytes (for local/restricted files)
+ * @returns {Promise<string>} Extracted text
+ */
+async function _extractPdfText(pdfUrl, pdfData) {
+  await _setupOffscreenDocument();
+
+  // Send extraction request to offscreen document
+  // Pass ArrayBuffer directly — Chrome's structured cloning supports it
+  const message = pdfData
+    ? { action: 'offscreen:extractPdfFromBuffer', arrayBuffer: pdfData }
+    : { action: 'offscreen:extractPdf', url: pdfUrl };
+
+  const response = await chrome.runtime.sendMessage(message);
+
+  if (!response || !response.success) {
+    throw new Error(response?.error || 'PDF extraction failed');
+  }
+
+  return response.text;
+}
 
 function tabSwitchKey(windowId) {
   return `${TAB_SWITCH_PREFIX}_${windowId}`;
@@ -449,6 +514,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.tabs.sendMessage(tab.id, { action: 'extractContent' }).catch(() => {});
       }
     });
+  }
+
+  // ── PDF Text Extraction ─────────────────────────────────────
+  if (message.action === 'extractPdfText') {
+    const pdfUrl = message.url;
+    const senderTabId = sender.tab?.id || message.tabId || tabId;
+    console.log('[SNN] PDF extraction requested for:', pdfUrl);
+
+    // Convert pdfData back to ArrayBuffer if it came as a plain array
+    let pdfDataBuffer = null;
+    if (message.pdfData) {
+      if (message.pdfData instanceof ArrayBuffer) {
+        pdfDataBuffer = message.pdfData;
+      } else if (Array.isArray(message.pdfData)) {
+        pdfDataBuffer = new Uint8Array(message.pdfData).buffer;
+      }
+    }
+
+    _extractPdfText(pdfUrl, pdfDataBuffer)
+      .then(async (text) => {
+        // Store extracted PDF text as page context so the side panel picks it up
+        const domain = (() => { try { return new URL(pdfUrl).hostname; } catch (e) { return 'pdf'; } })();
+        const title = message.title || 'PDF Document';
+        const content = `=== PDF CONTENT ===\nTitle: ${title}\nURL: ${pdfUrl}\n\n${text}\n=== END ===`;
+        const wordCount = text.trim().split(/\s+/).filter(w => w.length).length;
+
+        await chrome.storage.session.set({
+          [CONTEXT_KEY]: {
+            title,
+            url: pdfUrl,
+            content,
+            domain,
+            wordCount,
+            tabId: senderTabId || null,
+            timestamp: Date.now(),
+            isPdf: true
+          }
+        });
+
+        // Notify side panel that context is updated
+        chrome.runtime.sendMessage({
+          action: 'updatePageContext',
+          title,
+          url: pdfUrl,
+          content,
+          domain,
+          wordCount,
+          isPdf: true
+        }).catch(() => {});
+
+        sendResponse({ success: true, text, wordCount });
+      })
+      .catch((err) => {
+        console.error('[SNN] PDF extraction failed:', err.message);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true; // async
   }
 
   // ── Voice Relay ──────────────────────────────────────────────

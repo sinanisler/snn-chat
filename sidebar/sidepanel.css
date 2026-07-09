@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════
    SNN Chat — Side Panel Styles
-   Color palette: dark grays + white. #0556c7 blue for action buttons only.
+   Color palette: dark grays + white. #0556c7 blue for light, #3e80db for dark mode.
    Min font-size: 16px. Light & Dark themes via CSS custom properties.
    ═══════════════════════════════════════════════════════════════ */
 
@@ -59,8 +59,8 @@ body.theme-dark {
   --sp-header-bg: #282828;
   --sp-input-bg: #2a2a2a;
   --sp-input-border: #444;
-  --sp-input-focus: #0556c7;
-  --sp-accent: #0556c7;
+  --sp-input-focus: #3e80db;
+  --sp-accent: #3e80db;
   --sp-accent-text: #ffffff;
   --sp-link: #6ba5ff;
   --sp-user-msg-bg: #383838;
@@ -91,8 +91,8 @@ body.theme-dark {
     --sp-header-bg: #282828;
     --sp-input-bg: #2a2a2a;
     --sp-input-border: #444;
-    --sp-input-focus: #0556c7;
-    --sp-accent: #0556c7;
+    --sp-input-focus: #3e80db;
+    --sp-accent: #3e80db;
     --sp-accent-text: #ffffff;
     --sp-link: #6ba5ff;
     --sp-user-msg-bg: #383838;
@@ -950,7 +950,6 @@ body.theme-dark {
   color: var(--sp-text-secondary);
   border: 1px solid rgba(128,128,128,0.2);
   font-family: monospace;
-  font-size: 10px;
 }
 
 /* ── Toast ────────────────────────────────────────────────────── */
