@@ -5,7 +5,8 @@
 // Every action: validate → execute → report.
 // Every error is caught, categorized, returned — NEVER silent.
 // Supports: CSS selectors, :text("..."), :contains("..."),
-//           :nth(sel,N), :xpath(...), :role(button,"Name")
+//           :nth(sel,N), :xpath(...), :role(button,"Name"), :name("field")
+// Prefer role/name/text over brittle CSS whenever possible.
 // ═══════════════════════════════════════════════════════════════════
 
 class SNNPageActor {
@@ -237,16 +238,85 @@ class SNNPageActor {
       return result.singleNodeValue;
     }
 
-    // :role(button, "Name")
+    // :role(button, "Name") — ARIA role + accessible name (preferred over CSS)
     if (selector.startsWith(':role(')) {
       const inner = selector.slice(6, -1);
       const parts = inner.split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
-      const role = parts[0], name = (parts[1] || '').toLowerCase();
-      for (const el of document.querySelectorAll(`[role="${role}"], ${role}`)) {
-        const n = (el.getAttribute('aria-label') || el.title || el.textContent || '').trim().toLowerCase();
-        if (!name || n.includes(name)) { if (el.offsetParent || options.allowHidden) return el; }
+      const role = (parts[0] || '').toLowerCase();
+      const name = (parts[1] || '').toLowerCase();
+
+      // Map common ARIA roles to native elements
+      const roleToNative = {
+        button: 'button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]',
+        link: 'a[href], a:not([href]), [role="link"]',
+        textbox: 'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"]), textarea, [role="textbox"]',
+        searchbox: 'input[type="search"], [role="searchbox"]',
+        checkbox: 'input[type="checkbox"], [role="checkbox"]',
+        radio: 'input[type="radio"], [role="radio"]',
+        combobox: 'select, [role="combobox"]',
+        listbox: 'select, [role="listbox"]',
+        menuitem: '[role="menuitem"]',
+        tab: '[role="tab"]',
+        option: 'option, [role="option"]',
+        switch: '[role="switch"], input[type="checkbox"]',
+        heading: 'h1,h2,h3,h4,h5,h6,[role="heading"]'
+      };
+
+      const query = roleToNative[role] || `[role="${role}"], ${role}`;
+      const candidates = [];
+      for (const el of document.querySelectorAll(query)) {
+        if (!options.allowHidden && !(el.offsetParent || /^(BODY|HTML)$/i.test(el.tagName))) continue;
+        const n = this._accessibleName(el).toLowerCase();
+        if (!name) { candidates.push({ el, score: 1, len: n.length }); continue; }
+        if (n === name) candidates.push({ el, score: 100, len: n.length });
+        else if (n.includes(name)) candidates.push({ el, score: 70, len: n.length });
+        else if (name.includes(n) && n.length >= 2) candidates.push({ el, score: 40, len: n.length });
       }
+      candidates.sort((a, b) => b.score - a.score || a.len - b.len);
+      if (candidates[0]) return candidates[0].el;
       throw new Error(`No element with role="${role}"${name ? ', name="' + name + '"' : ''}`);
+    }
+
+    // :name("fieldName") — form control name / id / aria-labelledby-ish match
+    if (selector.startsWith(':name(')) {
+      const name = selector.slice(6, -1).replace(/^["']|["']$/g, '');
+      if (!name) throw new Error('Empty :name() selector');
+      const lower = name.toLowerCase();
+
+      // Exact name attribute
+      let el = document.querySelector(`[name="${CSS.escape(name)}"]`);
+      if (el && (el.offsetParent || options.allowHidden)) return el;
+
+      // Exact id
+      el = document.getElementById(name);
+      if (el && (el.offsetParent || options.allowHidden)) return el;
+
+      // Case-insensitive name/id/placeholder/aria-label scan on form controls
+      for (const node of document.querySelectorAll('input, textarea, select, button, [contenteditable="true"]')) {
+        if (!options.allowHidden && !node.offsetParent) continue;
+        const attrs = [
+          node.getAttribute('name'),
+          node.id,
+          node.getAttribute('placeholder'),
+          node.getAttribute('aria-label'),
+          node.getAttribute('title')
+        ].filter(Boolean).map(s => s.toLowerCase());
+        if (attrs.some(a => a === lower || a.includes(lower))) return node;
+      }
+
+      // Associated <label for="..."> text
+      for (const label of document.querySelectorAll('label')) {
+        const t = (label.textContent || '').trim().toLowerCase();
+        if (!t.includes(lower)) continue;
+        if (label.control && (label.control.offsetParent || options.allowHidden)) return label.control;
+        const forId = label.getAttribute('for');
+        if (forId) {
+          const target = document.getElementById(forId);
+          if (target && (target.offsetParent || options.allowHidden)) return target;
+        }
+      }
+
+      throw new Error(`No form control matching name "${name}"`);
     }
 
     // Standard CSS
@@ -261,6 +331,30 @@ class SNNPageActor {
       if (/No element/.test(e.message)) throw e;
       throw new Error(`Invalid selector "${selector}": ${e.message}`);
     }
+  }
+
+  /** Best-effort accessible name for role/name matching. */
+  _accessibleName(el) {
+    if (!el) return '';
+    let labelledBy = '';
+    const labelledByIds = el.getAttribute('aria-labelledby');
+    if (labelledByIds) {
+      labelledBy = labelledByIds.split(/\s+/)
+        .map(id => document.getElementById(id)?.textContent || '')
+        .join(' ')
+        .trim();
+    }
+    const raw =
+      el.getAttribute('aria-label') ||
+      labelledBy ||
+      el.title ||
+      el.getAttribute('placeholder') ||
+      el.getAttribute('alt') ||
+      el.getAttribute('name') ||
+      ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') ? (el.value || '') : '') ||
+      el.textContent ||
+      '';
+    return String(raw).trim().replace(/\s+/g, ' ').substring(0, 120);
   }
 
   _isInteractable(el) {

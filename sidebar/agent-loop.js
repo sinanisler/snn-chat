@@ -1,23 +1,23 @@
-// ═══════════════════════════════════════════════════════════════════
-// SNN Agent Loop — State Machine, Retry Engine, Action Orchestrator
-// ═══════════════════════════════════════════════════════════════════
+﻿// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// SNN Agent Loop â€” State Machine, Retry Engine, Action Orchestrator
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Runs in the side panel. Orchestrates the full agent lifecycle:
-// IDLE → PARSING → PLANNING → EXECUTING → WAITING → OBSERVING
-//   → REPORTING (or RETRYING → FAILED / BLOCKED → CANCELLED)
+// IDLE â†’ PARSING â†’ PLANNING â†’ EXECUTING â†’ WAITING â†’ OBSERVING
+//   â†’ REPORTING (or RETRYING â†’ FAILED / BLOCKED â†’ CANCELLED)
 //
 // DESIGN PRINCIPLES:
-// 1. Every error is surfaced to the user — NEVER silent.
+// 1. Every error is surfaced to the user â€” NEVER silent.
 // 2. Retries use exponential backoff + jitter, per-error strategies.
 // 3. Stale-state detection (tab switch, SW termination).
 // 4. User can cancel at ANY time.
 // 5. All promises are raced against timeouts.
-// ═══════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class SNNAgentLoop {
   constructor(sidePanel) {
     this.sp = sidePanel; // reference to SNNSidePanel instance
 
-    // ── State ──────────────────────────────────────────────────
+    // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     this._state = 'IDLE';
     this._taskId = null;
     this._plan = [];
@@ -29,12 +29,12 @@ class SNNAgentLoop {
     this._cancelReason = null;  // 'user' | 'tab-switch' | null
     this._pendingResolve = null; // for BLOCKED state
 
-    // ── Config ─────────────────────────────────────────────────
+    // â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     this.MAX_RETRIES = 3;
     this.RETRY_DELAYS = [1000, 3000, 8000]; // ms base (jitter added)
     this.DEFAULT_TIMEOUT = 15000; // ms per action
 
-    // ── Background-level actions (handled by SW, not forwarded to page) ──
+    // â”€â”€ Background-level actions (handled by SW, not forwarded to page) â”€â”€
     this._BG_ACTIONS = new Set([
       'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
       'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
@@ -42,27 +42,45 @@ class SNNAgentLoop {
       'agent:listActions', 'agent:getCapabilities'
     ]);
 
-    // ── Callbacks (set by sidepanel) ───────────────────────────
+    // â”€â”€ Callbacks (set by sidepanel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     this.onStateChange = null;   // (state, detail)
     this.onProgress = null;      // (step, total, description)
     this.onError = null;         // (errorCardData)
     this.onResult = null;        // (reportData)
-    this.onBlocked = null;       // (question) → returns Promise<'approved'|'denied'>
+    this.onBlocked = null;       // (question) â†’ returns Promise<'approved'|'denied'>
   }
 
   /**
    * Check if the current model supports image/vision input.
-   * Returns false for text-only models (DeepSeek, Llama, Mistral, etc.)
-   * so we don't crash with 404 when injecting screenshot images.
+   * Prefers OpenRouter model metadata (architecture.input_modalities)
+   * cached by the side panel; falls back to a conservative name heuristic.
    */
   _modelSupportsVision(modelId) {
     if (!modelId) return false;
+
+    // 1) Authoritative: cached OpenRouter model data from settings/model picker
+    const cached = this.sp?._modelsData?.[modelId] || this.sp?._selectedModelInfo;
+    const modalities = cached?.architecture?.input_modalities
+      || cached?.architecture?.modality?.split?.(',')
+      || null;
+    if (Array.isArray(modalities)) {
+      return modalities.some(m => /image|vision/i.test(String(m)));
+    }
+    if (typeof modalities === 'string' && /image|vision/i.test(modalities)) {
+      return true;
+    }
+    // Explicit modality string like "text+image"
+    const modality = cached?.architecture?.modality;
+    if (typeof modality === 'string' && /image|vision/i.test(modality)) {
+      return true;
+    }
+
+    // 2) Fallback heuristic for uncached models
     const m = modelId.toLowerCase();
-    // Known vision-capable model families
-    return /gemini|gpt-4o|gpt-4-vision|gpt-4-turbo|claude|llava|pixtral|vision|multimodal|qwen.*vl/i.test(m);
+    return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
   }
 
-  // ── Public API ──────────────────────────────────────────────────
+  // â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   get state() { return this._state; }
   get isBusy() { return this._state !== 'IDLE' && this._state !== 'FAILED'; }
 
@@ -74,7 +92,7 @@ class SNNAgentLoop {
     if (this._state === 'IDLE') return;
     this._cancelled = true;
     this._cancelReason = reason;
-    const label = reason === 'tab-switch' ? 'Tab switched — task interrupted' : 'User cancelled';
+    const label = reason === 'tab-switch' ? 'Tab switched â€” task interrupted' : 'User cancelled';
     this._transition('CANCELLED', { reason: label });
     // Resolve any pending BLOCKED promise
     if (this._pendingResolve) {
@@ -99,11 +117,11 @@ class SNNAgentLoop {
     this._cancelled = false;
 
     try {
-      // ═══════ CAPABILITY FAST-PATH ═══════
+      // â•â•â•â•â•â•â• CAPABILITY FAST-PATH â•â•â•â•â•â•â•
       const capResult = this._checkCapabilityQuery(userMessage);
       if (capResult) return await this._handleCapabilityQuery();
 
-      // ═══════ AGENTIC LOOP WITH TOOL CALLING ═══════
+      // â•â•â•â•â•â•â• AGENTIC LOOP WITH TOOL CALLING â•â•â•â•â•â•â•
       this._transition('PARSING', { message: userMessage });
 
       const settings = await this.sp.getSettings();
@@ -126,7 +144,7 @@ class SNNAgentLoop {
           : context.detail;
         messages.splice(1, 0, {
           role: 'system',
-          content: `[PAGE CONTENT — ALREADY PROVIDED. DO NOT use getPageInfo, findElements, getElementText, or extractTable to re-read it. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
+          content: `[PAGE CONTENT â€” ALREADY PROVIDED. DO NOT use getPageInfo, findElements, getElementText, or extractTable to re-read it. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
         });
       }
 
@@ -146,7 +164,7 @@ class SNNAgentLoop {
 
         const msg = choice.message;
 
-        // ── Tool calls ──────────────────────────────────────
+        // â”€â”€ Tool calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           // Add assistant message (with tool_calls) to history
           messages.push(msg);
@@ -162,8 +180,8 @@ class SNNAgentLoop {
             // Map tool name to our action and execute
             const actionResult = await this._executeToolCall(fnName, fnArgs, iteration);
 
-            // ── If screenshot was taken and model supports vision, inject the image ──
-            // Text-only models (DeepSeek, etc.) get a text summary instead — no 404.
+            // â”€â”€ If screenshot was taken and model supports vision, inject the image â”€â”€
+            // Text-only models (DeepSeek, etc.) get a text summary instead â€” no 404.
             if (fnName === 'snn_screenshot' && this._lastScreenshot) {
               if (this._modelSupportsVision(settings.openrouterModel)) {
                 messages.push({
@@ -171,7 +189,7 @@ class SNNAgentLoop {
                   tool_call_id: tc.id,
                   content: JSON.stringify({
                     success: true,
-                    screenshot: '[Image captured — visible in the next message]',
+                    screenshot: '[Image captured â€” visible in the next message]',
                     message: 'A screenshot of the page was captured. The image will be provided for your analysis.'
                   })
                 });
@@ -197,7 +215,7 @@ class SNNAgentLoop {
               this._lastScreenshot = null; // consume it
               this.sp._lastScreenshot = null; // sync with sidepanel
             } else {
-              // ── Sanitize tool result before sending to LLM ──
+              // â”€â”€ Sanitize tool result before sending to LLM â”€â”€
               const sanitizedResult = this._sanitizeToolResultForLLM(fnName, actionResult);
               // Add tool result to messages
               messages.push({
@@ -212,19 +230,19 @@ class SNNAgentLoop {
           continue; // Loop back to let LLM process tool results
         }
 
-        // ── Final content (no more tool calls) ──────────────
+        // â”€â”€ Final content (no more tool calls) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (msg.content && !msg.tool_calls) {
           finalContent = msg.content;
           break;
         }
 
-        // ── Empty response ──────────────────────────────────
+        // â”€â”€ Empty response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         break;
       }
 
       if (this._cancelled) return;
 
-      // ═══════ REPORT ═══════
+      // â•â•â•â•â•â•â• REPORT â•â•â•â•â•â•â•
       if (this._stepResults.length > 0) {
         this._transition('REPORTING', { results: this._stepResults });
         if (this.onResult) this.onResult({ type: 'action_results', results: this._stepResults, plan: this._plan });
@@ -257,9 +275,9 @@ class SNNAgentLoop {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // TOOL DEFINITIONS — All SNN actions as OpenRouter tool schemas
-  // ═══════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  // TOOL DEFINITIONS â€” All SNN actions as OpenRouter tool schemas
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
   /**
    * Build the tools array for OpenRouter native tool calling.
@@ -270,12 +288,12 @@ class SNNAgentLoop {
     const enabled = (name) => !disabled.includes(name);
 
     const allTools = [
-      // ── Page Interaction ──────────────────────────────────
+      // â”€â”€ Page Interaction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       { name: 'snn_click', desc: 'Click a button, link, or element on the page. Uses multi-strategy click (synthetic events + native click + ancestor click + keyboard) for SPA compatibility.', params: {
-        selector: { type: 'string', desc: 'CSS selector, :text("exact"), :contains("partial"), :nth("a.button",2), :nthText("2",2), or :role("button","Name")' }
+        selector: { type: 'string', desc: 'PREFERRED: :role("button","Submit") or :text("exact visible text") or :name("email") or :contains("partial"). CSS only as last resort.' }
       }, required: ['selector'] },
       { name: 'snn_type', desc: 'Type text into an input field or textarea', params: {
-        selector: { type: 'string', desc: 'Selector for the input/textarea' },
+        selector: { type: 'string', desc: 'PREFERRED: :name("email"), :role("textbox","Search"), :text("placeholder/label"), or CSS as last resort' },
         text: { type: 'string', desc: 'Text to type' },
         clearFirst: { type: 'boolean', desc: 'Clear existing text first (default false)' }
       }, required: ['selector', 'text'] },
@@ -284,11 +302,11 @@ class SNNAgentLoop {
         amount: { type: 'integer', desc: 'Pixels to scroll (ignored for top/bottom)' }
       }, required: ['direction'] },
       { name: 'snn_highlight', desc: 'Visually highlight an element with a colored overlay', params: {
-        selector: { type: 'string', desc: 'Selector for the element to highlight' },
+        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains. CSS last resort.' },
         color: { type: 'string', desc: 'CSS color for the highlight border (optional)' }
       }, required: ['selector'] },
       { name: 'snn_hover', desc: 'Hover the mouse over an element to trigger tooltips/dropdowns', params: {
-        selector: { type: 'string', desc: 'Selector for the element to hover over' }
+        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains. CSS last resort.' }
       }, required: ['selector'] },
       { name: 'snn_pressKey', desc: 'Press a keyboard key (Enter, Escape, Tab, ArrowDown, etc.)', params: {
         key: { type: 'string', desc: 'Key name: Enter, Escape, Tab, ArrowDown, ArrowUp, PageDown, etc.' },
@@ -298,34 +316,34 @@ class SNNAgentLoop {
         ms: { type: 'integer', desc: 'Milliseconds to wait (default 1000)' }
       }, required: [] },
 
-      // ── Page Info & Extraction ────────────────────────────
+      // â”€â”€ Page Info & Extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       { name: 'snn_getPageInfo', desc: 'Get summary of current page: title, URL, forms, links, images, buttons count', params: {}, required: [] },
-      { name: 'snn_findElements', desc: 'Find all elements matching a CSS selector, returns tag, text, visibility, attributes for each', params: {
-        selector: { type: 'string', desc: 'CSS selector like "a.nav-link", "button", "input[type=text]", "h2"' },
+      { name: 'snn_findElements', desc: 'Find all elements matching a selector, returns tag, text, visibility, attributes for each', params: {
+        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains, or CSS like "button", "input[type=text]", "h2"' },
         limit: { type: 'integer', desc: 'Max results (default 50)' }
       }, required: ['selector'] },
       { name: 'snn_extractTable', desc: 'Extract a table as structured data (headers + rows)', params: {
-        selector: { type: 'string', desc: 'CSS selector for the table element (default: first table on page)' }
+        selector: { type: 'string', desc: 'Selector for the table element (default: first table on page)' }
       }, required: [] },
       { name: 'snn_getElementText', desc: 'Get the full text content of a specific element', params: {
-        selector: { type: 'string', desc: 'Selector for the element' }
+        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains. CSS last resort.' }
       }, required: ['selector'] },
       { name: 'snn_screenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
 
-      // ── Forms ─────────────────────────────────────────────
+      // â”€â”€ Forms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       { name: 'snn_fillForm', desc: 'Fill multiple form fields at once', params: {
-        fields: { type: 'array', desc: 'Array of {selector, value} objects', items: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } }
+        fields: { type: 'array', desc: 'Array of {selector, value} objects. Prefer :name/:role/:text selectors.', items: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } }
       }, required: ['fields'] },
       { name: 'snn_selectDropdown', desc: 'Select an option from a dropdown/select element', params: {
-        selector: { type: 'string', desc: 'Selector for the select element' },
+        selector: { type: 'string', desc: 'PREFERRED: :name("country") or :role("combobox","Country")' },
         value: { type: 'string', desc: 'Option value or visible text to select' }
       }, required: ['selector', 'value'] },
       { name: 'snn_checkToggle', desc: 'Check or uncheck a checkbox/radio input', params: {
-        selector: { type: 'string', desc: 'Selector for the checkbox/radio' },
+        selector: { type: 'string', desc: 'PREFERRED: :name("agree") or :role("checkbox","I agree") or :text("I agree")' },
         checked: { type: 'boolean', desc: 'true to check, false to uncheck' }
       }, required: ['selector', 'checked'] },
 
-      // ── Navigation & Browser ──────────────────────────────
+      // â”€â”€ Navigation & Browser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       { name: 'snn_navigate', desc: 'Navigate the current tab to a URL. The page links will be auto-detected from navigation.', params: {
         url: { type: 'string', desc: 'Full URL or just the link text (e.g., "homepage", "blog"). If not a full URL, agent will scan page links to find match.' }
       }, required: ['url'] },
@@ -336,8 +354,8 @@ class SNNAgentLoop {
       { name: 'snn_goForward', desc: 'Go forward in browser history', params: {}, required: [] },
       { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] },
 
-      // ── Batch & Scroll ────────────────────────────────────
-      { name: 'snn_scrollAndAct', desc: 'Scroll through a virtual-list / infinite-scroll / lazy-rendering page and perform an action on matching elements as they load. Handles scroll pacing, render waiting, and deduplication. Use this for batch operations that span beyond the visible viewport — clicking many items, extracting data from feeds, etc. ONE call replaces dozens of individual scroll+click cycles.', params: {
+      // â”€â”€ Batch & Scroll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      { name: 'snn_scrollAndAct', desc: 'Scroll through a virtual-list / infinite-scroll / lazy-rendering page and perform an action on matching elements as they load. Handles scroll pacing, render waiting, and deduplication. Use this for batch operations that span beyond the visible viewport â€” clicking many items, extracting data from feeds, etc. ONE call replaces dozens of individual scroll+click cycles.', params: {
         selector: { type: 'string', desc: 'CSS selector for the elements to act on (e.g., "button[aria-label=\'Like\']", ".heart-icon")' },
         maxItems: { type: 'integer', desc: 'Maximum items to process before stopping (default 50)' },
         action: { type: 'string', desc: '"click" (default) or "extract" to collect element data instead' },
@@ -349,7 +367,7 @@ class SNNAgentLoop {
         stopWhen: { type: 'string', desc: 'Optional JS expression evaluated per item. Return true to stop early. Receives `el` and `index`.' }
       }, required: ['selector'] },
 
-      // ── Advanced ──────────────────────────────────────────
+      // â”€â”€ Advanced â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       { name: 'snn_evaluate', desc: 'Execute custom JavaScript on the page and return the result', params: {
         code: { type: 'string', desc: 'JavaScript code to execute. Use document.querySelector() etc.' }
       }, required: ['code'] },
@@ -400,32 +418,37 @@ class SNNAgentLoop {
    * Build the system prompt for the tool-calling LLM.
    */
   _buildToolSystemPrompt(settings) {
-    // Core behavioral prompt lives HERE in code — not in user-editable settings.
+    // Core behavioral prompt lives HERE in code â€” not in user-editable settings.
     // The user's custom instruction (if any) is appended as seasoning at the end.
     const userInstruction = (settings.agentPrompt || '').trim();
 
     let prompt = `You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You can click buttons, type into fields, scroll, navigate to URLs, fill forms, take screenshots, extract data, find elements, execute JavaScript, and more. You have access to tools (functions) for all of these.
 
-CRITICAL — WHEN TO USE TOOLS:
+CRITICAL â€” WHEN TO USE TOOLS:
 - ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, fill a form, take a screenshot, etc.
-- For informational questions ("summarize this page", "what is this about?", "explain...", "what colors..."), the page content is ALREADY provided to you in the system messages. Answer DIRECTLY from that context — do NOT call getPageInfo, findElements, getElementText, or extractTable to re-read it.
+- For informational questions ("summarize this page", "what is this about?", "explain...", "what colors..."), the page content is ALREADY provided to you in the system messages. Answer DIRECTLY from that context â€” do NOT call getPageInfo, findElements, getElementText, or extractTable to re-read it.
 - If you already have the information needed to answer, JUST ANSWER. Don't reach for tools unnecessarily.
 
 WHEN YOU DO USE TOOLS:
 1. Say something brief like "On it!" then call the tool immediately.
-2. You can chain multiple tool calls: e.g., navigate → wait → click → findElements.
+2. You can chain multiple tool calls: e.g., navigate â†’ wait â†’ click â†’ findElements.
 3. After tools return results, synthesize a helpful response in the user's language.
-4. For selectors, prefer :text("exact text") for finding buttons/links by their visible text. Use :contains("partial") for partial matches.
+4. SELECTOR PRIORITY (most robust first â€” ALWAYS follow this order):
+   a) :role("button","Submit") / :role("link","Home") / :role("textbox","Search") â€” ARIA role + accessible name
+   b) :name("email") â€” form control name/id
+   c) :text("exact visible text") â€” exact visible label/text
+   d) :contains("partial text") â€” partial visible text
+   e) CSS selectors only as a LAST RESORT (classes/ids break often)
 5. When navigating: if the user says "go to X page", use snn_navigate.
 6. The click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks.
 7. For batch operations on virtual-list / infinite-scroll pages (social feeds, comment threads, search results, product listings, any page that loads content as you scroll): use snn_scrollAndAct. It handles scrolling, render waiting, deduplication, and pacing automatically. ONE call replaces many individual scroll+click cycles. Use it whenever the user asks to act on "all", "the first N", "many", or "every" item in a scrollable feed.
 
 CRITICAL RULES:
 - NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
-- NEVER say "I can help with that, would you like me to..." or "Want me to?" — instead say "Let me do that now" and call the tool.
-- If a tool call fails, try a different approach (different selector, different strategy). Don't give up after one failure.
+- NEVER say "I can help with that, would you like me to..." or "Want me to?" â€” instead say "Let me do that now" and call the tool.
+- If a tool call fails, try a different approach (different selector strategy: role â†’ name â†’ text â†’ contains). Don't give up after one failure.
 - For simple questions about page content: ANSWER FROM CONTEXT, don't use tools.
-- NEVER say you cannot interact with the page — you CAN.`;
+- NEVER say you cannot interact with the page â€” you CAN.`;
 
     // Append user's custom instruction if they've set one (and it's not the default identity stamp)
     if (userInstruction && userInstruction !== this.sp._getDefaultAgentPrompt?.()) {
@@ -472,7 +495,7 @@ CRITICAL RULES:
 
   /**
    * Execute a single tool call from the LLM.
-   * Maps OpenRouter tool names → SNN action names → dispatch.
+   * Maps OpenRouter tool names â†’ SNN action names â†’ dispatch.
    */
   async _executeToolCall(fnName, fnArgs, iteration) {
     // Map tool name to action name (remove snn_ prefix)
@@ -488,7 +511,7 @@ CRITICAL RULES:
     let params = this._mapToolArgsToParams(actionName, fnArgs);
     let description = this._describeToolCall(fnName, fnArgs);
 
-    // ── Navigate URL resolution: if URL is a text description (not a real URL), scan page links ──
+    // â”€â”€ Navigate URL resolution: if URL is a text description (not a real URL), scan page links â”€â”€
     if (actionName === 'navigate' && params.url && !this._looksLikeURL(params.url)) {
       const scan = await this._scanAllActionableElements();
       if (scan?.elements?.links?.length) {
@@ -502,13 +525,13 @@ CRITICAL RULES:
         }
         if (best?.href) {
           params.url = best.href;
-          description = `${description} → ${best.text || best.href}`;
+          description = `${description} â†’ ${best.text || best.href}`;
         }
       }
-      // ── Fallback: if page scan didn't resolve, construct absolute URL from tab origin ──
+      // â”€â”€ Fallback: if page scan didn't resolve, construct absolute URL from tab origin â”€â”€
       if (!this._looksLikeURL(params.url)) {
         params.url = await this._buildNavigateFallbackUrl(params.url);
-        if (params.url) description = `${description} → ${params.url}`;
+        if (params.url) description = `${description} â†’ ${params.url}`;
       }
     }
 
@@ -530,17 +553,44 @@ CRITICAL RULES:
 
     this._transition('EXECUTING', { step: this._stepIndex + 1, total: this._plan.length, step });
 
-    // Dispatch with retry
+    // Dispatch with retry (includes ELEMENT_NOT_FOUND scan recovery)
     this._attemptCount = 0;
     let result = await this._dispatchAction(step);
 
-    // Simple retry for failures
     while (!result.success && this._attemptCount < this.MAX_RETRIES && !this._cancelled) {
       this._attemptCount++;
-      this._transition('RETRYING', { attempt: this._attemptCount, maxRetries: this.MAX_RETRIES });
-      await this._sleep(this.RETRY_DELAYS[this._attemptCount - 1] || 8000);
+      this._transition('RETRYING', {
+        attempt: this._attemptCount,
+        maxRetries: this.MAX_RETRIES,
+        error: result.error
+      });
+
+      // ELEMENT_NOT_FOUND: scan page and rewrite selector before retry
+      if (result.error?.code === 'ELEMENT_NOT_FOUND' && this._selectorBasedAction(actionName)) {
+        const recovered = await this._recoverSelectorFromScan(step, result.error);
+        if (recovered) {
+          step.params = { ...step.params, ...recovered.params };
+          if (recovered.description) {
+            step.description = recovered.description;
+            description = recovered.description;
+          }
+          if (this.sp._agentUI) {
+            this.sp._agentUI.updateLastActionEntry('start', `Retry with better selector: ${step.params.selector || ''}`);
+          }
+          this.sp.showToast(`Retrying with better selectorâ€¦`, 'warning');
+        } else {
+          const baseDelay = this.RETRY_DELAYS[this._attemptCount - 1] || 8000;
+          await this._sleep(baseDelay + Math.random() * 400);
+        }
+      } else {
+        const baseDelay = this.RETRY_DELAYS[this._attemptCount - 1] || 8000;
+        await this._sleep(baseDelay + Math.random() * 400);
+      }
+
       if (this._cancelled) break;
-      step.params = this._applyRetryStrategy(step, result.error || {}, this._attemptCount).params;
+      const modified = this._applyRetryStrategy(step, result.error || {}, this._attemptCount);
+      step.params = modified.params;
+      if (modified.timeout) step.timeout = modified.timeout;
       result = await this._dispatchAction(step);
     }
 
@@ -549,10 +599,10 @@ CRITICAL RULES:
       this._stepResults.push({ step, result: result.result, attempts: this._attemptCount + 1 });
       if (this.sp._agentUI) {
         this.sp._agentUI.updateLastActionEntry('ok', this._formatActionResult(step, result.result));
-        // ── Render screenshot image in the action entry ──
+        // â”€â”€ Render screenshot image in the action entry â”€â”€
         if (actionName === 'screenshot' && result.result?.screenshot) {
           this.sp._agentUI.attachScreenshotToLastEntry(result.result.screenshot);
-          // ── Store screenshot for vision: next LLM call will include it ──
+          // â”€â”€ Store screenshot for vision: next LLM call will include it â”€â”€
           this._lastScreenshot = result.result.screenshot;
           this.sp._lastScreenshot = result.result.screenshot; // also expose to sidepanel
         }
@@ -680,139 +730,12 @@ CRITICAL RULES:
   _safeParseJSON(str) {
     try { return JSON.parse(str); } catch (e) { return {}; }
   }
-  async _executeStep(step) {
-    this._attemptCount = 0;
-    let currentStep = { ...step };
 
-    while (this._attemptCount <= this.MAX_RETRIES) {
-      if (this._cancelled) return false;
-      if (!this._checkTabStillValid()) return false;
-
-      // ── Progress notification ─────────────────────────────
-      if (this.onProgress) {
-        this.onProgress(this._stepIndex + 1, this._plan.length, currentStep.description || currentStep.action);
-      }
-      this._transition('EXECUTING', { step: this._stepIndex + 1, total: this._plan.length, step: currentStep });
-
-      // ── Action history entry ──────────────────────────────
-      if (this.sp._agentUI) {
-        this.sp._agentUI.addActionHistoryEntry(
-          currentStep.action,
-          currentStep.description || currentStep.action,
-          'start'
-        );
-      }
-
-      // ═══════ DISPATCH ═══════
-      const result = await this._dispatchAction(currentStep);
-
-      if (this._cancelled) return false;
-
-      // ═══════ HANDLE RESULT ═══════
-      if (result.success) {
-        // Success → observe & verify
-        this._transition('OBSERVING', { step: currentStep, result: result.result });
-        this._stepResults.push({ step: currentStep, result: result.result, attempts: this._attemptCount + 1 });
-
-        // Update action history to success
-        if (this.sp._agentUI) {
-          const detail = this._formatActionResult(currentStep, result.result);
-          this.sp._agentUI.updateLastActionEntry('ok', detail);
-        }
-
-        // ── After navigation, re-scan links for remaining navigation steps ──
-        if (currentStep.action === 'navigate') {
-          // Re-enhance remaining plan steps with fresh page links
-          const remaining = this._plan.slice(this._stepIndex + 1);
-          const enhanced = await this._enhanceNavigationPlan(remaining);
-          // Replace remaining steps with enhanced ones
-          this._plan.splice(this._stepIndex + 1, remaining.length, ...enhanced);
-        }
-
-        return true;
-      }
-
-      // ═══════ HANDLE ERROR ═══════
-      const error = result.error || { code: 'UNKNOWN', message: 'Unknown error', retryable: true, suggestion: 'Try again.' };
-
-      // NEVER go silent — update action history as failed
-      if (this.sp._agentUI) {
-        this.sp._agentUI.updateLastActionEntry('fail', error.message);
-      }
-
-      // Toast the error immediately (NOT a full error card — that only shows on FAILED)
-      this.sp.showToast(`${error.message}`, 'error');
-
-      // ── Non-retryable → FAILED ────────────────────────────
-      if (!error.retryable) {
-        const failData = {
-          step: currentStep, error,
-          totalAttempts: this._attemptCount + 1,
-          message: error.suggestion || 'This action cannot be retried.'
-        };
-        if (this.onError) this.onError(failData);
-        this._transition('FAILED', failData);
-        return false;
-      }
-
-      // ── Permission → BLOCKED ──────────────────────────────
-      if (error.code === 'PERMISSION_DENIED') {
-        this._transition('BLOCKED', {
-          step: currentStep, error,
-          question: error.suggestion || 'SNN needs your permission to continue.'
-        });
-        const decision = await this._waitForUserDecision();
-        if (decision === 'approved') {
-          this._attemptCount++;
-          continue;
-        } else {
-          this._transition('CANCELLED', { reason: 'User denied permission' });
-          return false;
-        }
-      }
-
-      // ── Max retries exhausted → FAILED ────────────────────
-      if (this._attemptCount >= this.MAX_RETRIES) {
-        const totalAttempts = this._attemptCount + 1;
-        const failData = {
-          step: currentStep,
-          error,
-          totalAttempts,
-          message: `Failed after ${totalAttempts} attempt${totalAttempts > 1 ? 's' : ''}. ${error.suggestion || 'Try a different approach.'}`
-        };
-        // Fire onError for the error card (terminal — show full card)
-        if (this.onError) this.onError(failData);
-        this._transition('FAILED', failData);
-        return false;
-      }
-
-      // ── RETRY ─────────────────────────────────────────────
-      this._attemptCount++;
-      this._transition('RETRYING', {
-        step: currentStep, error,
-        attempt: this._attemptCount, maxRetries: this.MAX_RETRIES
-      });
-
-      // Exponential backoff with jitter
-      const baseDelay = this.RETRY_DELAYS[this._attemptCount - 1] || 8000;
-      const jitter = Math.random() * 500;
-      const delay = baseDelay + jitter;
-
-      this.sp.showToast(`Retrying (${this._attemptCount}/${this.MAX_RETRIES}) in ${Math.round(delay / 1000)}s...`, 'warning');
-      await this._sleep(delay);
-
-      if (this._cancelled) return false;
-
-      // Apply retry strategy
-      currentStep = this._applyRetryStrategy(currentStep, error, this._attemptCount);
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   // DISPATCH ACTION TO CONTENT SCRIPT (via background)
-  // ═══════════════════════════════════════════════════════════════
+  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   async _dispatchAction(step) {
-    // scrollAndAct needs a long timeout — it's an autonomous scroll loop
+    // scrollAndAct needs a long timeout â€” it's an autonomous scroll loop
     const isLongRunning = step.action === 'scrollAndAct';
     const defaultTimeout = isLongRunning ? 180000 : this.DEFAULT_TIMEOUT; // 3 min vs 15s
     const timeout = step.timeout || defaultTimeout;
@@ -831,7 +754,7 @@ CRITICAL RULES:
       }
     };
 
-    // ── Inject tabId for background actions that need a target tab ──
+    // â”€â”€ Inject tabId for background actions that need a target tab â”€â”€
     const TAB_DEPENDENT_ACTIONS = new Set([
       'agent:navigate', 'agent:goBack', 'agent:goForward',
       'agent:reload', 'agent:screenshot'
@@ -901,19 +824,28 @@ CRITICAL RULES:
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // RETRY STRATEGY ENGINE
+  // RETRY STRATEGY ENGINE + ELEMENT_NOT_FOUND SCAN RECOVERY
   // ═══════════════════════════════════════════════════════════════
+  _selectorBasedAction(actionName) {
+    return [
+      'click', 'type', 'highlight', 'hover', 'findElements', 'getElementText',
+      'extractTable', 'selectDropdown', 'checkToggle', 'scrollToElement',
+      'waitForElement', 'scrollAndAct'
+    ].includes(actionName);
+  }
+
   _applyRetryStrategy(step, error, attemptNum) {
-    const modified = { ...step, params: { ...step.params, options: { ...(step.params.options || {}) } } };
+    const modified = { ...step, params: { ...step.params, options: { ...(step.params?.options || {}) } } };
 
     switch (error.code) {
       case 'ELEMENT_NOT_FOUND':
-        // Try harder to find the element
+        // Try harder to find the element; scan recovery may already have rewritten selector
         modified.params.options.allowHidden = true;
         modified.timeout = (step.timeout || this.DEFAULT_TIMEOUT) * 1.5;
-        // On 2nd+ attempt, switch to text-based selector if we have a description
-        if (attemptNum >= 2 && step.elementDescription && modified.params.selector) {
-          modified.params.selector = `:contains("${step.elementDescription}")`;
+        // Fallback text selector if we still only have a brittle CSS selector
+        if (attemptNum >= 2 && step.elementDescription && modified.params.selector && !String(modified.params.selector).startsWith(':')) {
+          const safe = String(step.elementDescription).replace(/"/g, '\\"').substring(0, 60);
+          modified.params.selector = `:contains("${safe}")`;
         }
         break;
 
@@ -934,11 +866,6 @@ CRITICAL RULES:
         modified.params.options.useNative = true;
         break;
 
-      case 'UNSATISFACTORY_RESULT':
-        // The action succeeded but result was unexpected — ask LLM to replan
-        // (handled by observeResult in the full implementation)
-        break;
-
       default:
         // Generic: increase timeout, be more lenient
         modified.timeout = (step.timeout || this.DEFAULT_TIMEOUT) * 1.3;
@@ -948,191 +875,139 @@ CRITICAL RULES:
     return modified;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // INTENT PARSING (LLM Call) + Capability Question Detection
-  // ═══════════════════════════════════════════════════════════════
-  async _parseIntent(userMessage, context) {
-    const msg = userMessage.toLowerCase().trim();
-
-    // ── Fast-path: capability / help questions ────────────────
-    const capabilityPatterns = [
-      /^what (can|do) you (do|help)/,
-      /^(can|could) you (click|type|scroll|fill|navigate|help|do|interact)/,
-      /^help$/,
-      /^(list|show) (your |available )?(actions|capabilities|commands|tools)/,
-      /^what (actions|capabilities|commands|tools) (do you have|are available)/,
-      /^what can (i|we) (do|ask)/,
-      /^how (do|can) (i |you )?use you/,
-      /^capabilities$/,
-    ];
-    for (const pattern of capabilityPatterns) {
-      if (pattern.test(msg)) {
-        // Return a special response that triggers getCapabilities
-        return {
-          type: 'capability_query',
-          action: 'getCapabilities',
-          description: 'List what I can do',
-          params: {}
-        };
-      }
-    }
-
-    // ── LLM-based parsing ─────────────────────────────────────
-    const settings = await this.sp.getSettings();
-    const apiKey = settings.openrouterKey;
-    if (!apiKey) return { type: 'chat' };
-
-    const systemPrompt = `You are an intent parser for a browser agent. The agent CAN click, type, scroll, highlight, fill forms, extract data, navigate, screenshot, download, and more on the current webpage.
-
-LANGUAGE: Always respond in English. The description and elementDescription fields MUST be in English regardless of the user's language.
-
-If the user wants to PERFORM AN ACTION on the current webpage (click a button, type text, scroll, fill a form, navigate somewhere, extract data, highlight elements, take a screenshot, etc.), respond with JSON:
-{"type":"action","action":"<action_name>","description":"<short English summary>","params":{"selector":"<CSS or :text() or :contains() or :nth()>","text":"<if typing>","url":"<if navigating>","direction":"<if scrolling: up/down/left/right/top/bottom>","amount":<number>,"key":"<if pressing key>","fields":[{"selector":"...","value":"..."}]},"elementDescription":"<describe target element in English>"}
-
-IMPORTANT: Always use :text() or :contains() for text-based selectors. When the user says "click page 2", use :text("2") to find the EXACT visible text, not :text("page 2"). Match what's ACTUALLY on the page.
-
-MULTI-STEP TASKS: If the user says "go to X then Y then Z" or "do A, then B, after that C", respond with a COMPLEX action:
-{"type":"action","complex":true,"action":"multi_step","description":"<English summary>","params":{"description":"<full task in English>"}}
-
-CRITICAL FOR NAVIGATION: When the user says "go to homepage", "go to X page", "navigate to Y", use the navigate action. The page links will be auto-detected.
-
-If the user is JUST chatting, respond with:
-{"type":"chat"}
-
-Available page actions: click, type, scroll, scrollToElement, highlight, clearHighlights, findElements, getPageInfo, extractTable, getElementText, evaluate, pressKey, hover, waitForElement, wait, fillForm, selectDropdown, checkToggle, getClipboard, copyToClipboard, startPicker, getViewportInfo, startMonitoring, stopMonitoring
-Available browser actions: navigate, openTab, closeTab, goBack, goForward, reload, screenshot, download, notify, setAlarm, clearAlarm, getCapabilities
-
-Selector formats:
-- "#id" or ".class" — CSS
-- ":text('exact text')" — exact text match (now prioritizes clickable elements like pagination)
-- ":contains('partial')" — partial text match (prioritizes interactive elements)
-- ":nthText('2', 2)" — Nth occurrence of exact text (use for pagination where same text appears multiple times)
-- ":nth('a.button', 2)" — Nth match of CSS selector
-- ":xpath('//div[@data-testid=\"foo\"]')" — XPath selector
-- ":role('button', 'Submit')" — find by ARIA role + accessible name
-
-Respond ONLY with the JSON object.`;
-
-    let userPrompt = userMessage;
-    if (context?.type === 'page' && context?.detail) {
-      userPrompt = `Page title: ${context.title || 'Unknown'}\nPage URL: ${context.summary || ''}\n\nUser message: ${userMessage}`;
-    }
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ];
-
+  /**
+   * After ELEMENT_NOT_FOUND: scan actionable page elements and pick a better selector.
+   * Prefers role/name/text over brittle CSS.
+   * Returns { params, description } or null if no better match found.
+   */
+  async _recoverSelectorFromScan(step, error) {
     try {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
-          'X-Title': 'SNN Chat'
-        },
-        body: JSON.stringify({
-          model: settings.openrouterModel || 'deepseek/deepseek-v4-flash',
-          messages,
-          max_tokens: 500,
-          temperature: 0.1,
-          response_format: { type: 'json_object' }
-        })
-      });
+      const scan = await this._scanAllActionableElements();
+      if (!scan?.elements) return null;
 
-      if (!res.ok) return { type: 'chat' }; // fallback to chat
-      const data = await res.json();
-      const text = data.choices?.[0]?.message?.content || '{"type":"chat"}';
+      const failedSelector = step.params?.selector || error?.selector || '';
+      const hint = this._extractSelectorHint(failedSelector, step);
+      if (!hint) return null;
 
-      // Extract JSON (handle markdown code blocks)
-      let json = text.trim();
-      if (json.startsWith('```')) json = json.replace(/```\w*\n?/g, '').trim();
+      const match = this._findBestScanMatch(scan.elements, hint, step.action);
+      if (!match) return null;
 
-      const parsed = JSON.parse(json);
-      return parsed.type === 'action' ? parsed : { type: 'chat' };
+      // Don't retry with the exact same selector
+      if (match.selector && match.selector === failedSelector) return null;
 
+      const params = { ...(step.params || {}), selector: match.selector };
+      // fillForm fields recovery is handled per-field only when top-level selector exists
+      return {
+        params,
+        description: `${step.description || step.action} â†’ ${match.label || match.selector}`
+      };
     } catch (e) {
-      // Parse failed — fall back to chat
-      return { type: 'chat' };
+      console.warn('[SNN Agent] selector recovery failed:', e.message);
+      return null;
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // PLAN BUILDER (LLM Call for multi-step plans)
-  // ═══════════════════════════════════════════════════════════════
-  async _buildPlan(intent, context) {
-    // Single-step: wrap the parsed intent into a plan
-    // EXCLUDE: navigate (needs URL enhancement), multi_step (needs planner), complex (needs planner)
-    if (intent.action && intent.action !== 'navigate' && intent.action !== 'multi_step' && !intent.complex) {
-      return [{
-        id: this._generateId(),
-        action: intent.action,
-        description: intent.description || intent.action,
-        params: intent.params || {},
-        elementDescription: intent.elementDescription || '',
-        timeout: this.DEFAULT_TIMEOUT
-      }];
+  /** Pull a human-readable search hint from a failed selector / step description. */
+  _extractSelectorHint(selector, step) {
+    const sources = [];
+    if (step?.elementDescription) sources.push(String(step.elementDescription));
+    if (step?.description) sources.push(String(step.description));
+    if (selector) {
+      // :role("button","Submit") / :text("Foo") / :contains("Bar") / :name("email")
+      const m = String(selector).match(/:(?:role|text|contains|name)\((.+)\)\s*$/i);
+      if (m) {
+        const parts = m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
+        // For role, prefer the name part
+        sources.push(parts[parts.length - 1] || parts[0]);
+      } else {
+        // CSS-ish: strip symbols, keep words
+        sources.push(String(selector).replace(/[#.\[\]="'>\s:+~*]/g, ' '));
+      }
+    }
+    const raw = sources.join(' ').toLowerCase();
+    // Drop common action verbs so "click login button" â†’ "login button"
+    const cleaned = raw
+      .replace(/\b(click|type|hover|highlight|select|check|uncheck|fill|press|get|find|scroll|into|the|a|an|button|link|field|input|element)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return cleaned || raw.trim() || null;
+  }
+
+  /**
+   * Score scan results against a text hint. Prefer role/name/text selectors.
+   */
+  _findBestScanMatch(elements, hint, actionName) {
+    if (!hint) return null;
+    const h = hint.toLowerCase();
+    const candidates = [];
+
+    const push = (list, kind, scoreBoost = 0) => {
+      for (const item of (list || [])) {
+        const text = (item.text || item.label || item.name || '').toLowerCase();
+        const href = (item.href || '').toLowerCase();
+        if (!text && !href) continue;
+
+        let score = 0;
+        if (text === h) score = 100;
+        else if (text.includes(h)) score = 70 + Math.min(20, (h.length / Math.max(text.length, 1)) * 20);
+        else if (h.includes(text) && text.length >= 2) score = 50;
+        else if (href.includes(h.replace(/\s+/g, '-'))) score = 40;
+        else continue;
+
+        score += scoreBoost;
+
+        // Prefer role/name/text selectors over raw CSS
+        let selector = item.selector || '';
+        let label = item.text || item.label || item.name || selector;
+
+        if (kind === 'button' || kind === 'link' || kind === 'clickable') {
+          // Prefer accessible text selectors
+          if (item.text) {
+            const t = item.text.substring(0, 60).replace(/"/g, '\\"');
+            if (item.role) selector = `:role("${item.role}","${t}")`;
+            else if (kind === 'button') selector = `:role("button","${t}")`;
+            else if (kind === 'link') selector = `:text("${t}")`;
+            else selector = `:contains("${t}")`;
+          }
+        } else if (kind === 'input') {
+          if (item.name || item.selector?.includes('name=')) {
+            const n = (item.name || '').replace(/"/g, '\\"');
+            if (n) selector = `:name("${n}")`;
+          }
+          if (!selector.startsWith(':') && item.label) {
+            const t = item.label.substring(0, 60).replace(/"/g, '\\"');
+            selector = `:role("textbox","${t}")`;
+          }
+        } else if (kind === 'select') {
+          if (item.name) selector = `:name("${String(item.name).replace(/"/g, '\\"')}")`;
+        }
+
+        candidates.push({ selector, label, score, kind });
+      }
+    };
+
+    // Weight categories by action type
+    if (actionName === 'type' || actionName === 'fillForm') {
+      push(elements.inputs, 'input', 15);
+      push(elements.selects, 'select', 5);
+      push(elements.buttons, 'button', 0);
+    } else if (actionName === 'selectDropdown') {
+      push(elements.selects, 'select', 20);
+      push(elements.inputs, 'input', 5);
+    } else if (actionName === 'checkToggle') {
+      push(elements.inputs, 'input', 15);
+      push(elements.buttons, 'button', 5);
+      push(elements.clickables, 'clickable', 0);
+    } else {
+      // click / hover / highlight / getElementText / etc.
+      push(elements.buttons, 'button', 15);
+      push(elements.links, 'link', 12);
+      push(elements.clickables, 'clickable', 8);
+      push(elements.inputs, 'input', 2);
     }
 
-    // For complex/multi-step queries, ask LLM to build a detailed plan
-    if ((intent.type === 'action' && intent.complex) || intent.action === 'multi_step') {
-      const settings = await this.sp.getSettings();
-      const apiKey = settings.openrouterKey;
-      if (!apiKey) return [];
-
-      const systemPrompt = `You are a planner for a browser agent that CAN interact with web pages. Given a user's multi-step goal, produce a JSON array of action steps. Each step: {"id":"sN","action":"<action_name>","description":"<English — what this step does>","params":{...},"elementDescription":"<English — for navigation use the link text>"}.
-
-LANGUAGE: All description and elementDescription fields MUST be in English.
-
-AVAILABLE ACTIONS:
-Page: click, type, scroll, scrollToElement, highlight, findElements, getPageInfo, extractTable, getElementText, evaluate, pressKey, hover, waitForElement, wait, fillForm, selectDropdown, checkToggle, startPicker
-Browser: navigate (go to URL or page), openTab, goBack, goForward, reload, screenshot
-
-For NAVIGATION: When user says "go to X page", use {"action":"navigate","description":"Go to X page","params":{},"elementDescription":"X"}. The agent will automatically scan the page's links and find the right URL. Do NOT guess URLs.
-
-For MULTI-STEP like "go to A, then B, then C": Create one navigate step per destination. Include waitForElement after each navigation.
-
-For SCROLLING: When user says "scroll to bottom" or "scroll end of page", use {"action":"scroll","params":{"direction":"bottom"},"description":"Scroll to bottom of page"}.
-
-IMPORTANT: Always include a waitForElement step after navigation. Always scroll before clicking if the element might not be in view.
-
-Respond with ONLY the JSON array. Example:
-[{"id":"s1","action":"navigate","description":"Go to Homepage","params":{},"elementDescription":"homepage"},{"id":"s2","action":"waitForElement","description":"Wait for page to load","params":{"selector":"body","timeout":5000}}]`;
-
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Goal: ${intent.description || intent.action}\nContext: ${intent.params?.url || ''}` }
-      ];
-
-      try {
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
-            'X-Title': 'SNN Chat'
-          },
-          body: JSON.stringify({
-            model: settings.openrouterModel || 'deepseek/deepseek-v4-flash',
-            messages,
-            max_tokens: 1000,
-            temperature: 0.2
-          })
-        });
-
-        if (!res.ok) return [];
-        const data = await res.json();
-        let text = data.choices?.[0]?.message?.content || '[]';
-        if (text.startsWith('```')) text = text.replace(/```\w*\n?/g, '').trim();
-        const plan = JSON.parse(text);
-        return Array.isArray(plan) ? plan.map(s => ({ ...s, id: s.id || this._generateId(), timeout: s.timeout || this.DEFAULT_TIMEOUT })) : [];
-
-      } catch (e) { return []; }
-    }
-
-    return [];
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] || null;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1223,7 +1098,7 @@ Respond with ONLY the JSON array. Example:
 
   /**
    * Strip large payloads (base64 images, etc.) from tool results before
-   * sending them to the LLM. The LLM can't process raw image data —
+   * sending them to the LLM. The LLM can't process raw image data â€”
    * it just wastes tokens and causes timeouts.
    */
   _sanitizeToolResultForLLM(fnName, result) {
@@ -1234,7 +1109,7 @@ Respond with ONLY the JSON array. Example:
     // Strip base64 screenshot data
     if (sanitized.screenshot && typeof sanitized.screenshot === 'string' && sanitized.screenshot.startsWith('data:')) {
       const sizeKB = Math.round((sanitized.screenshot.length * 3) / 4 / 1024);
-      sanitized.screenshot = `[Screenshot captured: ${sizeKB}KB — visible to user, not to LLM]`;
+      sanitized.screenshot = `[Screenshot captured: ${sizeKB}KB â€” visible to user, not to LLM]`;
       sanitized._screenshotStripped = true;
     }
 
@@ -1242,7 +1117,7 @@ Respond with ONLY the JSON array. Example:
     for (const key of Object.keys(sanitized)) {
       if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:image')) {
         const sizeKB = Math.round((sanitized[key].length * 3) / 4 / 1024);
-        sanitized[key] = `[Image: ${sizeKB}KB — stripped for LLM]`;
+        sanitized[key] = `[Image: ${sizeKB}KB â€” stripped for LLM]`;
       }
     }
 
@@ -1264,7 +1139,7 @@ Respond with ONLY the JSON array. Example:
       case 'scrollToElement': return `Scrolled to ${result.element || step.params?.selector || 'element'}`;
       case 'highlight': return `Highlighted ${result.element || step.params?.selector || 'element'}`;
       case 'findElements': return `Found ${result.total || 0} elements matching "${step.params?.selector || ''}"`;
-      case 'getPageInfo': return `Page: ${result.title || ''} — ${result.links || 0} links, ${result.forms || 0} forms`;
+      case 'getPageInfo': return `Page: ${result.title || ''} â€” ${result.links || 0} links, ${result.forms || 0} forms`;
       case 'extractTable': return `Extracted table with ${result.rowCount || 0} rows`;
       case 'navigate': return `Navigated to ${result.url || step.params?.url || ''}`;
       case 'openTab': return `Opened tab: ${result.url || step.params?.url || ''}`;
@@ -1286,6 +1161,7 @@ Respond with ONLY the JSON array. Example:
    * generic clickable elements (spans, divs, lis with event handlers,
    * cursor:pointer styles, role attributes, tabindex, onclick, etc.)
    * Respects the user's HTML parse limit setting.
+   * Selectors prefer role/name/text over brittle CSS.
    */
   async _scanAllActionableElements() {
     try {
@@ -1299,11 +1175,21 @@ Respond with ONLY the JSON array. Example:
           code: `(function() {
             const limit = ${limit};
             const elements = { links: [], buttons: [], inputs: [], forms: [], selects: [], clickables: [] };
-            const seenSelectors = new Set(); // deduplicate across categories
+            const seenSelectors = new Set();
 
             function makeSelector(el) {
+              // Prefer stable, semantic selectors over brittle CSS classes
               if (el.id) return '#' + CSS.escape(el.id);
-              if (el.name) return '[name="' + el.name + '"]';
+              if (el.name) return ':name("' + String(el.name).replace(/"/g, '\\\\"') + '")';
+              const role = el.getAttribute('role') || '';
+              const accName = (el.getAttribute('aria-label') || el.title || '').trim();
+              if (role && accName) {
+                return ':role("' + role + '","' + accName.substring(0, 60).replace(/"/g, '\\\\"') + '")';
+              }
+              const text = (el.textContent || '').trim();
+              if (text && text.length <= 40 && /^(A|BUTTON|LABEL|SUMMARY)$/i.test(el.tagName)) {
+                return ':text("' + text.replace(/"/g, '\\\\"') + '")';
+              }
               if (el.className && typeof el.className === 'string') {
                 const cls = el.className.trim().split(/\\s+/)[0];
                 if (cls && cls.length < 40) return el.tagName.toLowerCase() + '.' + cls;
@@ -1319,7 +1205,7 @@ Respond with ONLY the JSON array. Example:
               return r.width > 0 && r.height > 0;
             }
 
-            // ── Links: <a> with href OR <a> without href (pagination, JS handlers) OR [role="link"] ──
+            // ── Links ──
             const allLinks = document.querySelectorAll('a[href], a:not([href]), [role="link"]');
             for (const a of allLinks) {
               if (elements.links.length >= limit) break;
@@ -1333,12 +1219,14 @@ Respond with ONLY the JSON array. Example:
                   href: href.substring(0, 200),
                   selector: sel,
                   tag: a.tagName.toLowerCase(),
+                  role: a.getAttribute('role') || 'link',
+                  name: a.getAttribute('name') || '',
                   hasHref: !!a.href && a.href !== window.location.href + '#'
                 });
               }
             }
 
-            // ── Buttons: <button>, [role="button"], input[type=submit|button|reset], plus any element with btn class ──
+            // ── Buttons ──
             const buttonSelector = 'button, [role="button"], input[type="submit"], input[type="button"], input[type="reset"], ' +
               '[class*="btn"]:not(form):not(div.btn-group), [class*="button"]:not(form):not(div.button-group)';
             const allButtons = document.querySelectorAll(buttonSelector);
@@ -1352,19 +1240,18 @@ Respond with ONLY the JSON array. Example:
                   text,
                   selector: sel,
                   type: b.tagName.toLowerCase(),
-                  role: b.getAttribute('role') || ''
+                  role: b.getAttribute('role') || (b.tagName.toLowerCase() === 'button' ? 'button' : ''),
+                  name: b.getAttribute('name') || b.id || ''
                 });
               }
             }
 
-            // ── Clickables: ANY element that acts clickable but isn't a standard link/button ──
-            // Detects: onclick handlers, cursor:pointer, tabindex, data-click, ng-click, @click, etc.
+            // ── Clickables ──
             const interactiveAttrs = ['onclick', 'ng-click', '@click', 'v-on:click', 'data-click', 'data-action', 'data-url'];
             const allElements = document.querySelectorAll('*');
             for (const el of allElements) {
               if (elements.clickables.length >= limit) break;
               const tag = el.tagName.toLowerCase();
-              // Skip already-covered types and non-interactive containers
               if (/^(html|body|head|script|style|meta|link|br|hr|img|svg|path|g|circle|rect|polygon|polyline|line|text)$/i.test(tag)) continue;
               if (/^(a|button|input|select|textarea|form|option|optgroup|label)$/i.test(tag)) continue;
 
@@ -1372,28 +1259,23 @@ Respond with ONLY the JSON array. Example:
               if (!isVisible(el) || seenSelectors.has(sel)) continue;
 
               let reason = '';
-              // Check for click-handler attributes
               for (const attr of interactiveAttrs) {
                 if (el.hasAttribute(attr)) { reason = attr; break; }
               }
-              // Check for role=button/link on non-standard elements
               if (!reason) {
                 const role = el.getAttribute('role');
                 if (role === 'button' || role === 'link' || role === 'menuitem' || role === 'tab' || role === 'option' || role === 'treeitem') {
                   reason = 'role=' + role;
                 }
               }
-              // Check for tabindex (keyboard-focusable = interactive)
               if (!reason && el.hasAttribute('tabindex')) {
                 const ti = el.getAttribute('tabindex');
                 if (ti !== '-1') reason = 'tabindex=' + ti;
               }
-              // Check for cursor:pointer style (very common for JS-clickable divs/spans)
               if (!reason) {
                 const cs = window.getComputedStyle(el);
                 if (cs.cursor === 'pointer') reason = 'cursor:pointer';
               }
-              // Check for data-* attributes commonly used for click handling
               if (!reason) {
                 for (const attr of ['data-id', 'data-value', 'data-href', 'data-target', 'data-toggle', 'data-index']) {
                   if (el.hasAttribute(attr)) { reason = attr; break; }
@@ -1402,13 +1284,13 @@ Respond with ONLY the JSON array. Example:
 
               if (reason) {
                 const text = (el.textContent || el.getAttribute('aria-label') || el.title || '').trim().substring(0, 60);
-                // Only include if it has meaningful text or is a small self-contained element
                 if (text && text.length < 200) {
                   seenSelectors.add(sel);
                   elements.clickables.push({
                     text,
                     selector: sel,
                     tag,
+                    role: el.getAttribute('role') || '',
                     reason,
                     className: (typeof el.className === 'string' ? el.className.substring(0, 40) : '')
                   });
@@ -1416,7 +1298,7 @@ Respond with ONLY the JSON array. Example:
               }
             }
 
-            // ── Inputs (text, email, number, etc.) ──
+            // ── Inputs ──
             const allInputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea');
             for (const inp of allInputs) {
               if (elements.inputs.length >= limit) break;
@@ -1424,7 +1306,15 @@ Respond with ONLY the JSON array. Example:
               const sel = makeSelector(inp);
               if (isVisible(inp) && !seenSelectors.has(sel)) {
                 seenSelectors.add(sel);
-                elements.inputs.push({ label: label.substring(0, 60), type: inp.type || 'text', selector: sel, tag: inp.tagName.toLowerCase() });
+                elements.inputs.push({
+                  label: label.substring(0, 60),
+                  text: label.substring(0, 60),
+                  type: inp.type || 'text',
+                  selector: sel,
+                  tag: inp.tagName.toLowerCase(),
+                  name: inp.getAttribute('name') || inp.id || '',
+                  role: inp.getAttribute('role') || 'textbox'
+                });
               }
             }
 
@@ -1436,7 +1326,12 @@ Respond with ONLY the JSON array. Example:
               const action = f.action || '';
               const inputCount = f.querySelectorAll('input, textarea, select').length;
               if (inputCount > 0 && isVisible(f)) {
-                elements.forms.push({ id: id.substring(0, 40), action: action.substring(0, 100), inputCount, selector: id ? '#' + CSS.escape(id) : 'form' });
+                elements.forms.push({
+                  id: id.substring(0, 40),
+                  action: action.substring(0, 100),
+                  inputCount,
+                  selector: id ? '#' + CSS.escape(id) : 'form'
+                });
               }
             }
 
@@ -1448,7 +1343,13 @@ Respond with ONLY the JSON array. Example:
               const sel = makeSelector(s);
               if (isVisible(s) && !seenSelectors.has(sel)) {
                 seenSelectors.add(sel);
-                elements.selects.push({ optionCount: optCount, selector: sel, name: s.name || s.id || '' });
+                elements.selects.push({
+                  optionCount: optCount,
+                  selector: sel,
+                  name: s.name || s.id || '',
+                  label: s.getAttribute('aria-label') || s.name || s.id || 'select',
+                  text: s.getAttribute('aria-label') || s.name || s.id || 'select'
+                });
               }
             }
 
@@ -1471,74 +1372,6 @@ Respond with ONLY the JSON array. Example:
       }
       return null;
     } catch (e) { return null; }
-  }
-
-  /**
-   * Enhance a navigation plan by scanning page elements,
-   * then matching user's target destinations to actual links/buttons/inputs.
-   */
-  async _enhanceNavigationPlan(plan) {
-    const hasUnresolved = plan.some(s =>
-      (s.action === 'navigate' && !s.params?.url) ||
-      (s.action === 'click' && !s.params?.selector) ||
-      (s.action === 'type' && !s.params?.selector)
-    );
-    if (!hasUnresolved) return plan;
-
-    // Scan all actionable elements
-    const scan = await this._scanAllActionableElements();
-    if (!scan || !scan.elements) return plan;
-
-    // Show discovered elements to user via UI
-    if (this.sp._agentUI) {
-      this.sp._agentUI.showPageElements(scan);
-    }
-
-    // Flatten all links for navigation matching
-    const allLinks = scan.elements.links || [];
-
-    return plan.map(step => {
-      // Resolve navigation steps
-      if (step.action === 'navigate' && !step.params?.url && step.elementDescription) {
-        const desc = step.elementDescription.toLowerCase();
-        let best = null, bestScore = 0;
-        for (const link of allLinks) {
-          const t = link.text.toLowerCase();
-          if (t === desc) { best = link; break; }
-          if (t.includes(desc)) { const s = desc.length / t.length; if (s > bestScore) { bestScore = s; best = link; } }
-          if ((link.href || '').toLowerCase().includes(desc.replace(/\s+/g, '-'))) { if (0.5 > bestScore) { bestScore = 0.5; best = link; } }
-        }
-        if (best) {
-          return { ...step, params: { ...step.params, url: best.href }, description: `${step.description} → ${best.text}` };
-        }
-        // Mark as unresolvable — user will see it in the UI
-        return { ...step, description: `${step.description} ⚠️ (link not found on page)` };
-      }
-
-      // Resolve click steps without selectors
-      if (step.action === 'click' && !step.params?.selector && step.elementDescription) {
-        const desc = step.elementDescription.toLowerCase();
-        // Search buttons first
-        const allButtons = scan.elements.buttons || [];
-        let best = allButtons.find(b => b.text.toLowerCase().includes(desc));
-        if (best) {
-          return { ...step, params: { ...step.params, selector: best.selector || `:contains("${best.text.substring(0, 30)}")` }, description: `${step.description} → ${best.text}` };
-        }
-        // Then links (including pagination <a> tags without href)
-        const linkBest = allLinks.find(l => l.text.toLowerCase().includes(desc));
-        if (linkBest) {
-          return { ...step, params: { ...step.params, selector: linkBest.selector || `:contains("${linkBest.text.substring(0, 30)}")` }, description: `${step.description} → ${linkBest.text}` };
-        }
-        // Then clickables (spans, divs, etc. with click handlers)
-        const allClickables = scan.elements.clickables || [];
-        const clickableBest = allClickables.find(c => c.text.toLowerCase().includes(desc));
-        if (clickableBest) {
-          return { ...step, params: { ...step.params, selector: clickableBest.selector || `:contains("${clickableBest.text.substring(0, 30)}")` }, description: `${step.description} → ${clickableBest.text}` };
-        }
-      }
-
-      return step;
-    });
   }
 }
 

@@ -32,6 +32,13 @@ class SNNSidePanel {
     // ── Last screenshot for vision follow-up questions ────────
     this._lastScreenshot = null;
 
+    // ── Pending file attachments for next message ────────────
+    this._pendingAttachments = []; // { id, name, type, mime, size, dataUrl?, text? }
+
+    // ── Cached OpenRouter model metadata ─────────────────────
+    this._modelsData = {};
+    this._selectedModelInfo = null;
+
     this.cacheDom();
     this.setupListeners();
     this.init();
@@ -63,7 +70,11 @@ class SNNSidePanel {
       // Tab indicator in header
       tabDomain: this.el('tab-domain'),
       // Session Lock
-      chatLockCheckbox: this.el('chat-lock-checkbox')
+      chatLockCheckbox: this.el('chat-lock-checkbox'),
+      // Attachments
+      attachBar: this.el('attach-bar'),
+      attachBtn: this.el('attach-btn'),
+      attachInput: this.el('attach-input')
     };
   }
 
@@ -177,6 +188,9 @@ class SNNSidePanel {
 
     // Session Lock checkbox
     this.els.chatLockCheckbox.addEventListener('change', () => this._toggleChatLock());
+
+    // File attachments: button, file picker, paste, drag/drop
+    this._setupAttachmentHandlers();
 
     // Overlay backdrop clicks
     this.els.settingsOverlay.addEventListener('click', (e) => {
@@ -568,7 +582,8 @@ class SNNSidePanel {
   // ── Chat ────────────────────────────────────────────────────────
   async sendMessage() {
     const message = this.els.userInput.value.trim();
-    if (!message || this.isLoading) return;
+    const attachments = [...(this._pendingAttachments || [])];
+    if ((!message && attachments.length === 0) || this.isLoading) return;
 
     // ── Snapshot the context that will be attached to THIS message ──
     const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
@@ -586,30 +601,51 @@ class SNNSidePanel {
     this.els.smartPrompts.style.display = 'none';
     this.els.welcomeScreen.style.display = 'none';
 
+    // Consume attachments from the composer
+    this._pendingAttachments = [];
+    this._renderAttachmentBar();
+
     // Mark context as consumed so page context won't re-attach automatically
     if (contextSnapshot) {
       this._contextConsumedInSession = true;
     }
 
-    // Render user message with context chip
-    this.addMessage('user', message, null, contextSnapshot);
+    const displayMessage = message || (attachments.length
+      ? `[Attached ${attachments.length} file${attachments.length > 1 ? 's' : ''}]`
+      : '');
+
+    // Render user message with context chip + attachments
+    this.addMessage('user', displayMessage, null, contextSnapshot, attachments);
 
     // ── Push user message to chatHistory NOW so it survives tab switches ──
+    // Store lightweight attachment metadata (not huge binary blobs for text files)
+    const historyAttachments = attachments.map(a => ({
+      id: a.id,
+      name: a.name,
+      type: a.type,
+      mime: a.mime,
+      size: a.size,
+      // Keep image data for vision re-sends; keep text content for text files
+      dataUrl: a.type === 'image' ? a.dataUrl : undefined,
+      text: a.type === 'text' || a.type === 'pdf' ? a.text : undefined
+    }));
     this.chatHistory.push({
-      role: 'user', content: message,
+      role: 'user', content: displayMessage,
       contextType: contextSnapshot?.type || 'none',
-      context: contextSnapshot
+      context: contextSnapshot,
+      attachments: historyAttachments
     });
     await this.saveChatHistory();
 
     // ── Try Agent Loop first ───────────────────────────────────
     // Skip agent loop for informational queries when page context is available —
     // go straight to streaming chat (faster, and the LLM already has the context).
-    const skipAgent = this._shouldSkipAgentLoop(message, contextSnapshot);
+    // Also skip agent when user attached files (chat path handles multimodal/text files).
+    const skipAgent = attachments.length > 0 || this._shouldSkipAgentLoop(message || displayMessage, contextSnapshot);
 
     if (this._agentLoop && !this._agentLoop.isBusy && !skipAgent) {
       try {
-        const agentResult = await this._agentLoop.run(message, contextSnapshot, this.currentTabId);
+        const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId);
 
         // Tab-switch guard: only discard if NOT in locked mode
         if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
@@ -677,14 +713,27 @@ class SNNSidePanel {
         contextType = contextSnapshot.type;
       }
 
+      // Merge text/PDF attachment content into context for the model
+      const fileText = this._buildAttachmentTextContext(attachments);
+      if (fileText) {
+        context = context
+          ? `${context}\n\n=== ATTACHED FILES ===\n${fileText}`
+          : `=== ATTACHED FILES ===\n${fileText}`;
+        if (contextType === 'none') contextType = 'files';
+      }
+
+      // Stash image attachments for vision injection in callAPI/streamResponse
+      this._pendingImageAttachments = attachments.filter(a => a.type === 'image' && a.dataUrl);
+
       let response;
       if (settings.enableStreaming !== false) {
-        response = await this.streamResponse(message, context, contextType, signal);
+        response = await this.streamResponse(message || displayMessage, context, contextType, signal);
       } else {
         this.addLoadingMsg();
-        response = await this.callAPI(message, context, contextType, signal);
+        response = await this.callAPI(message || displayMessage, context, contextType, signal);
         this.removeLoadingMsg();
       }
+      this._pendingImageAttachments = null;
 
       // ── Tab-switch guard: discard if user switched tabs during API call ──
       if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
@@ -741,7 +790,7 @@ class SNNSidePanel {
     if (context && contextType === 'selection') {
       userMessage = `[Selected text: "${context}"]\n\n${message}`;
       systemPrompt += '\nFocus on the user\'s selected text.';
-    } else if (context && contextType === 'page') {
+    } else if (context && (contextType === 'page' || contextType === 'files')) {
       systemPrompt += `\n\nPage content for reference:\n\n${context}`;
     }
 
@@ -754,18 +803,8 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach last screenshot as vision content if model supports it ──
-    const screenshotData = this._lastScreenshot;
-    if (screenshotData && this._modelSupportsVision(model)) {
-      messages[messages.length - 1] = {
-        role: 'user',
-        content: [
-          { type: 'text', text: userMessage },
-          { type: 'image_url', image_url: { url: screenshotData } }
-        ]
-      };
-      this._lastScreenshot = null;
-    }
+    // ── Attach images (user attachments + last screenshot) if model supports vision ──
+    this._injectVisionContent(messages, userMessage, model);
 
     const body = {
       model,
@@ -815,7 +854,7 @@ class SNNSidePanel {
     if (context && contextType === 'selection') {
       userMessage = `[Selected text: "${context}"]\n\n${message}`;
       systemPrompt += '\nFocus on the user\'s selected text.';
-    } else if (context && contextType === 'page') {
+    } else if (context && (contextType === 'page' || contextType === 'files')) {
       systemPrompt += `\n\nPage content:\n\n${context}`;
     }
 
@@ -825,18 +864,8 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach last screenshot as vision content if model supports it ──
-    const screenshotData2 = this._lastScreenshot;
-    if (screenshotData2 && this._modelSupportsVision(model)) {
-      messages[messages.length - 1] = {
-        role: 'user',
-        content: [
-          { type: 'text', text: userMessage },
-          { type: 'image_url', image_url: { url: screenshotData2 } }
-        ]
-      };
-      this._lastScreenshot = null; // consume it
-    }
+    // ── Attach images (user attachments + last screenshot) if model supports vision ──
+    this._injectVisionContent(messages, userMessage, model);
 
     const body = {
       model, messages, stream: true,
@@ -944,7 +973,7 @@ class SNNSidePanel {
   }
 
   // ── Message Rendering ──────────────────────────────────────────
-  addMessage(role, content, tokenUsage, contextSnapshot) {
+  addMessage(role, content, tokenUsage, contextSnapshot, attachments = null) {
     this.els.welcomeScreen.style.display = 'none';
 
     // ── Context chip: rendered BEFORE the user bubble ──
@@ -954,7 +983,16 @@ class SNNSidePanel {
 
     const div = document.createElement('div');
     div.className = `sp-msg sp-msg-${role}`;
-    div.innerHTML = role === 'ai' ? this.parseMarkdown(content) : this.escapeHtml(content);
+
+    if (role === 'ai') {
+      div.innerHTML = this.parseMarkdown(content);
+    } else {
+      let html = this.escapeHtml(content || '');
+      if (attachments?.length) {
+        html += this._renderMessageAttachmentsHtml(attachments);
+      }
+      div.innerHTML = html;
+    }
     this.els.chatMessages.appendChild(div);
 
     if (role === 'ai') {
@@ -964,6 +1002,21 @@ class SNNSidePanel {
     }
 
     this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+  }
+
+  _renderMessageAttachmentsHtml(attachments) {
+    let html = '<div class="sp-msg-attachments">';
+    for (const a of attachments) {
+      if (a.type === 'image' && a.dataUrl) {
+        html += `<div class="sp-msg-attach-item sp-msg-attach-image"><img src="${a.dataUrl}" alt="${this.escapeHtml(a.name || 'image')}" title="${this.escapeHtml(a.name || '')}"></div>`;
+      } else {
+        const icon = a.type === 'pdf' ? 'PDF' : 'FILE';
+        const size = a.size ? ` · ${this._formatBytes(a.size)}` : '';
+        html += `<div class="sp-msg-attach-item sp-msg-attach-file"><span class="sp-msg-attach-badge">${icon}</span><span>${this.escapeHtml(a.name || 'file')}${size}</span></div>`;
+      }
+    }
+    html += '</div>';
+    return html;
   }
 
   /**
@@ -1202,6 +1255,13 @@ class SNNSidePanel {
     // Cache agent prompt for chat augmentation
     this._agentPromptCache = settings.agentPrompt || this._getDefaultAgentPrompt();
 
+    // Prefetch model catalog so vision badges / checks use real OpenRouter metadata
+    if (settings.openrouterKey?.length > 10 && !Object.keys(this._modelsData || {}).length) {
+      this.loadModels(settings.openrouterKey).catch(() => {});
+    } else {
+      this._updateHeaderVisionBadge(settings.openrouterModel || '');
+    }
+
     // ── Dynamic dark-mode indicator class on body ───────────────
     this._updateDarkModeClass(theme);
     this._watchSystemColorScheme(theme);
@@ -1236,6 +1296,47 @@ class SNNSidePanel {
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
     const name = model.includes('/') ? model.split('/').pop() : model;
     this.els.modelName.textContent = name;
+    // Keep selected model info for vision checks
+    if (this._modelsData?.[model]) this._selectedModelInfo = this._modelsData[model];
+    this._updateHeaderVisionBadge(model);
+  }
+
+  _updateHeaderVisionBadge(modelId) {
+    const el = this.els.modelName;
+    if (!el) return;
+    const id = modelId
+      || this._selectedModelInfo?.id
+      || Object.keys(this._modelsData || {}).find(k => (this.els.modelName.textContent || '') && k.endsWith(this.els.modelName.textContent))
+      || '';
+    // Resolve full model id from settings cache when only short name is shown
+    let fullId = id;
+    if (!fullId || !this._modelsData?.[fullId]) {
+      const short = (this.els.modelName.textContent || '').toLowerCase();
+      const match = Object.keys(this._modelsData || {}).find(k => k.toLowerCase().endsWith('/' + short) || k.toLowerCase() === short);
+      if (match) fullId = match;
+    }
+    if (fullId && this._modelsData?.[fullId]) this._selectedModelInfo = this._modelsData[fullId];
+    const supports = this._modelSupportsVision(fullId || this._selectedModelInfo?.id);
+    el.classList.toggle('has-vision', !!supports);
+    el.title = supports ? 'Vision-capable model' : 'Text-only model (no image input)';
+    // Inline badge next to model name
+    let badge = el.parentElement?.querySelector?.('.sp-vision-badge') || document.querySelector('.sp-vision-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'sp-vision-badge';
+      el.insertAdjacentElement('afterend', badge);
+    }
+    if (supports) {
+      badge.textContent = 'Vision';
+      badge.style.display = 'inline-flex';
+      badge.classList.add('on');
+      badge.classList.remove('off');
+    } else {
+      badge.textContent = 'Text';
+      badge.style.display = 'inline-flex';
+      badge.classList.add('off');
+      badge.classList.remove('on');
+    }
   }
 
   openSettings() { this.els.settingsOverlay.classList.add('visible'); this.renderSettings(); }
@@ -1263,8 +1364,11 @@ class SNNSidePanel {
           </div>
           <div class="sp-field">
             <label>Model</label>
-            <input type="text" id="s-openrouter-model" value="${this.escapeHtml(s.openrouterModel || '')}" placeholder="Select or type..." list="openrouter-models">
-            <datalist id="openrouter-models"></datalist>
+            <div class="sp-model-picker" id="s-model-picker">
+              <input type="text" id="s-openrouter-model" value="${this.escapeHtml(s.openrouterModel || '')}" placeholder="Search models..." autocomplete="off">
+              <div class="sp-model-dropdown" id="s-model-dropdown" style="display:none"></div>
+            </div>
+            <small>Search by name. Vision-capable models show a Vision badge.</small>
           </div>
           <div id="s-model-info" class="sp-model-info" style="display:none"></div>
           <button class="sp-btn sp-btn-success" id="s-test-connection">Test Connection</button>
@@ -1497,25 +1601,143 @@ class SNNSidePanel {
     });
     if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey);
 
-    // Model info — fetch when model input changes
+    // Rich model picker
+    this._setupModelPicker(s.openrouterModel || '');
+    if (s.openrouterModel) this.fetchModelInfo();
+  }
+
+  _setupModelPicker(selectedId) {
     const modelInput = this.els.settingsBody.querySelector('#s-openrouter-model');
+    const dropdown = this.els.settingsBody.querySelector('#s-model-dropdown');
+    if (!modelInput || !dropdown) return;
+
+    const closeDropdown = () => { dropdown.style.display = 'none'; };
+    const openDropdown = () => {
+      this._renderModelDropdown(modelInput.value.trim());
+      dropdown.style.display = 'block';
+    };
+
+    modelInput.addEventListener('focus', openDropdown);
+    modelInput.addEventListener('input', () => {
+      this._renderModelDropdown(modelInput.value.trim());
+      dropdown.style.display = 'block';
+    });
     modelInput.addEventListener('change', () => this.fetchModelInfo());
-    modelInput.addEventListener('blur', () => this.fetchModelInfo());
-    // Allow free space typing — datalist auto-selects on Space otherwise
+    modelInput.addEventListener('blur', () => {
+      // Delay so option click can register
+      setTimeout(() => {
+        closeDropdown();
+        this.fetchModelInfo();
+      }, 180);
+    });
     modelInput.addEventListener('keydown', (e) => {
-      if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault();
-        e.stopPropagation();
-        // Manually insert space at cursor
-        const start = modelInput.selectionStart;
-        const end = modelInput.selectionEnd;
-        modelInput.value = modelInput.value.substring(0, start) + ' ' + modelInput.value.substring(end);
-        modelInput.selectionStart = modelInput.selectionEnd = start + 1;
-        // Trigger input event so any listeners fire
-        modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      if (e.key === 'Escape') closeDropdown();
+      if (e.key === 'Enter') {
+        // Keep typed freeform model id
+        closeDropdown();
+        this.fetchModelInfo();
       }
     });
-    if (s.openrouterModel) this.fetchModelInfo();
+
+    // Re-render if models already cached
+    if (Object.keys(this._modelsData || {}).length) {
+      this._renderModelDropdown(selectedId || '');
+    }
+  }
+
+  _modelHasVision(modelData) {
+    if (!modelData) return false;
+    const mods = modelData.architecture?.input_modalities;
+    if (Array.isArray(mods) && mods.some(m => /image|vision/i.test(String(m)))) return true;
+    const modality = modelData.architecture?.modality;
+    if (typeof modality === 'string' && /image|vision/i.test(modality)) return true;
+    return false;
+  }
+
+  _formatModelPrice(modelData) {
+    // OpenRouter pricing is typically per-token strings on model.pricing
+    const p = modelData?.pricing;
+    if (!p) return null;
+    const prompt = parseFloat(p.prompt);
+    const completion = parseFloat(p.completion);
+    if (Number.isNaN(prompt) && Number.isNaN(completion)) return null;
+    // Convert to $ / 1M tokens when values look like per-token
+    const fmt = (v) => {
+      if (Number.isNaN(v)) return '?';
+      const perM = v < 0.01 ? v * 1_000_000 : v;
+      if (perM < 0.01) return `$${perM.toFixed(4)}`;
+      if (perM < 1) return `$${perM.toFixed(3)}`;
+      return `$${perM.toFixed(2)}`;
+    };
+    return `${fmt(prompt)} / ${fmt(completion)} per 1M`;
+  }
+
+  _renderModelDropdown(filterText = '') {
+    const dropdown = this.els.settingsBody?.querySelector('#s-model-dropdown');
+    if (!dropdown) return;
+
+    const models = Object.values(this._modelsData || {});
+    if (!models.length) {
+      dropdown.innerHTML = '<div class="sp-model-option muted">Load API key to fetch models…</div>';
+      return;
+    }
+
+    const q = (filterText || '').toLowerCase();
+    let list = models;
+    if (q) {
+      list = models.filter(m =>
+        (m.id || '').toLowerCase().includes(q) ||
+        (m.name || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Prefer popular / free-ish first when no filter, otherwise alpha by name
+    list = list.slice().sort((a, b) => {
+      const av = this._modelHasVision(a) ? 1 : 0;
+      const bv = this._modelHasVision(b) ? 1 : 0;
+      if (q) return (a.name || a.id).localeCompare(b.name || b.id);
+      // mild boost for vision models when browsing
+      if (bv !== av) return bv - av;
+      return (a.name || a.id).localeCompare(b.name || b.id);
+    }).slice(0, 80);
+
+    if (!list.length) {
+      dropdown.innerHTML = '<div class="sp-model-option muted">No models match.</div>';
+      return;
+    }
+
+    dropdown.innerHTML = list.map(m => {
+      const vision = this._modelHasVision(m);
+      const ctx = m.top_provider?.context_length || m.context_length || m.endpoints?.[0]?.context_length;
+      const ctxLabel = ctx ? `${Math.round(ctx / 1024)}K ctx` : '';
+      const price = this._formatModelPrice(m);
+      const badges = [
+        vision ? '<span class="sp-model-badge vision">Vision</span>' : '',
+        ctxLabel ? `<span class="sp-model-badge ctx">${ctxLabel}</span>` : '',
+        price ? `<span class="sp-model-badge price">${this.escapeHtml(price)}</span>` : ''
+      ].filter(Boolean).join('');
+
+      return `<button type="button" class="sp-model-option" data-id="${this.escapeHtml(m.id)}">
+        <div class="sp-model-option-main">
+          <span class="sp-model-option-name">${this.escapeHtml(m.name || m.id)}</span>
+          <span class="sp-model-option-id">${this.escapeHtml(m.id)}</span>
+        </div>
+        <div class="sp-model-option-badges">${badges}</div>
+      </button>`;
+    }).join('');
+
+    dropdown.querySelectorAll('.sp-model-option[data-id]').forEach(btn => {
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // keep focus handling predictable
+        const id = btn.dataset.id;
+        const input = this.els.settingsBody.querySelector('#s-openrouter-model');
+        if (input) input.value = id;
+        this._selectedModelInfo = this._modelsData?.[id] || null;
+        dropdown.style.display = 'none';
+        this.fetchModelInfo();
+        this._updateHeaderVisionBadge();
+      });
+    });
   }
 
   bindRange(inputId, displayId, suffix = '') {
@@ -1547,23 +1769,22 @@ class SNNSidePanel {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      // Cache model data for fetchModelInfo() lookup
+      // Cache model data for picker + vision checks
       this._modelsData = {};
-      data.data.forEach(m => { this._modelsData[m.id] = m; });
-      const datalist = this.els.settingsBody.querySelector('#openrouter-models');
-      if (datalist) {
-        datalist.innerHTML = '';
-        data.data.forEach(m => {
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          opt.textContent = `${m.name} (${m.id})`;
-          datalist.appendChild(opt);
-        });
+      (data.data || []).forEach(m => { this._modelsData[m.id] = m; });
+
+      // Keep selected model info in sync
+      const selectedId = this.els.settingsBody?.querySelector('#s-openrouter-model')?.value.trim();
+      if (selectedId && this._modelsData[selectedId]) {
+        this._selectedModelInfo = this._modelsData[selectedId];
       }
-      // Refresh model info if a model is already selected
-      if (this.els.settingsBody.querySelector('#s-openrouter-model')?.value.trim()) {
-        this.fetchModelInfo();
+
+      // Refresh rich picker dropdown if open/settings visible
+      if (this.els.settingsBody?.querySelector('#s-model-dropdown')) {
+        this._renderModelDropdown(selectedId || '');
       }
+      if (selectedId) this.fetchModelInfo();
+      this._updateHeaderVisionBadge();
     } catch (e) {
       console.error('Failed to load models:', e);
     }
@@ -1609,7 +1830,15 @@ class SNNSidePanel {
   }
 
   _renderModelInfo(infoDiv, data) {
+    this._selectedModelInfo = data;
     let html = '';
+
+    // Vision capability banner
+    const hasVision = this._modelHasVision(data);
+    html += `<div class="sp-model-info-banner ${hasVision ? 'vision' : 'text-only'}">
+      <strong>${hasVision ? 'Vision supported' : 'Text only'}</strong>
+      <span>${hasVision ? 'Images & screenshots can be sent to this model.' : 'Images will not be sent (text-only model).'}</span>
+    </div>`;
 
     // Description
     if (data.description) {
@@ -1622,7 +1851,8 @@ class SNNSidePanel {
       if (arch.input_modalities && arch.input_modalities.length > 0) {
         html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
         for (const mod of arch.input_modalities) {
-          html += `<span class="sp-model-tag sp-model-tag-input">${this.escapeHtml(mod)}</span>`;
+          const isVision = /image|vision/i.test(String(mod));
+          html += `<span class="sp-model-tag sp-model-tag-input${isVision ? ' vision' : ''}">${this.escapeHtml(mod)}</span>`;
         }
         html += '</div></div>';
       }
@@ -1646,9 +1876,15 @@ class SNNSidePanel {
     }
 
     // Context length — from top_provider (list format) or endpoints[0] (single format)
-    const ctxLen = data.top_provider?.context_length || data.endpoints?.[0]?.context_length;
+    const ctxLen = data.top_provider?.context_length || data.context_length || data.endpoints?.[0]?.context_length;
     if (ctxLen) {
       html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Context:</span><span class="sp-model-info-value">${(ctxLen / 1024).toFixed(0)}K tokens</span></div>`;
+    }
+
+    // Pricing
+    const price = this._formatModelPrice(data);
+    if (price) {
+      html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Price:</span><span class="sp-model-info-value">${this.escapeHtml(price)}</span></div>`;
     }
 
     // Max completion tokens
@@ -1658,6 +1894,7 @@ class SNNSidePanel {
     }
 
     infoDiv.innerHTML = html || '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
+    this._updateHeaderVisionBadge();
   }
 
   async testConnection() {
@@ -1864,50 +2101,113 @@ class SNNSidePanel {
   async renderHistory() {
     this.els.historyBody.innerHTML = '<div class="sp-empty-state">Loading...</div>';
     const histories = await this.loadAllHistories();
+    this._historyCache = histories;
+
     if (histories.length === 0) {
       this.els.historyBody.innerHTML = '<div class="sp-empty-state">No chat history yet.<br><small>Start chatting to build history.</small></div>';
       return;
     }
 
-    let html = '<input type="text" class="sp-history-search" id="history-search" placeholder="Search..."><div id="history-list">';
-    histories.forEach(h => {
-      const msgCount = Math.floor(h.messageCount / 2);
-      const date = new Date(h.lastUpdated).toLocaleDateString();
-      const preview = h.lastMessage || '';
-      const previewShort = preview.length > 60 ? preview.substring(0, 60) + '...' : preview;
+    // Site-related sessions first (current domain), then the rest
+    const currentDomain = (this.currentDomain || '').toLowerCase();
+    const siteHistories = currentDomain
+      ? histories.filter(h => !h.isLocked && (h.domain || '').toLowerCase() === currentDomain)
+      : [];
+    const otherHistories = histories.filter(h => !siteHistories.includes(h));
 
-      html += `
-        <div class="sp-history-item" data-key="${h.key}" data-domain="${h.domain}">
-          <div class="sp-history-title">${h.domain} — ${date} (${msgCount} msgs)</div>
-          <div class="sp-history-preview">"${this.escapeHtml(previewShort)}"</div>
-          <button class="sp-history-delete" data-key="${h.key}">×</button>
-        </div>`;
-    });
-    html += '</div>';
+    let html = `
+      <div class="sp-history-toolbar">
+        <input type="text" class="sp-history-search" id="history-search" placeholder="Search history...">
+        <label class="sp-history-global" title="Search across all domains and sessions">
+          <input type="checkbox" id="history-search-global">
+          <span>Search globally</span>
+        </label>
+      </div>
+      <div id="history-list"></div>`;
 
     this.els.historyBody.innerHTML = html;
+    this._renderHistoryList(siteHistories, otherHistories, '', false);
 
-    // Click to switch
-    this.els.historyBody.querySelectorAll('.sp-history-item').forEach(item => {
+    const searchInput = this.els.historyBody.querySelector('#history-search');
+    const globalCb = this.els.historyBody.querySelector('#history-search-global');
+
+    const runFilter = () => {
+      const q = (searchInput?.value || '').trim().toLowerCase();
+      const global = !!globalCb?.checked;
+      this._renderHistoryList(siteHistories, otherHistories, q, global);
+    };
+
+    searchInput?.addEventListener('input', runFilter);
+    globalCb?.addEventListener('change', runFilter);
+  }
+
+  /**
+   * Render history items. Default: current site on top.
+   * Search filters the visible list; with "Search globally" it searches all sessions' message content.
+   */
+  _renderHistoryList(siteHistories, otherHistories, query, searchGlobal) {
+    const list = this.els.historyBody.querySelector('#history-list');
+    if (!list) return;
+
+    const matches = (h, q) => {
+      if (!q) return true;
+      // Always match domain / preview metadata
+      const meta = `${h.domain || ''} ${h.lastMessage || ''}`.toLowerCase();
+      if (meta.includes(q)) return true;
+      // Global search: scan full message content
+      if (searchGlobal && h.searchText && h.searchText.includes(q)) return true;
+      // Local search (not global): still allow matching last message / domain only
+      return false;
+    };
+
+    // When searching globally, search the full combined list.
+    // When not global, keep site-first ordering and filter each group.
+    let sections = [];
+    if (query && searchGlobal) {
+      const all = [...siteHistories, ...otherHistories].filter(h => matches(h, query));
+      sections = [{ title: 'All sessions', items: all }];
+    } else {
+      const site = siteHistories.filter(h => matches(h, query));
+      const other = otherHistories.filter(h => matches(h, query));
+      if (site.length) sections.push({ title: this.currentDomain ? `This site · ${this.currentDomain}` : 'This site', items: site });
+      if (other.length) sections.push({ title: site.length ? 'Other sessions' : 'Sessions', items: other });
+    }
+
+    if (!sections.length || sections.every(s => !s.items.length)) {
+      list.innerHTML = `<div class="sp-empty-state">No matching sessions.${query && !searchGlobal ? '<br><small>Enable “Search globally” to search all domains.</small>' : ''}</div>`;
+      return;
+    }
+
+    let html = '';
+    for (const section of sections) {
+      if (!section.items.length) continue;
+      html += `<div class="sp-history-section-title">${this.escapeHtml(section.title)}</div>`;
+      for (const h of section.items) {
+        const msgCount = Math.floor(h.messageCount / 2);
+        const date = new Date(h.lastUpdated).toLocaleDateString();
+        const preview = h.lastMessage || '';
+        const previewShort = preview.length > 60 ? preview.substring(0, 60) + '...' : preview;
+        const isCurrent = (this.historyKey === h.key) || (this._historyKey === h.key);
+        html += `
+          <div class="sp-history-item${isCurrent ? ' current' : ''}" data-key="${this.escapeHtml(h.key)}" data-domain="${this.escapeHtml(h.domain || '')}">
+            <div class="sp-history-title">${this.escapeHtml(h.domain || 'session')} — ${date} (${msgCount} msgs)</div>
+            <div class="sp-history-preview">"${this.escapeHtml(previewShort)}"</div>
+            <button class="sp-history-delete" data-key="${this.escapeHtml(h.key)}">×</button>
+          </div>`;
+      }
+    }
+    list.innerHTML = html;
+
+    list.querySelectorAll('.sp-history-item').forEach(item => {
       item.addEventListener('click', (e) => {
         if (e.target.classList.contains('sp-history-delete')) return;
         this.switchSession(item.dataset.key, item.dataset.domain);
       });
     });
-
-    // Delete
-    this.els.historyBody.querySelectorAll('.sp-history-delete').forEach(btn => {
+    list.querySelectorAll('.sp-history-delete').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         this.deleteSession(btn.dataset.key);
-      });
-    });
-
-    // Search
-    this.els.historyBody.querySelector('#history-search')?.addEventListener('input', (e) => {
-      const q = e.target.value.toLowerCase();
-      this.els.historyBody.querySelectorAll('.sp-history-item').forEach(item => {
-        item.style.display = item.textContent.toLowerCase().includes(q) ? 'block' : 'none';
       });
     });
   }
@@ -1919,6 +2219,12 @@ class SNNSidePanel {
       if (!key.startsWith('snn_chat_history_') || !all[key].messages?.length) continue;
 
       const data = all[key];
+      // Build searchable text once (for global search)
+      const searchText = (data.messages || [])
+        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n')
+        .toLowerCase()
+        .substring(0, 50000);
 
       // ── Session Lock: special display for global locked session ──
       if (key === this._chatLockKey) {
@@ -1931,7 +2237,8 @@ class SNNSidePanel {
           isLocked: true,
           lastUpdated: data.lastUpdated || 0,
           messageCount: data.messages.length,
-          lastMessage: lastUser?.content || ''
+          lastMessage: lastUser?.content || '',
+          searchText
         });
         continue;
       }
@@ -1968,7 +2275,8 @@ class SNNSidePanel {
         isLocked: false,
         lastUpdated: data.lastUpdated || 0,
         messageCount: data.messages.length,
-        lastMessage: lastUser?.content || ''
+        lastMessage: lastUser?.content || '',
+        searchText
       });
     }
     histories.sort((a, b) => b.lastUpdated - a.lastUpdated);
@@ -2078,7 +2386,7 @@ class SNNSidePanel {
     for (let i = 0; i < this.chatHistory.length; i++) {
       const msg = this.chatHistory[i];
       if (msg.role === 'user') {
-        this.addMessage('user', msg.content, null, msg.context || null);
+        this.addMessage('user', msg.content, null, msg.context || null, msg.attachments || null);
         if (msg.context) hasContextMessage = true;
       } else if (msg.role === 'assistant') {
         this.addMessage('ai', msg.content, msg.tokenUsage);
@@ -2473,12 +2781,262 @@ class SNNSidePanel {
 
   /**
    * Check if a model supports image/vision input.
-   * Text-only models (DeepSeek, Llama, Mistral, etc.) return false.
+   * Prefers OpenRouter model metadata (architecture.input_modalities).
    */
   _modelSupportsVision(modelId) {
     if (!modelId) return false;
+
+    const cached = this._modelsData?.[modelId] || this._selectedModelInfo;
+    const modalities = cached?.architecture?.input_modalities || null;
+    if (Array.isArray(modalities)) {
+      return modalities.some(m => /image|vision/i.test(String(m)));
+    }
+    const modality = cached?.architecture?.modality;
+    if (typeof modality === 'string' && /image|vision/i.test(modality)) {
+      return true;
+    }
+
+    // Fallback heuristic for uncached models
     const m = modelId.toLowerCase();
-    return /gemini|gpt-4o|gpt-4-vision|gpt-4-turbo|claude|llava|pixtral|vision|multimodal|qwen.*vl/i.test(m);
+    return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
+  }
+
+  /**
+   * Inject image attachments + last screenshot into the last user message
+   * when the selected model supports vision.
+   */
+  _injectVisionContent(messages, userMessage, model) {
+    const images = [];
+    const pending = this._pendingImageAttachments || [];
+    for (const a of pending) {
+      if (a?.dataUrl) images.push(a.dataUrl);
+    }
+    if (this._lastScreenshot) {
+      images.push(this._lastScreenshot);
+      this._lastScreenshot = null;
+    }
+    if (!images.length) return;
+
+    if (!this._modelSupportsVision(model)) {
+      this.showToast('Current model does not support vision — images not sent to the model.', 'warning');
+      return;
+    }
+
+    const parts = [{ type: 'text', text: userMessage || 'Please analyze the attached image(s).' }];
+    for (const url of images) {
+      parts.push({ type: 'image_url', image_url: { url } });
+    }
+    messages[messages.length - 1] = { role: 'user', content: parts };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // FILE ATTACHMENTS — pick / paste / drop images, PDFs, text files
+  // ═══════════════════════════════════════════════════════════════
+  _setupAttachmentHandlers() {
+    if (!this.els.attachBtn || !this.els.attachInput) return;
+
+    this.els.attachBtn.addEventListener('click', () => this.els.attachInput.click());
+    this.els.attachInput.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      for (const f of files) await this._addAttachmentFile(f);
+      this.els.attachInput.value = '';
+    });
+
+    // Paste images / files into the chat input
+    this.els.userInput.addEventListener('paste', async (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const files = items
+        .filter(i => i.kind === 'file')
+        .map(i => i.getAsFile())
+        .filter(Boolean);
+      if (!files.length) return;
+      e.preventDefault();
+      for (const f of files) await this._addAttachmentFile(f);
+    });
+
+    // Drag & drop onto the input area
+    const dropZone = document.querySelector('.sp-input-area') || this.els.userInput;
+    ['dragenter', 'dragover'].forEach(evt => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add('sp-drop-active');
+      });
+    });
+    ['dragleave', 'drop'].forEach(evt => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('sp-drop-active');
+      });
+    });
+    dropZone.addEventListener('drop', async (e) => {
+      const files = Array.from(e.dataTransfer?.files || []);
+      for (const f of files) await this._addAttachmentFile(f);
+    });
+  }
+
+  async _addAttachmentFile(file) {
+    if (!file) return;
+    const MAX_BYTES = 8 * 1024 * 1024; // 8MB soft limit
+    if (file.size > MAX_BYTES) {
+      this.showToast(`"${file.name}" is too large (max 8MB).`, 'error');
+      return;
+    }
+    if ((this._pendingAttachments || []).length >= 6) {
+      this.showToast('Maximum 6 attachments per message.', 'warning');
+      return;
+    }
+
+    const mime = file.type || '';
+    const name = file.name || 'file';
+    const lower = name.toLowerCase();
+    let type = 'file';
+    if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(lower)) type = 'image';
+    else if (mime === 'application/pdf' || lower.endsWith('.pdf')) type = 'pdf';
+    else if (
+      mime.startsWith('text/') ||
+      /json|xml|javascript|typescript|csv/.test(mime) ||
+      /\.(txt|md|csv|json|log|html?|xml|js|ts|css|py|rb|go|rs|java|c|cpp|h|yml|yaml)$/i.test(lower)
+    ) type = 'text';
+
+    try {
+      if (type === 'image') {
+        const dataUrl = await this._readFileAsDataURL(file);
+        this._pendingAttachments.push({
+          id: this.generateId(),
+          name, type, mime: mime || 'image/*', size: file.size, dataUrl
+        });
+      } else if (type === 'text') {
+        const text = await this._readFileAsText(file);
+        this._pendingAttachments.push({
+          id: this.generateId(),
+          name, type, mime: mime || 'text/plain', size: file.size,
+          text: text.substring(0, 200000)
+        });
+      } else if (type === 'pdf') {
+        // Best-effort: extract text via offscreen PDF.js if available; else note binary attach
+        const text = await this._extractPdfAttachmentText(file);
+        this._pendingAttachments.push({
+          id: this.generateId(),
+          name, type, mime: 'application/pdf', size: file.size,
+          text: text || `[PDF file attached: ${name} — text extraction unavailable]`
+        });
+      } else {
+        // Unknown binary: store name only
+        this._pendingAttachments.push({
+          id: this.generateId(),
+          name, type: 'file', mime: mime || 'application/octet-stream', size: file.size,
+          text: `[Binary file attached: ${name}]`
+        });
+      }
+      this._renderAttachmentBar();
+    } catch (err) {
+      this.showToast(`Failed to attach ${name}: ${err.message}`, 'error');
+    }
+  }
+
+  _renderAttachmentBar() {
+    const bar = this.els.attachBar;
+    if (!bar) return;
+    const list = this._pendingAttachments || [];
+    if (!list.length) {
+      bar.style.display = 'none';
+      bar.innerHTML = '';
+      return;
+    }
+    bar.style.display = 'flex';
+    bar.innerHTML = list.map(a => {
+      if (a.type === 'image' && a.dataUrl) {
+        return `<div class="sp-attach-chip" data-id="${a.id}">
+          <img src="${a.dataUrl}" alt="">
+          <span class="sp-attach-chip-name" title="${this.escapeHtml(a.name)}">${this.escapeHtml(a.name)}</span>
+          <button class="sp-attach-chip-remove" data-id="${a.id}" title="Remove">×</button>
+        </div>`;
+      }
+      const badge = a.type === 'pdf' ? 'PDF' : (a.type === 'text' ? 'TXT' : 'FILE');
+      return `<div class="sp-attach-chip" data-id="${a.id}">
+        <span class="sp-attach-chip-badge">${badge}</span>
+        <span class="sp-attach-chip-name" title="${this.escapeHtml(a.name)}">${this.escapeHtml(a.name)}</span>
+        <button class="sp-attach-chip-remove" data-id="${a.id}" title="Remove">×</button>
+      </div>`;
+    }).join('');
+
+    bar.querySelectorAll('.sp-attach-chip-remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        this._pendingAttachments = (this._pendingAttachments || []).filter(a => a.id !== id);
+        this._renderAttachmentBar();
+      });
+    });
+  }
+
+  _buildAttachmentTextContext(attachments) {
+    if (!attachments?.length) return '';
+    const parts = [];
+    for (const a of attachments) {
+      if (a.type === 'image') continue;
+      if (a.text) {
+        parts.push(`--- ${a.name} ---\n${a.text}`);
+      } else {
+        parts.push(`--- ${a.name} --- (no extractable text)`);
+      }
+    }
+    return parts.join('\n\n');
+  }
+
+  _readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not read file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  _readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Could not read file'));
+      reader.readAsText(file);
+    });
+  }
+
+  async _extractPdfAttachmentText(file) {
+    try {
+      const buffer = await file.arrayBuffer();
+      // Reuse background offscreen PDF pipeline when available
+      const response = await chrome.runtime.sendMessage({
+        action: 'extractPdfText',
+        url: file.name,
+        title: file.name,
+        pdfData: Array.from(new Uint8Array(buffer)),
+        forAttachment: true
+      });
+      // Background may store as page context; also accept direct text if returned
+      if (response?.text) return String(response.text).substring(0, 200000);
+      if (response?.content) return String(response.content).substring(0, 200000);
+
+      // Fallback: wait briefly for session storage update
+      await new Promise(r => setTimeout(r, 400));
+      const { snn_page_context } = await chrome.storage.session.get('snn_page_context');
+      if (snn_page_context?.content && /pdf/i.test(snn_page_context.title || file.name)) {
+        return String(snn_page_context.content).substring(0, 200000);
+      }
+      return null;
+    } catch (e) {
+      console.warn('[SNN] PDF attachment extract failed:', e.message);
+      return null;
+    }
+  }
+
+  _formatBytes(n) {
+    if (!n && n !== 0) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   /**
