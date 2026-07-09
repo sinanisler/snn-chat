@@ -1176,41 +1176,21 @@ class SNNSidePanel {
       return new Promise((resolve) => {
         chrome.storage.local.get(['settings'], (result) => {
           const s = result.settings || {};
-          if (Object.keys(s).length === 0) {
-            // Migration: try chrome.storage.sync for legacy settings
-            chrome.storage.sync.get(['settings'], (syncResult) => {
-              const legacy = syncResult.settings || {};
-              if (Object.keys(legacy).length > 0) {
-                // Found legacy settings — migrate to local storage
-                this._applyDefaults(legacy);
-                chrome.storage.local.set({ settings: legacy });
-                resolve(legacy);
-              } else {
-                this._applyDefaults(s);
-                resolve(s);
-              }
-            });
-          } else {
-            this._applyDefaults(s);
-            resolve(s);
-          }
+          if (s.openrouterModel === undefined) s.openrouterModel = '';
+          if (s.enableStreaming === undefined) s.enableStreaming = true;
+          if (s.enableQuickActions === undefined) s.enableQuickActions = true;
+          if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
+          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 300;
+          if (s.autoScan === undefined) s.autoScan = true;
+          if (s.disabledActions === undefined) s.disabledActions = [];
+          if (s.agentPrompt === undefined) s.agentPrompt = this._getDefaultAgentPrompt();
+          if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
+          resolve(s);
         });
       });
     } catch (e) {
       return { enableStreaming: true, enableQuickActions: true, enableVoiceInput: true, quickActions: this.getDefaultQuickActions() };
     }
-  }
-
-  _applyDefaults(s) {
-    if (s.openrouterModel === undefined) s.openrouterModel = '';
-    if (s.enableStreaming === undefined) s.enableStreaming = true;
-    if (s.enableQuickActions === undefined) s.enableQuickActions = true;
-    if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
-    if (s.htmlParseLimit === undefined) s.htmlParseLimit = 300;
-    if (s.autoScan === undefined) s.autoScan = true;
-    if (s.disabledActions === undefined) s.disabledActions = [];
-    if (s.agentPrompt === undefined) s.agentPrompt = this._getDefaultAgentPrompt();
-    if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
   }
 
   async applySettings() {
