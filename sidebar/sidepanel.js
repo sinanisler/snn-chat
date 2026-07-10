@@ -3209,7 +3209,15 @@ class SNNSidePanel {
     // Space to talk (when input not focused)
     let spaceDown = false;
     document.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && document.activeElement !== this.els.userInput && !spaceDown) {
+      // Don't trigger voice when ANY text input/textarea/select/contentEditable is focused
+      const activeEl = document.activeElement;
+      const isEditing = activeEl && (
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.tagName === 'SELECT' ||
+        activeEl.isContentEditable
+      );
+      if (e.code === 'Space' && !isEditing && !spaceDown) {
         spaceDown = true;
         e.preventDefault();
         this._startVoice();
