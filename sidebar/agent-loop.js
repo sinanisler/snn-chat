@@ -1,6 +1,6 @@
-﻿// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+﻿//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // SNN Agent Loop â€” State Machine, Retry Engine, Action Orchestrator
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Runs in the side panel. Orchestrates the full agent lifecycle:
 // IDLE â†’ PARSING â†’ PLANNING â†’ EXECUTING â†’ WAITING â†’ OBSERVING
 //   â†’ REPORTING (or RETRYING â†’ FAILED / BLOCKED â†’ CANCELLED)
@@ -11,7 +11,7 @@
 // 3. Stale-state detection (tab switch, SW termination).
 // 4. User can cancel at ANY time.
 // 5. All promises are raced against timeouts.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 
 
@@ -139,11 +139,11 @@ class SNNAgentLoop {
     this._cancelled = false;
 
     try {
-      // â•â•â•â•â•â•â• CAPABILITY FAST-PATH â•â•â•â•â•â•â•
+      //  - - - - CAPABILITY FAST-PATH  - - - -
       const capResult = this._checkCapabilityQuery(userMessage);
       if (capResult) return await this._handleCapabilityQuery();
 
-      // â•â•â•â•â•â•â• AGENTIC LOOP WITH TOOL CALLING â•â•â•â•â•â•â•
+      //  - - - - AGENTIC LOOP WITH TOOL CALLING  - - - -
       this._transition('PARSING', { message: userMessage });
 
       const settings = await this.sp.getSettings();
@@ -264,7 +264,7 @@ class SNNAgentLoop {
 
       if (this._cancelled) return;
 
-      // â•â•â•â•â•â•â• REPORT â•â•â•â•â•â•â•
+      //  - - - - REPORT  - - - -
       if (this._stepResults.length > 0) {
         this._transition('REPORTING', { results: this._stepResults });
         if (this.onResult) this.onResult({ type: 'action_results', results: this._stepResults, plan: this._plan });
@@ -300,9 +300,9 @@ class SNNAgentLoop {
     }
   }
 
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   // TOOL DEFINITIONS â€” All SNN actions as OpenRouter tool schemas
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
   /**
    * Build the tools array for OpenRouter native tool calling.
@@ -676,9 +676,9 @@ CRITICAL RULES:
     try { return JSON.parse(str); } catch (e) { return {}; }
   }
 
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   // DISPATCH ACTION TO CONTENT SCRIPT (via background)
-  // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   async _dispatchAction(step) {
     // scrollAndAct needs a long timeout â€” it's an autonomous scroll loop
     const isLongRunning = step.action === 'scrollAndAct';
