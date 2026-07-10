@@ -1,3 +1,4 @@
+(function() {
 // SNN Chat — Side Panel Script 
 // Full chat UI running in Chrome's native side panel (chrome.sidePanel API).
 // Communicates with content script & background via chrome.storage.session + runtime messages.
@@ -3332,3 +3333,4 @@ class SNNSidePanel {
 document.addEventListener('DOMContentLoaded', () => {
   new SNNSidePanel();
 });
+})();

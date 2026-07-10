@@ -15,6 +15,8 @@
 
 
 
+(function() {
+
 // ── DEBUG LOGGING ──────────────────────────────────────────────────
 const SNN_D = {
   enabled: true,
@@ -1325,3 +1327,4 @@ CRITICAL RULES:
 if (typeof window !== 'undefined') {
   window.SNNAgentLoop = SNNAgentLoop;
 }
+})();
