@@ -160,7 +160,8 @@ body.theme-dark {
 }
 
 .sp-header-left { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; }
-.sp-header-right { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.sp-header-center { display: flex; justify-content: center; align-items: center; flex: 0 1 auto; min-width: 0; }
+.sp-header-right { display: flex; gap: 8px; align-items: center; flex: 1; justify-content: flex-end; }
 
 .sp-tab-domain {
   font-size: 11px;
