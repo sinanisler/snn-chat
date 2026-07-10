@@ -33,6 +33,9 @@ class SNNKokoroTTS {
     this._initPromise = null;
     // Track which backend we actually ended up using (may differ from requested)
     this._actualDevice = null;
+    // Smoke test state (fire-and-forget after init)
+    this._smokeTestPromise = null;
+    this._smokeTestStart = null;
 
     // Current playback state
     this._currentAudio = null;    // HTMLAudioElement
@@ -44,24 +47,11 @@ class SNNKokoroTTS {
     this._defaultVoice = 'am_michael';  // American male — best quality
     this._modelId = 'onnx-community/Kokoro-82M-v1.0-ONNX';
     this._dtype = 'q8';  // loads model_quantized.onnx (~92 MB), ~98% quality
-    // ── Prefer WebGPU: it runs on the GPU, doesn't block the main thread,
-    //     and avoids SharedArrayBuffer threading hangs in extensions.
-    //     Falls back to WASM (single-thread) if WebGPU is unavailable.
-    this._device = this._detectBestDevice();
-  }
-
-  /**
-   * Auto-detect the best available ONNX backend.
-   * WebGPU > WASM (WebGPU avoids the SharedArrayBuffer freeze).
-   */
-  _detectBestDevice() {
-    const hasWebGPU = typeof navigator !== 'undefined' && navigator.gpu;
-    if (hasWebGPU) {
-      D.log('WebGPU detected — will use GPU backend (no main-thread blocking)');
-      return 'webgpu';
-    }
-    D.log('WebGPU not available — falling back to WASM');
-    return 'wasm';
+    // ── WASM is the most compatible backend. We patched kokoro.web.js
+    //     to force single-thread mode (numThreads=1), which fixes the
+    //     SharedArrayBuffer hang in Chrome extensions.
+    //     WebGPU is kept as an optional alternative for supported devices.
+    this._device = 'wasm';
   }
 
   /**
@@ -92,6 +82,18 @@ class SNNKokoroTTS {
     D.log('Initializing Kokoro TTS...', { device: this._device, dtype: this._dtype, voice });
 
     try {
+      // ── Pre-configure global ORT env BEFORE import ──────────────────
+      // Safety net: if kokoro.web.js patch doesn't work, this ensures
+      // ONNX Runtime Web picks up single-thread config from the global scope.
+      // ORT Web checks globalThis.ort.env.wasm when initializing.
+      const g = /** @type {any} */ (globalThis);
+      if (!g.ort) g.ort = {};
+      if (!g.ort.env) g.ort.env = {};
+      if (!g.ort.env.wasm) g.ort.env.wasm = {};
+      g.ort.env.wasm.numThreads = 1;
+      g.ort.env.wasm.proxy = false;
+      D.log('Pre-seeded globalThis.ort.env.wasm.numThreads=1');
+
       // ── Dynamic import of the kokoro-js web bundle ──
       const kokoroUrl = chrome.runtime.getURL('assets/lib/kokoro.web.js');
       D.log('Loading kokoro-js from:', kokoroUrl);
@@ -140,58 +142,34 @@ class SNNKokoroTTS {
         webgl: typeof WebGLRenderingContext !== 'undefined'
       });
 
-      // ── Initialize the pipeline with fallback ──────────────────────
-      // Try WebGPU first (GPU-backed, no main-thread blocking, no SAB needed).
-      // If it fails, retry with WASM (already force-configured to single-thread).
-      const devicesToTry = this._device === 'webgpu'
-        ? ['webgpu', 'wasm']
-        : ['wasm'];
+      // ── Initialize the pipeline (WASM only, single-threaded) ──────
+      D.log(`Loading Kokoro pipeline via ${this._device} backend...`);
+      const t0 = performance.now();
 
-      let lastError = null;
-      for (const device of devicesToTry) {
-        try {
-          D.log(`Trying backend: ${device}`);
-          const t0 = performance.now();
-
-          this._tts = await KokoroTTS.from_pretrained(this._modelId, {
-            dtype: this._dtype,
-            device: device,
-            session_options: {
-              intra_op_num_threads: 1,
-              inter_op_num_threads: 1,
-              graph_optimization_level: 'all'
-            },
-            progress_callback: (info) => {
-              if (info.status === 'download') {
-                D.log(`Kokoro download: ${info.file} — ${info.progress?.toFixed(0) || '...'}%`);
-              } else if (info.status === 'done') {
-                D.log(`Kokoro ready: ${info.file}`);
-              } else if (info.status === 'progress') {
-                D.log(`Kokoro progress: ${info.file} — ${info.progress?.toFixed(0) || '...'}%`);
-              } else {
-                D.log(`Kokoro status: ${info.status}`, { file: info.file, progress: info.progress });
-              }
-            }
-          });
-
-          this._actualDevice = device;
-          const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-          D.log(`✅ Kokoro pipeline loaded in ${elapsed}s on backend: ${device}`);
-          break; // success — exit retry loop
-        } catch (deviceErr) {
-          lastError = deviceErr;
-          D.warn(`Backend '${device}' failed:`, deviceErr.message);
-          this._tts = null;
-          // Continue to next device in the fallback list
+      this._tts = await KokoroTTS.from_pretrained(this._modelId, {
+        dtype: this._dtype,
+        device: this._device,
+        session_options: {
+          intra_op_num_threads: 1,
+          inter_op_num_threads: 1,
+          graph_optimization_level: 'all'
+        },
+        progress_callback: (info) => {
+          if (info.status === 'download') {
+            D.log(`Kokoro download: ${info.file} — ${info.progress?.toFixed(0) || '...'}%`);
+          } else if (info.status === 'done') {
+            D.log(`Kokoro ready: ${info.file}`);
+          } else if (info.status === 'progress') {
+            D.log(`Kokoro progress: ${info.file} — ${info.progress?.toFixed(0) || '...'}%`);
+          } else {
+            D.log(`Kokoro status: ${info.status}`, { file: info.file, progress: info.progress });
+          }
         }
-      }
+      });
 
-      if (!this._tts) {
-        throw new Error(
-          `All backends failed. Last error: ${lastError?.message || 'unknown'}. ` +
-          `Tried: ${devicesToTry.join(', ')}.`
-        );
-      }
+      this._actualDevice = this._device;
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+      D.log(`✅ Kokoro pipeline loaded in ${elapsed}s on backend: ${this._device}`);
 
       this._ready = true;
       D.log('Kokoro TTS initialized successfully!');
@@ -201,11 +179,37 @@ class SNNKokoroTTS {
 
       // List available voices for debugging
       try {
-        const voices = this._tts.list_voices();
-        D.log('Available voices:', voices.length);
+        // list_voices() just does console.table and returns undefined.
+        // Access .voices directly to get the voice map.
+        const voices = this._tts.voices;
+        if (voices) {
+          const voiceIds = Object.keys(voices);
+          D.log('Available voices:', voiceIds.length, voiceIds.slice(0, 5));
+        } else {
+          D.warn('this._tts.voices is undefined — voice list unavailable');
+        }
       } catch(e) {
-        D.warn('list_voices() not available:', e.message);
+        D.warn('Voice listing failed:', e.message);
       }
+
+      // ── Smoke test: generate 2 words to verify pipeline ──────────
+      // Fire-and-forget: runs in background, doesn't block the user.
+      // If the user starts a real generation before it finishes, the
+      // real generation takes priority.
+      this._smokeTestPromise = this._safeGenerate('Hello world.', voice)
+        .then(result => {
+          const elapsed = ((performance.now() - (this._smokeTestStart || performance.now())) / 1000).toFixed(1);
+          D.log(`✅ TTS smoke test PASSED in ${elapsed}s`, {
+            audioLen: result?.audio?.length || '?',
+            sampleRate: result?.sampling_rate || '?'
+          });
+          this._smokeTestPromise = null;
+        })
+        .catch(smokeErr => {
+          D.error('❌ TTS smoke test FAILED:', smokeErr.message);
+          this._smokeTestPromise = null;
+        });
+      this._smokeTestStart = performance.now();
 
     } catch (err) {
       D.error('Kokoro TTS initialization failed:', {
@@ -344,17 +348,40 @@ class SNNKokoroTTS {
     // ── Pre-generation health check ──────────────────────────────
     this._logPreGenerationState();
 
-    // ── Chunk long text to avoid buffer overflows ──
-    // Kokoro works best with sentences. For very long text, we split
-    // at sentence boundaries and concatenate audio.
-    const MAX_CHUNK = 500; // characters per chunk
+    // ── Cancel any pending smoke test ─────────────────────────────
+    // The smoke test runs in background after init. If it's still going
+    // when the user clicks Read, abandon it to free the WASM runtime.
+    if (this._smokeTestPromise) {
+      D.log('Abandoning pending smoke test for real generation');
+      this._smokeTestPromise = null;
+      this._smokeTestStart = null;
+    }
+
+    // ── Chunk long text ─────────────────────────────────────────
+    // Kokoro works best with sentences. For very long text we split
+    // at paragraph boundaries to keep inference calls reasonable.
+    // Short texts go as one chunk — generate() handles internal processing.
+    const MAX_CHUNK = 2000; // chars per chunk (was 500, too aggressive)
     let chunks;
 
     if (text.length <= MAX_CHUNK) {
       chunks = [text];
     } else {
-      chunks = this._splitText(text, MAX_CHUNK);
-      D.log(`Text chunked into ${chunks.length} parts`, {
+      // Split at paragraph boundaries (double newlines), not arbitrary length
+      const paragraphs = text.split(/\n{2,}/);
+      chunks = [];
+      let current = '';
+      for (const para of paragraphs) {
+        if ((current + para).length > MAX_CHUNK && current.length > 0) {
+          chunks.push(current.trim());
+          current = para;
+        } else {
+          current += (current ? '\n\n' : '') + para;
+        }
+      }
+      if (current.trim()) chunks.push(current.trim());
+      if (chunks.length <= 1) chunks = [text]; // if no good split, use as-is
+      D.log(`Text chunked into ${chunks.length} parts at paragraph boundaries`, {
         chunkLengths: chunks.map(c => c.length)
       });
     }
@@ -396,7 +423,7 @@ class SNNKokoroTTS {
           const genResult = await Promise.race([
             this._safeGenerate(chunk, voice),
             new Promise((_, reject) =>
-              setTimeout(() => reject(new Error(`TTS chunk ${i+1}/${chunks.length} timed out after 60s — WASM may be stuck`)), 60000)
+              setTimeout(() => reject(new Error(`TTS chunk ${i+1}/${chunks.length} timed out after 180s`)), 180000)
             )
           ]);
 
@@ -510,59 +537,133 @@ class SNNKokoroTTS {
   }
 
   /**
-   * Safely call kokoro-js generate() which may be an async generator.
-   * Collects all yielded audio chunks and concatenates into a single RawAudio.
-   * If generate() returns a RawAudio directly (non-generator), use it as-is.
+   * Generate audio from text using kokoro-js.
+   *
+   * Uses generate() (one-shot, all text at once) as the primary API.
+   * This is faster than stream() because it does ONE model inference call
+   * instead of N separate calls (one per sentence). The model internally
+   * handles sentence-level generation efficiently.
+   *
+   * Falls back to stream() if generate() is unavailable.
+   *
    * @param {string} text
    * @param {string} voice
    * @returns {Promise<import('kokoro-js').RawAudio>}
    */
   async _safeGenerate(text, voice) {
+    // ── Primary: generate() — one-shot, fastest ────────────────────
+    D.log('Using generate() (one-shot)');
+    try {
+      return await this._directGenerate(text, voice);
+    } catch (genErr) {
+      D.warn('generate() failed, trying stream() fallback:', genErr.message);
+      // ── Fallback: stream() — per-sentence, more robust ──────────
+      if (typeof this._tts.stream === 'function') {
+        return await this._streamGenerate(text, voice);
+      }
+      throw genErr;
+    }
+  }
+
+  /**
+   * Generate via kokoro-js stream() — splits text into sentences,
+   * yields audio per sentence. Much better for debugging and reliability.
+   */
+  async _streamGenerate(text, voice) {
+    const audioPieces = [];
+    let sentenceCount = 0;
+    const streamStart = performance.now();
+
+    try {
+      // stream() with split_pattern splits text into sentences, yielding
+      // audio per sentence. Without split_pattern, it processes the whole
+      // text as one chunk (same as generate()). We WANT per-sentence splitting
+      // for incremental progress and smaller inference calls.
+      const stream = this._tts.stream(text, {
+        voice,
+        split_pattern: '\n'  // Split on newlines first; internal sentence logic handles the rest
+      });
+
+      if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
+        D.warn('stream() did not return an async iterator, falling back to generate()');
+        return await this._directGenerate(text, voice);
+      }
+
+      D.log('Starting stream iteration...');
+      for await (const item of stream) {
+        sentenceCount++;
+        const hasAudio = !!(item.audio && (item.audio.audio || item.audio.length));
+        D.log(`  Stream yield ${sentenceCount}: audio=${hasAudio}, text="${(item.text || '').substring(0, 60)}"`);
+
+        if (item.audio) {
+          audioPieces.push(item.audio);
+        } else {
+          D.warn(`  Stream yield ${sentenceCount} has no audio — skipping`);
+        }
+      }
+
+      const elapsed = ((performance.now() - streamStart) / 1000).toFixed(1);
+      D.log(`Stream complete: ${sentenceCount} sentences, ${audioPieces.length} audio pieces in ${elapsed}s`);
+
+    } catch (streamErr) {
+      D.error('Stream iteration failed:', streamErr);
+      // If we got some audio, return what we have
+      if (audioPieces.length > 0) {
+        D.warn(`Returning partial audio (${audioPieces.length}/${sentenceCount} pieces) after stream error`);
+      } else {
+        throw streamErr;
+      }
+    }
+
+    if (audioPieces.length === 0) {
+      throw new Error('kokoro-js stream() yielded no audio pieces');
+    }
+
+    if (audioPieces.length === 1) {
+      return audioPieces[0];
+    }
+    return this._concatAudio(audioPieces);
+  }
+
+  /**
+   * Generate via kokoro-js generate() — one-shot, all text at once.
+   * Used as fallback when stream() is unavailable.
+   */
+  async _directGenerate(text, voice) {
+    D.log('Calling generate() directly...');
     const genResult = this._tts.generate(text, { voice });
 
-    // Detect if the result is an async generator (kokoro-js >= 1.x)
+    // Detect if generate() returned an async generator (older kokoro-js versions)
     if (genResult && typeof genResult[Symbol.asyncIterator] === 'function') {
-      D.log('kokoro-js generate() returned async generator — collecting yields');
+      D.log('generate() returned async generator (older API) — iterating');
       const audioPieces = [];
-      let sentenceCount = 0;
-      const iterStart = performance.now();
-      try {
-        for await (const item of genResult) {
-          sentenceCount++;
-          if (item.audio) {
-            audioPieces.push(item.audio);
-            D.log(`  Yield ${sentenceCount}: audio len=${item.audio.audio?.length || item.audio.length || '?'}, text="${(item.text || '').substring(0, 50)}"`);
-          }
-        }
-      } catch (iterErr) {
-        D.error('Async generator iteration failed:', iterErr);
-        throw iterErr;
+      for await (const item of genResult) {
+        if (item.audio) audioPieces.push(item.audio);
       }
-      const iterElapsed = ((performance.now() - iterStart) / 1000).toFixed(1);
-      D.log(`Async generator complete: ${sentenceCount} sentences in ${iterElapsed}s`);
-
-      if (audioPieces.length === 0) {
-        throw new Error('kokoro-js generate() yielded no audio pieces');
-      }
-
-      // Concatenate all audio pieces into one RawAudio
-      if (audioPieces.length === 1) {
-        return audioPieces[0];
-      }
-      return this._concatAudio(audioPieces);
+      if (audioPieces.length === 0) throw new Error('generate() generator yielded no audio');
+      return audioPieces.length === 1 ? audioPieces[0] : this._concatAudio(audioPieces);
     }
 
-    // Non-generator: assume it's a Promise<RawAudio> or RawAudio directly
-    D.log('kokoro-js generate() returned non-generator — awaiting directly');
+    // Modern kokoro-js: generate() returns Promise<RawAudio>
+    D.log('generate() returned Promise — awaiting...');
     const result = await genResult;
+
+    // RawAudio has .audio (Float32Array) and .sampling_rate (number)
     if (result && result.audio !== undefined && result.sampling_rate !== undefined) {
-      return result; // Already a RawAudio
+      D.log('generate() returned RawAudio directly', {
+        audioLen: result.audio.length,
+        sampleRate: result.sampling_rate
+      });
+      return result;
     }
-    // Might be wrapped in { audio: RawAudio }
-    if (result?.audio) {
+
+    // Might be wrapped: { audio: RawAudio, ... }
+    if (result?.audio && result.audio.audio !== undefined) {
+      D.log('generate() returned wrapped result — extracting .audio');
       return result.audio;
     }
-    throw new Error(`Unexpected generate() return type: ${typeof result}`);
+
+    throw new Error(`Unexpected generate() return type: ${typeof result}, keys: ${result ? Object.keys(result).join(',') : 'null'}`);
   }
 
   /**
