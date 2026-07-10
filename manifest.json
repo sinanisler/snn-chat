@@ -53,12 +53,9 @@
       "description": "Toggle SNN Chat side panel"
     }
   },
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  },
   "web_accessible_resources": [
     {
-      "resources": ["sidebar/*", "assets/*", "offscreen/*", "lib/*", "models/*"],
+      "resources": ["sidebar/*", "assets/*", "offscreen/*", "lib/*"],
       "matches": ["<all_urls>"]
     }
   ]
