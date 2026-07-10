@@ -166,7 +166,19 @@ class SNNAgentLoop {
           : context.detail;
         messages.splice(1, 0, {
           role: 'system',
-          content: `[PAGE CONTENT â€” ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
+          content: `[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
+        });
+      }
+
+      // Add user-selected text if available (e.g., highlighted table rows, paragraphs, etc.)
+      if (context?.type === 'selection' && context?.detail) {
+        const limit = settings.contentLimit || 15000;
+        const detail = context.detail.length > limit
+          ? context.detail.substring(0, limit) + '\n\n[... selection truncated to ' + limit + ' chars ...]'
+          : context.detail;
+        messages.splice(1, 0, {
+          role: 'system',
+          content: `[USER-SELECTED TEXT — ALREADY PROVIDED. The user has highlighted this content. Use it directly; do NOT call snn_screenshot or snn_page_script just to re-read it — you already have the selection. The user's instruction relates to THIS selected content.]\n\n${detail}`
         });
       }
 
@@ -332,8 +344,8 @@ class SNNAgentLoop {
 
       // ── Page Sensing ─────────────────────────────────────────────
       { name: 'snn_screenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
-      { name: 'snn_page_script', desc: 'Run a script in the page to read or modify content, styles, and behavior and return the result. Use for ANY page operation not covered by dedicated tools: MODIFYING page styles (CSS, colors, sizes, backgrounds, fonts, visibility, layout), adding/removing/hiding elements, changing text content, reading page data (title, URL, element text, tables), finding elements, extracting info, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling, copying to clipboard, navigating history, and more. You CAN change how the page looks — use this tool to do it. Return JSON-serializable data.', params: {
-        code: { type: 'string', desc: 'JavaScript code to run. Has access to document, window. Use document.querySelector(), etc.' }
+      { name: 'snn_page_script', desc: 'Run a script in the page to read or modify content, styles, and behavior and return the result. Use for ANY page operation not covered by dedicated tools: MODIFYING page styles (CSS, colors, sizes, backgrounds, fonts, visibility, layout), adding/removing/hiding elements, changing text content, reading page data (title, URL, element text, tables), finding elements, extracting info, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling, copying to clipboard, navigating history, and more. You CAN change how the page looks — use this tool to do it. Return JSON-serializable data. CRITICAL: Your code runs via eval() at the TOP LEVEL (NOT inside a function) — do NOT use a bare "return" statement. Instead, make the last expression be the value you want returned, or wrap your code in an IIFE: (function(){ /* your code */ return result; })().', params: {
+        code: { type: 'string', desc: 'JavaScript code to run (TOP-LEVEL eval — no bare return!). Has access to document, window. Use document.querySelector(), etc.' }
       }, required: ['code'] },
 
       // ── Navigation & Browser ─────────────────────────────────────
@@ -413,7 +425,7 @@ WHEN YOU DO USE TOOLS:
 6. The snn_click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks. Use it for buttons, links, checkboxes, radio buttons, and opening dropdowns.
 7. snn_type types text into inputs. Click the field first with snn_click, then type with snn_type.
 8. MODIFYING THE PAGE: Use snn_page_script to change how the page looks or behaves. You CAN: change colors, fonts, sizes, backgrounds, hide elements, add content, restyle anything, run animations. Example: to make buttons red — snn_page_script with code: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red'). Example: to hide an element — snn_page_script with code: document.querySelector('.banner').style.display = 'none'.
-9. For ANY operation not covered by dedicated tools, use snn_page_script. It runs arbitrary JavaScript in the page and returns the result. Use it for: reading page data, finding elements, extracting tables, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling to elements, copying to clipboard, navigating history, and more.
+9. For ANY operation not covered by dedicated tools, use snn_page_script. It runs arbitrary JavaScript in the page and returns the result. Use it for: reading page data, finding elements, extracting tables, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling to elements, copying to clipboard, navigating history, and more. CRITICAL: Your code runs via eval() at the TOP LEVEL, NOT inside a function — NEVER use a bare "return" statement. Make the last expression the return value, or wrap in an IIFE: (function(){ ...; return x; })().
 10. For batch operations on infinite-scroll pages: use snn_scroll to reveal content, then snn_page_script to find and process elements.
 
 CRITICAL RULES:
@@ -548,6 +560,14 @@ CRITICAL RULES:
         maxRetries: this.MAX_RETRIES,
         error: result.error
       });
+
+      // SCRIPT_ERROR on page_script: retrying with the same code is pointless —
+      // the error is in the code itself (e.g., bare "return" via eval). Return the
+      // error immediately so the LLM can rewrite the code on the next iteration.
+      if (actionName === 'page_script' && result.error?.code === 'SCRIPT_ERROR') {
+        D.warn('SKIP RETRY (SCRIPT_ERROR)', { action: step.action, errorMsg: result.error?.message });
+        break;
+      }
 
       // ELEMENT_NOT_FOUND: scan page and rewrite selector before retry
       if (result.error?.code === 'ELEMENT_NOT_FOUND' && this._selectorBasedAction(actionName)) {
