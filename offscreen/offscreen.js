@@ -6,7 +6,7 @@
 // and sends the extracted text back.
 
 // ── DEBUG LOGGING ──────────────────────────────────────────────────
-const SNN_D = {
+var SNN_D = {
   enabled: true,
   module: 'Offscreen',
   _ts: () => new Date().toISOString().slice(11, 23),
@@ -21,7 +21,7 @@ const SNN_D = {
   warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
   error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
 };
-const D = SNN_D;
+var D = SNN_D;
 
 import * as pdfjsLib from '../lib/pdf.min.mjs';
 

@@ -1,4 +1,3 @@
-(function() {
 // ═══════════════════════════════════════════════════════════════════
 // SNN Agent UI — Progress, Error Cards, Status Indicators, Modals
 // ═══════════════════════════════════════════════════════════════════
@@ -411,4 +410,3 @@ class SNNAgentUI {
 if (typeof window !== 'undefined') {
   window.SNNAgentUI = SNNAgentUI;
 }
-})();

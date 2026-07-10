@@ -10,7 +10,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 // ── DEBUG LOGGING ──────────────────────────────────────────────────
-const SNN_D = {
+var SNN_D = {
   enabled: true,
   module: 'PageActor',
   _ts: () => new Date().toISOString().slice(11, 23),
@@ -32,7 +32,7 @@ const SNN_D = {
     console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a)));
   },
 };
-const D = SNN_D;
+var D = SNN_D;
 
 class SNNPageActor {
   constructor() {
