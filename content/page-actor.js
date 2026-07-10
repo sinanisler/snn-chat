@@ -53,7 +53,7 @@ class SNNPageActor {
         case 'agent:wait':             result = await this.wait(payload.ms || 1000); break;
         case 'agent:extractTable':     result = this.extractTable(payload.selector, payload.options); break;
         case 'agent:getElementText':   result = this.getElementText(payload.selector); break;
-        case 'agent:execute_js':       result = await this.execute_js(payload.code, payload.options); break;
+        case 'agent:page_script':       result = await this.page_script(payload.code, payload.options); break;
         case 'agent:getClipboard':     result = { text: await this.getClipboard() }; break;
         case 'agent:copyToClipboard':  await this.copyToClipboard(payload.text); result = { copied: true }; break;
         case 'agent:getViewportInfo':  result = this.getViewportInfo(); break;
@@ -835,14 +835,14 @@ class SNNPageActor {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ACTION: Execute JS
+  // ACTION: Page Script
   // ═══════════════════════════════════════════════════════════════
-  async execute_js(code, options = {}) {
+  async page_script(code, options = {}) {
     if (!code) throw new Error('No code provided');
     try {
       const fn = new Function('document', 'window', 'options', code);
       const result = await fn(document, window, options);
-      return { action: 'execute_js', result };
+      return { action: 'page_script', result };
     } catch (e) {
       throw new Error(`Script error: ${e.message}`);
     }
@@ -895,7 +895,7 @@ class SNNPageActor {
       dedupAttr    = 'data-snn-done',
       expandSelector = null,       // selector for "show more" / "load more" buttons to click
       action       = 'click',      // 'click' | 'extract'
-      stopWhen     = null,         // optional JS expression evaluated per item; return true to stop
+      stopWhen     = null,         // optional JS expression run per item; return true to stop
       maxEmptyScrolls = 3          // consecutive scrolls with zero new items before giving up
     } = options;
 

@@ -1465,7 +1465,7 @@ class SNNSidePanel {
           ${this.toggleHtml('s-action-type', 'Type / Input', 'Type text into fields and forms', s.disabledActions ? !s.disabledActions.includes('type') : true)}
           ${this.toggleHtml('s-action-scroll', 'Scroll', 'Scroll up, down, or to elements', s.disabledActions ? !s.disabledActions.includes('scroll') : true)}
           ${this.toggleHtml('s-action-screenshot', 'Screenshot', 'Capture visible page area', s.disabledActions ? !s.disabledActions.includes('screenshot') : true)}
-          ${this.toggleHtml('s-action-execute_js', 'Execute JavaScript', 'Run custom JS on the page for any operation', s.disabledActions ? !s.disabledActions.includes('execute_js') : true)}
+          ${this.toggleHtml('s-action-page_script', 'Run Page Script', 'Run custom JS on the page for any operation', s.disabledActions ? !s.disabledActions.includes('page_script') : true)}
         </div>
         <div class="sp-section">
           <h4>Navigation & Browser Actions</h4>
@@ -1475,8 +1475,6 @@ class SNNSidePanel {
         </div>
         <div class="sp-section">
           <h4>Custom Instruction <span style="font-weight:400;color:var(--sp-text-secondary)">(optional)</span></h4>
-          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">Add a personal touch — appended to every request. Leave empty for default behavior.</p>
-          <div class="sp-field"><h4>Custom Instruction <span style="font-weight:400;color:var(--sp-text-secondary)">(optional)</span></h4>
           <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">Add a personal touch — appended to every request. Leave empty for default behavior.</p>
           <div class="sp-field">
             <textarea id="s-agent-prompt" rows="2" placeholder="e.g. Always respond in Spanish. or Use emojis freely." style="font-size:12px;font-family:monospace;">${this.escapeHtml(s.agentPrompt || '')}</textarea>
@@ -2014,7 +2012,7 @@ class SNNSidePanel {
     const allActions = [
       'click', 'type', 'scroll',
       'navigate', 'openTab', 'screenshot', 'reload',
-      'execute_js'
+      'page_script'
     ];
     const disabled = [];
     for (const action of allActions) {

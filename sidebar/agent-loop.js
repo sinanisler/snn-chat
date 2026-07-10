@@ -307,8 +307,8 @@ class SNNAgentLoop {
 
       // ── Page Sensing ─────────────────────────────────────────────
       { name: 'snn_screenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
-      { name: 'snn_execute_js', desc: 'Execute arbitrary JavaScript in the current page DOM context and return the result. Use for ANY page operation not covered by dedicated tools: MODIFYING page styles (CSS, colors, sizes, backgrounds, fonts, visibility, layout), adding/removing/hiding elements, changing text content, reading page data (title, URL, element text, tables), finding elements, extracting info, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling, copying to clipboard, navigating history, and more. You CAN change how the page looks — use this tool to do it. Return JSON-serializable data.', params: {
-        code: { type: 'string', desc: 'JavaScript code to execute. Has access to document, window. Use document.querySelector(), etc.' }
+      { name: 'snn_page_script', desc: 'Run a script in the page to read or modify content, styles, and behavior and return the result. Use for ANY page operation not covered by dedicated tools: MODIFYING page styles (CSS, colors, sizes, backgrounds, fonts, visibility, layout), adding/removing/hiding elements, changing text content, reading page data (title, URL, element text, tables), finding elements, extracting info, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling, copying to clipboard, navigating history, and more. You CAN change how the page looks — use this tool to do it. Return JSON-serializable data.', params: {
+        code: { type: 'string', desc: 'JavaScript code to run. Has access to document, window. Use document.querySelector(), etc.' }
       }, required: ['code'] },
 
       // ── Navigation & Browser ─────────────────────────────────────
@@ -367,7 +367,7 @@ class SNNAgentLoop {
 
     let prompt = `You are SNN Chat, a browser extension agent running inside the USER'S OWN BROWSER. You help the user interact with and customize web pages they are viewing. Modifying page styles, colors, or content via JavaScript in the user's own browser is perfectly legitimate — you are not hacking or altering anyone else's website; you are customizing the user's personal browsing experience, just like a browser extension or dev tools would.
 
-You can click buttons, type into fields, scroll, navigate, take screenshots, execute arbitrary JavaScript (including modifying page styles, colors, layouts, and content), reload pages, and open new tabs. You have access to tools (functions) for all of these.
+You can click buttons, type into fields, scroll, navigate, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), reload pages, and open new tabs. You have access to tools (functions) for all of these.
 
 CRITICAL — WHEN TO USE TOOLS:
 - ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, take a screenshot, reload, change how the page looks, etc.
@@ -387,9 +387,9 @@ WHEN YOU DO USE TOOLS:
 5. When navigating: if the user says "go to X page", use snn_navigate.
 6. The snn_click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks. Use it for buttons, links, checkboxes, radio buttons, and opening dropdowns.
 7. snn_type types text into inputs. Click the field first with snn_click, then type with snn_type.
-8. MODIFYING THE PAGE: Use snn_execute_js to change how the page looks or behaves. You CAN: change colors, fonts, sizes, backgrounds, hide elements, add content, restyle anything, run animations. Example: to make buttons red — snn_execute_js with code: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red'). Example: to hide an element — snn_execute_js with code: document.querySelector('.banner').style.display = 'none'.
-9. For ANY operation not covered by dedicated tools, use snn_execute_js. It runs arbitrary JavaScript in the page and returns the result. Use it for: reading page data, finding elements, extracting tables, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling to elements, copying to clipboard, navigating history, and more.
-10. For batch operations on infinite-scroll pages: use snn_scroll to reveal content, then snn_execute_js to find and process elements.
+8. MODIFYING THE PAGE: Use snn_page_script to change how the page looks or behaves. You CAN: change colors, fonts, sizes, backgrounds, hide elements, add content, restyle anything, run animations. Example: to make buttons red — snn_page_script with code: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red'). Example: to hide an element — snn_page_script with code: document.querySelector('.banner').style.display = 'none'.
+9. For ANY operation not covered by dedicated tools, use snn_page_script. It runs arbitrary JavaScript in the page and returns the result. Use it for: reading page data, finding elements, extracting tables, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling to elements, copying to clipboard, navigating history, and more.
+10. For batch operations on infinite-scroll pages: use snn_scroll to reveal content, then snn_page_script to find and process elements.
 
 CRITICAL RULES:
 - NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
@@ -409,7 +409,7 @@ CRITICAL RULES:
   /**
    * Call OpenRouter with tools parameter.
    */
-  _callLLMWithTools(messages, tools, settings) {
+  async _callLLMWithTools(messages, tools, settings) {
     const apiKey = settings.openrouterKey;
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
 
@@ -575,7 +575,7 @@ CRITICAL RULES:
       case 'scroll': return { direction: args.direction || 'down', amount: args.amount || 500 };
       case 'wait': return { ms: args.ms || 1000 };
       case 'openTab': return { url: args.url || '' };
-      case 'execute_js': return { code: args.code || '' };
+      case 'page_script': return { code: args.code || '' };
       default: return args || {};
     }
   }
@@ -591,7 +591,7 @@ CRITICAL RULES:
       case 'snn_scroll': return a.direction === 'bottom' ? 'Scroll to bottom of page' : `Scroll ${a.direction || 'down'} ${a.amount || ''}`;
       case 'snn_wait': return `Wait ${a.ms || 1000}ms`;
       case 'snn_screenshot': return 'Take screenshot';
-      case 'snn_execute_js': return 'Execute JavaScript';
+      case 'snn_page_script': return 'Run Page Script';
       case 'snn_navigate': return `Navigate to ${a.url || 'page'}`;
       case 'snn_openTab': return `Open tab: ${a.url || ''}`;
       case 'snn_reload': return 'Reload page';
@@ -737,9 +737,7 @@ CRITICAL RULES:
   // ═══════════════════════════════════════════════════════════════
   _selectorBasedAction(actionName) {
     return [
-      'click', 'type', 'highlight', 'hover', 'findElements', 'getElementText',
-      'extractTable', 'selectDropdown', 'checkToggle', 'scrollToElement',
-      'waitForElement', 'scrollAndAct'
+      'click', 'type', 'scrollToElement', 'waitForElement'
     ].includes(actionName);
   }
 
@@ -1071,7 +1069,7 @@ CRITICAL RULES:
       const limit = settings.htmlParseLimit || 300;
 
       const result = await this._dispatchAction({
-        action: 'execute_js',
+        action: 'page_script',
         id: this._generateId(),
         params: {
           code: `(function() {
