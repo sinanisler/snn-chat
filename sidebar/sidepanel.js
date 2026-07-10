@@ -1353,26 +1353,23 @@ class SNNSidePanel {
       if (match) fullId = match;
     }
     if (fullId && this._modelsData?.[fullId]) this._selectedModelInfo = this._modelsData[fullId];
-    const supports = this._modelSupportsVision(fullId || this._selectedModelInfo?.id);
-    el.classList.toggle('has-vision', !!supports);
-    el.title = supports ? 'Vision-capable model' : 'Text-only model (no image input)';
-    // Inline badge next to model name
-    let badge = el.parentElement?.querySelector?.('.sp-vision-badge') || document.querySelector('.sp-vision-badge');
-    if (!badge) {
-      badge = document.createElement('span');
-      badge.className = 'sp-vision-badge';
-      el.insertAdjacentElement('afterend', badge);
-    }
-    if (supports) {
-      badge.textContent = 'Vision';
-      badge.style.display = 'inline-flex';
-      badge.classList.add('on');
-      badge.classList.remove('off');
+
+    // Update input modality tags on the welcome screen
+    const tagsContainer = this.el('welcome-input-tags');
+    if (!tagsContainer) return;
+
+    const modalities = this._selectedModelInfo?.architecture?.input_modalities || null;
+    if (Array.isArray(modalities) && modalities.length > 0) {
+      let html = '<span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
+      for (const mod of modalities) {
+        const isVision = /image|vision/i.test(String(mod));
+        html += `<span class="sp-model-tag sp-model-tag-input${isVision ? ' vision' : ''}">${this.escapeHtml(mod)}</span>`;
+      }
+      html += '</div>';
+      tagsContainer.innerHTML = html;
+      tagsContainer.style.display = 'flex';
     } else {
-      badge.textContent = 'Text';
-      badge.style.display = 'inline-flex';
-      badge.classList.add('off');
-      badge.classList.remove('on');
+      tagsContainer.style.display = 'none';
     }
   }
 
