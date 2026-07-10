@@ -78,7 +78,12 @@ class SNNAgentLoop {
   _modelSupportsVision(modelId) {
     if (!modelId) return false;
 
-    // 1) Authoritative: cached OpenRouter model data from settings/model picker
+    // 1) Delegate to side panel's authoritative modality check when available
+    if (this.sp?._modelSupportsModality) {
+      if (this.sp._modelSupportsModality(modelId, 'image')) return true;
+    }
+
+    // 2) Cached OpenRouter model data from settings/model picker
     const cached = this.sp?._modelsData?.[modelId] || this.sp?._selectedModelInfo;
     const modalities = cached?.architecture?.input_modalities
       || cached?.architecture?.modality?.split?.(',')
@@ -95,7 +100,7 @@ class SNNAgentLoop {
       return true;
     }
 
-    // 2) Fallback heuristic for uncached models
+    // 3) Fallback heuristic for uncached models
     const m = modelId.toLowerCase();
     return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
   }

@@ -65,8 +65,8 @@
     </div>
     <div class="sp-attach-bar" id="attach-bar" style="display:none"></div>
     <div class="sp-input-wrapper">
-      <button id="attach-btn" class="sp-attach-btn" title="Attach image, PDF, or text file">+</button>
-      <input type="file" id="attach-input" accept="image/*,.pdf,.txt,.md,.csv,.json,.log,.html,.htm,.xml,.js,.ts,.css" multiple hidden>
+      <button id="attach-btn" class="sp-attach-btn" title="Attach any file (image, audio, video, PDF, text)">+</button>
+      <input type="file" id="attach-input" accept="image/*,audio/*,video/*,.pdf,.txt,.md,.csv,.json,.log,.html,.htm,.xml,.js,.ts,.css" multiple hidden>
       <textarea id="user-input" placeholder="Ask anything..." rows="1"></textarea>
       <button id="voice-btn" class="sp-voice-btn" title="Voice input">Voice</button>
       <button id="send-btn" class="sp-send-btn">Send</button>
@@ -101,6 +101,7 @@
 
   <script src="../assets/lib/marked.umd.js"></script>
   <script src="../assets/lib/mermaid.min.js"></script>
+  <script src="kokoro-tts.js"></script>
   <script src="agent-loop.js"></script>
   <script src="agent-ui.js"></script>
   <script src="sidepanel.js"></script>

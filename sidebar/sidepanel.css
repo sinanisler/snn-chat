@@ -204,8 +204,8 @@ body.theme-dark {
 .sp-welcome-model {
   display: block;
   margin-top: 16px;
-  font-size: 12px;
-  color: var(--sp-text-secondary);
+  font-size: 14px;
+  color: var(--sp-accent-text);
   opacity: 0.55;
   font-weight: 400;
   letter-spacing: 0.3px;
@@ -307,14 +307,54 @@ body.theme-dark {
   cursor: pointer;
   color: var(--sp-text-secondary);
   transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .sp-msg-action:hover { background: rgba(128,128,128,0.22); color: var(--sp-text); }
+.sp-msg-action.speak.playing {
+  background: var(--sp-accent);
+  color: var(--sp-accent-text);
+}
+.sp-msg-action.speak.loading {
+  opacity: 0.7;
+  cursor: wait;
+}
 
 .sp-msg-tokens {
   font-size: 12px;
   color: var(--sp-text-secondary);
   opacity: 0.55;
   margin-top: 6px;
+}
+
+/* ── TTS Audio Player (inline below message) ────────────────── */
+.sp-tts-player {
+  margin-top: 8px;
+  padding: 6px 0;
+}
+.sp-tts-audio {
+  width: 100%;
+  height: 32px;
+  border-radius: 6px;
+  outline: none;
+}
+.sp-tts-audio::-webkit-media-controls-panel {
+  background: var(--sp-input-bg);
+}
+
+/* ── TTS Loading Spinner ──────────────────────────────────── */
+.sp-tts-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--sp-text-secondary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: sp-tts-spin 0.6s linear infinite;
+}
+@keyframes sp-tts-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ── Context Chip (in chat, before user bubble) ────────────────── */
@@ -527,6 +567,18 @@ body.theme-dark {
   border-radius: 4px;
   background: rgba(5,86,199,0.12);
   color: var(--sp-accent);
+}
+.sp-attach-chip-badge.audio {
+  background: rgba(220,120,50,0.15);
+  color: #dc7832;
+}
+.sp-attach-chip-badge.video {
+  background: rgba(180,50,220,0.15);
+  color: #b432dc;
+}
+.sp-attach-chip-badge.pdf {
+  background: rgba(192,57,43,0.12);
+  color: var(--sp-danger);
 }
 .sp-attach-chip-name {
   max-width: 140px;
@@ -978,16 +1030,11 @@ body.theme-dark {
   outline: none;
   border-color: var(--sp-input-focus);
 }
-.sp-qa-fields textarea.sp-qa-prompt {
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--sp-input-border);
- 
 .sp-model-tag-input.vision,
 .sp-model-tag.vision {
-  background: rgba(124, 58, 237, 0.12);
-  color: #7c3aed;
-  border: 1px solid rgba(124, 58, 237, 0.3);
+  background: #7c3aed;
+  color: #ffffff;
+  border: 1px solid #7c3aed;
 }
 .sp-model-info-banner {
   display: flex;
@@ -999,9 +1046,9 @@ body.theme-dark {
   font-size: 12px;
 }
 .sp-model-info-banner.vision {
-  background: rgba(124, 58, 237, 0.1);
-  border: 1px solid rgba(124, 58, 237, 0.25);
-  color: #7c3aed;
+  background: #7c3aed;
+  border: 1px solid #7c3aed;
+  color: #ffffff;
 }
 .sp-model-info-banner.text-only {
   background: rgba(128,128,128,0.1);
@@ -1032,44 +1079,61 @@ body.theme-dark {
   top: calc(100% + 4px);
   max-height: 280px;
   overflow: auto;
-  background: var(--sp-input-bg);
-  border: 1px solid var(--sp-input-border);
+  background: #2a2a2a;
+  border: 1px solid #444;
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
 }
 .sp-model-option {
   width: 100%;
   text-align: left;
   border: none;
-  background: transparent;
-  color: var(--sp-text);
-  padding: 10px 12px;
+  background: #333;
+  color: #ffffff;
+  padding: 8px 12px;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border-bottom: 1px solid var(--sp-border);
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #444;
+  white-space: nowrap;
 }
 .sp-model-option:last-child { border-bottom: none; }
-.sp-model-option:hover { background: var(--sp-context-bg); }
+.sp-model-option:hover { background: #444; }
 .sp-model-option.muted {
-  color: var(--sp-text-secondary);
+  color: #999;
   font-style: italic;
   cursor: default;
+}
+.sp-model-option-main {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
 .sp-model-option-name {
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .sp-model-option-id {
   font-size: 11px;
-  color: var(--sp-text-secondary);
+  color: #aaa;
   font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .sp-model-option-badges {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
+  flex-shrink: 0;
 }
 .sp-model-badge {
   display: inline-flex;
@@ -1082,12 +1146,12 @@ body.theme-dark {
   color: var(--sp-text-secondary);
 }
 .sp-model-badge.vision {
-  background: rgba(124, 58, 237, 0.14);
-  color: #7c3aed;
+  background: #7c3aed;
+  color: #ffffff;
 }
 .sp-model-badge.ctx {
-  background: rgba(5,86,199,0.12);
-  color: var(--sp-accent);
+  background: var(--sp-accent);
+  color: #ffffff;
 }
 .sp-model-badge.price {
   background: rgba(30,126,52,0.12);
@@ -1111,7 +1175,12 @@ body.theme-dark {
   display: inline-flex;
   background: rgba(128,128,128,0.12);
   color: var(--sp-text-secondary);
-} border-radius: 6px;
+}
+.sp-qa-fields textarea.sp-qa-prompt {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--sp-input-border);
+  border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
   background: var(--sp-input-bg);
@@ -1200,14 +1269,14 @@ body.theme-dark {
   white-space: nowrap;
 }
 .sp-model-tag-input {
-  background: rgba(5,86,199,0.12);
-  color: rgb(90, 136, 185);
-  border: 1px solid rgba(5,86,199,0.25);
+  background: var(--sp-accent);
+  color: #ffffff;
+  border: 1px solid var(--sp-accent);
 }
 .sp-model-tag-output {
-  background: rgba(30,126,52,0.12);
-  color: var(--sp-success);
-  border: 1px solid rgba(30,126,52,0.25);
+  background: var(--sp-success);
+  color: #ffffff;
+  border: 1px solid var(--sp-success);
 }
 .sp-model-tag-param {
   background: rgba(128,128,128,0.12);

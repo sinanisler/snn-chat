@@ -47,6 +47,9 @@ class SNNSidePanel {
     this._agentLoop = null;
     this._agentUI = null;
 
+    // ── Expose globally for Kokoro TTS toast access ──────────
+    window._snnSidePanel = this;
+
     // ── Last screenshot for vision follow-up questions ────────
     this._lastScreenshot = null;
 
@@ -99,6 +102,27 @@ class SNNSidePanel {
   // ── Init ────────────────────────────────────────────────────────
   async init() {
     D.log('init START', { windowId: null });
+
+    // ── Global error handlers for debugging ─────────────────────────
+    self.addEventListener('unhandledrejection', (event) => {
+      D.error('UNHANDLED PROMISE REJECTION', {
+        reason: event.reason?.message || event.reason,
+        stack: (event.reason?.stack || '').split('\n').slice(0, 4).join('\n')
+      });
+      // Show toast for user visibility
+      if (event.reason?.message?.includes('WASM') || event.reason?.message?.includes('onnx') || event.reason?.message?.includes('SharedArrayBuffer')) {
+        this.showToast('Speech engine error: ' + (event.reason.message || 'Unknown').substring(0, 80), 'error');
+      }
+    });
+    self.addEventListener('error', (event) => {
+      D.error('UNHANDLED ERROR', {
+        message: event.message,
+        filename: event.filename?.split('/').pop(),
+        lineno: event.lineno,
+        colno: event.colno
+      });
+    });
+    D.log('Global error handlers installed');
     await this.applySettings();
 
     // ── Load Session Lock state BEFORE loading sessions ──
@@ -752,8 +776,8 @@ class SNNSidePanel {
         if (contextType === 'none') contextType = 'files';
       }
 
-      // Stash image attachments for vision injection in callAPI/streamResponse
-      this._pendingImageAttachments = attachments.filter(a => a.type === 'image' && a.dataUrl);
+      // Stash media attachments (image, audio, video, pdf) for multimodal injection in callAPI/streamResponse
+      this._pendingMediaAttachments = attachments.filter(a => (a.type === 'image' || a.type === 'audio' || a.type === 'video' || a.type === 'pdf') && a.dataUrl);
 
       let response;
       if (settings.enableStreaming !== false) {
@@ -763,7 +787,7 @@ class SNNSidePanel {
         response = await this.callAPI(message || displayMessage, context, contextType, signal);
         this.removeLoadingMsg();
       }
-      this._pendingImageAttachments = null;
+      this._pendingMediaAttachments = null;
 
       // ── Tab-switch guard: discard if user switched tabs during API call ──
       if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
@@ -834,8 +858,8 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach images (user attachments + last screenshot) if model supports vision ──
-    this._injectVisionContent(messages, userMessage, model);
+    // ── Attach media (images, audio, video, pdf) based on model capabilities ──
+    this._injectMultimodalContent(messages, userMessage, model);
 
     const body = {
       model,
@@ -898,8 +922,8 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach images (user attachments + last screenshot) if model supports vision ──
-    this._injectVisionContent(messages, userMessage, model);
+    // ── Attach media (images, audio, video, pdf) based on model capabilities ──
+    this._injectMultimodalContent(messages, userMessage, model);
 
     const body = {
       model, messages, stream: true,
@@ -1047,7 +1071,8 @@ class SNNSidePanel {
       if (a.type === 'image' && a.dataUrl) {
         html += `<div class="sp-msg-attach-item sp-msg-attach-image"><img src="${a.dataUrl}" alt="${this.escapeHtml(a.name || 'image')}" title="${this.escapeHtml(a.name || '')}"></div>`;
       } else {
-        const icon = a.type === 'pdf' ? 'PDF' : 'FILE';
+        const iconMap = { audio: 'AUDIO', video: 'VIDEO', pdf: 'PDF', text: 'TXT' };
+        const icon = iconMap[a.type] || 'FILE';
         const size = a.size ? ` · ${this._formatBytes(a.size)}` : '';
         html += `<div class="sp-msg-attach-item sp-msg-attach-file"><span class="sp-msg-attach-badge">${icon}</span><span>${this.escapeHtml(a.name || 'file')}${size}</span></div>`;
       }
@@ -1152,7 +1177,7 @@ class SNNSidePanel {
     actions.className = 'sp-msg-actions';
     actions.innerHTML = `
       <button class="sp-msg-action copy" title="Copy">Copy</button>
-      <button class="sp-msg-action speak" title="Read aloud">Read</button>
+      <button class="sp-msg-action speak" title="Read aloud"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M3 9v6h4l5 5V4L7 9H3z" fill="currentColor"/><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z" fill="currentColor"/><path d="M14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" fill="currentColor"/></svg> Read</button>
     `;
 
     actions.querySelector('.copy').addEventListener('click', () => {
@@ -1160,16 +1185,49 @@ class SNNSidePanel {
       this.showToast('Copied!', 'success');
     });
 
-    actions.querySelector('.speak').addEventListener('click', () => {
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.cancel();
+    // ── Kokoro TTS Read button ──
+    const speakBtn = actions.querySelector('.speak');
+    speakBtn.addEventListener('click', () => {
+      D.log('Speak button clicked', { contentLen: content.length, hasKokoro: typeof snnKokoroTTS !== 'undefined' });
+      if (typeof snnKokoroTTS !== 'undefined') {
+        // Strip markdown for cleaner speech
+        const plainText = this._stripMarkdown(content);
+        D.log('Calling snnKokoroTTS.handleSpeakClick()', { plainTextLen: plainText.length });
+        snnKokoroTTS.handleSpeakClick(plainText, msgDiv, speakBtn);
       } else {
-        const u = new SpeechSynthesisUtterance(content);
-        window.speechSynthesis.speak(u);
+        // Fallback to browser TTS
+        D.log('snkKokoroTTS not available — using browser TTS fallback');
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.cancel();
+        } else {
+          const u = new SpeechSynthesisUtterance(content);
+          window.speechSynthesis.speak(u);
+        }
       }
     });
 
     msgDiv.appendChild(actions);
+  }
+
+  /** Strip markdown formatting to get plain text for TTS. */
+  _stripMarkdown(md) {
+    return md
+      .replace(/```[\s\S]*?```/g, '')           // code blocks
+      .replace(/`([^`]+)`/g, '$1')               // inline code
+      .replace(/\*\*([^*]+)\*\*/g, '$1')         // bold
+      .replace(/\*([^*]+)\*/g, '$1')             // italic
+      .replace(/__([^_]+)__/g, '$1')              // bold
+      .replace(/_([^_]+)_/g, '$1')                // italic
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
+      .replace(/!\[.*?\]\([^)]+\)/g, '')        // images
+      .replace(/#{1,6}\s*/g, '')                 // headings
+      .replace(/>\s*/g, '')                       // blockquotes
+      .replace(/[-*+]\s/g, '')                    // list markers
+      .replace(/\\(.)/g, '$1')                   // escapes
+      .replace(/\n{2,}/g, '. ')                   // double newlines → pause
+      .replace(/\n/g, ' ')                        // single newlines → space
+      .replace(/\s{2,}/g, ' ')                    // collapse whitespace
+      .trim();
   }
 
   addTokenInfo(msgDiv, tokenUsage) {
@@ -1724,7 +1782,7 @@ class SNNSidePanel {
     dropdown.innerHTML = list.map(m => {
       const vision = this._modelHasVision(m);
       const ctx = m.top_provider?.context_length || m.context_length || m.endpoints?.[0]?.context_length;
-      const ctxLabel = ctx ? `${Math.round(ctx / 1024)}K ctx` : '';
+      const ctxLabel = ctx ? `${Math.round(ctx / 1024)}K contx` : '';
       const price = this._formatModelPrice(m);
       const badges = [
         vision ? '<span class="sp-model-badge vision">Vision</span>' : '',
@@ -2779,52 +2837,111 @@ class SNNSidePanel {
   }
 
   /**
-   * Check if a model supports image/vision input.
+   * Check if a model supports a specific input modality (text, image, audio, video, file).
    * Prefers OpenRouter model metadata (architecture.input_modalities).
+   */
+  _modelSupportsModality(modelId, modality) {
+    if (!modelId || !modality) return false;
+    const cached = this._modelsData?.[modelId] || this._selectedModelInfo;
+    const mods = cached?.architecture?.input_modalities || null;
+    if (Array.isArray(mods)) {
+      return mods.some(m => String(m).toLowerCase() === modality.toLowerCase());
+    }
+    // Fallback: check architecture.modality string
+    const archMod = cached?.architecture?.modality;
+    if (typeof archMod === 'string' && archMod.toLowerCase().includes(modality.toLowerCase())) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if a model supports image/vision input.
+   * Delegates to _modelSupportsModality; falls back to name heuristic for uncached models.
    */
   _modelSupportsVision(modelId) {
     if (!modelId) return false;
-
+    // Authoritative: cached model data
+    if (this._modelSupportsModality(modelId, 'image')) return true;
+    // Also check old-style modality field
     const cached = this._modelsData?.[modelId] || this._selectedModelInfo;
-    const modalities = cached?.architecture?.input_modalities || null;
-    if (Array.isArray(modalities)) {
-      return modalities.some(m => /image|vision/i.test(String(m)));
-    }
     const modality = cached?.architecture?.modality;
-    if (typeof modality === 'string' && /image|vision/i.test(modality)) {
-      return true;
-    }
-
+    if (typeof modality === 'string' && /image|vision/i.test(modality)) return true;
     // Fallback heuristic for uncached models
     const m = modelId.toLowerCase();
     return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
   }
 
   /**
-   * Inject image attachments + last screenshot into the last user message
-   * when the selected model supports vision.
+   * Inject media attachments + last screenshot into the last user message.
+   * Routes each attachment based on model's supported modalities:
+   *   image → image_url (if model supports image)
+   *   audio → input_audio (if model supports audio)
+   *   video → video_url (if model supports video)
+   *   pdf   → file part (if model supports file) or parsed text fallback
+   *   text  → always injected as text part (already handled separately)
+   * Unsupported types are skipped with a grouped toast warning.
    */
-  _injectVisionContent(messages, userMessage, model) {
-    const images = [];
-    const pending = this._pendingImageAttachments || [];
-    for (const a of pending) {
-      if (a?.dataUrl) images.push(a.dataUrl);
+  _injectMultimodalContent(messages, userMessage, model) {
+    const pending = this._pendingMediaAttachments || [];
+    const media = pending.filter(a => a.dataUrl && (a.type === 'image' || a.type === 'audio' || a.type === 'video' || a.type === 'pdf'));
+    const hasScreenshot = !!this._lastScreenshot;
+
+    if (!media.length && !hasScreenshot) return;
+
+    const parts = [{ type: 'text', text: userMessage || 'Please analyze the attached media.' }];
+    const unsupported = [];
+
+    for (const a of media) {
+      switch (a.type) {
+        case 'image':
+          if (this._modelSupportsModality(model, 'image') || this._modelSupportsVision(model)) {
+            parts.push({ type: 'image_url', image_url: { url: a.dataUrl } });
+          } else {
+            unsupported.push('image');
+          }
+          break;
+        case 'audio':
+          if (this._modelSupportsModality(model, 'audio')) {
+            const audioFormat = (a.mime || '').replace('audio/', '') || 'wav';
+            const audioBase64 = (a.dataUrl || '').split(',')[1] || '';
+            parts.push({ type: 'input_audio', input_audio: { data: audioBase64, format: audioFormat } });
+          } else {
+            unsupported.push('audio');
+          }
+          break;
+        case 'video':
+          if (this._modelSupportsModality(model, 'video')) {
+            parts.push({ type: 'video_url', video_url: { url: a.dataUrl } });
+          } else {
+            unsupported.push('video');
+          }
+          break;
+        case 'pdf':
+          if (this._modelSupportsModality(model, 'file')) {
+            // Native model file parsing — send as file content part
+            const pdfBase64 = (a.dataUrl || '').split(',')[1] || a.dataUrl || '';
+            parts.push({ type: 'file', file: { filename: a.name || 'document.pdf', file_data: a.dataUrl || pdfBase64 } });
+          }
+          // If model doesn't support file, PDF was already parsed to text — skip here (text handled elsewhere)
+          break;
+      }
     }
-    if (this._lastScreenshot) {
-      images.push(this._lastScreenshot);
+
+    // Last screenshot (always image)
+    if (hasScreenshot) {
+      if (this._modelSupportsModality(model, 'image') || this._modelSupportsVision(model)) {
+        parts.push({ type: 'image_url', image_url: { url: this._lastScreenshot } });
+      }
       this._lastScreenshot = null;
     }
-    if (!images.length) return;
 
-    if (!this._modelSupportsVision(model)) {
-      this.showToast('Current model does not support vision — images not sent to the model.', 'warning');
-      return;
+    // Warn about unsupported types
+    const uniqueUnsupported = [...new Set(unsupported)];
+    if (uniqueUnsupported.length) {
+      this.showToast(`Current model does not support: ${uniqueUnsupported.join(', ')} — skipped.`, 'warning');
     }
 
-    const parts = [{ type: 'text', text: userMessage || 'Please analyze the attached image(s).' }];
-    for (const url of images) {
-      parts.push({ type: 'image_url', image_url: { url } });
-    }
     messages[messages.length - 1] = { role: 'user', content: parts };
   }
 
@@ -2877,11 +2994,6 @@ class SNNSidePanel {
 
   async _addAttachmentFile(file) {
     if (!file) return;
-    const MAX_BYTES = 8 * 1024 * 1024; // 8MB soft limit
-    if (file.size > MAX_BYTES) {
-      this.showToast(`"${file.name}" is too large (max 8MB).`, 'error');
-      return;
-    }
     if ((this._pendingAttachments || []).length >= 6) {
       this.showToast('Maximum 6 attachments per message.', 'warning');
       return;
@@ -2891,20 +3003,63 @@ class SNNSidePanel {
     const name = file.name || 'file';
     const lower = name.toLowerCase();
     let type = 'file';
-    if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(lower)) type = 'image';
-    else if (mime === 'application/pdf' || lower.endsWith('.pdf')) type = 'pdf';
-    else if (
+
+    // ── Type detection ──────────────────────────────────────────
+    if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(lower)) {
+      type = 'image';
+    } else if (mime.startsWith('audio/') || /\.(mp3|wav|ogg|flac|aac|m4a|aiff|wma|opus|pcm|weba)$/i.test(lower)) {
+      type = 'audio';
+    } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mpeg|mkv|avi|wmv|flv|ogv)$/i.test(lower)) {
+      type = 'video';
+    } else if (mime === 'application/pdf' || lower.endsWith('.pdf')) {
+      type = 'pdf';
+    } else if (
       mime.startsWith('text/') ||
       /json|xml|javascript|typescript|csv/.test(mime) ||
       /\.(txt|md|csv|json|log|html?|xml|js|ts|css|py|rb|go|rs|java|c|cpp|h|yml|yaml)$/i.test(lower)
-    ) type = 'text';
+    ) {
+      type = 'text';
+    }
+
+    // ── Tiered size limits ──────────────────────────────────────
+    const SIZE_LIMITS = {
+      image: 20 * 1024 * 1024,   // 20 MB
+      audio: 50 * 1024 * 1024,   // 50 MB
+      video: 75 * 1024 * 1024,   // 75 MB
+      pdf:    Infinity,           // no limit — parsed locally or sent as file
+      text:   Infinity,           // no limit — truncated to 200k chars
+      file:   20 * 1024 * 1024    // 20 MB (catch-all)
+    };
+    const maxBytes = SIZE_LIMITS[type] || SIZE_LIMITS.file;
+    if (file.size > maxBytes) {
+      const limitLabel = maxBytes === Infinity ? 'no limit' : `${(maxBytes / (1024 * 1024)).toFixed(0)}MB`;
+      this.showToast(`"${name}" is too large (max ${limitLabel} for ${type}s).`, 'error');
+      return;
+    }
+    // Combined total guard
+    const totalBytes = (this._pendingAttachments || []).reduce((s, a) => s + (a.size || 0), 0) + file.size;
+    const COMBINED_LIMIT = 200 * 1024 * 1024;
+    if (totalBytes > COMBINED_LIMIT) {
+      this.showToast(`Total attachments would exceed 200MB. Please remove some files.`, 'error');
+      return;
+    }
 
     try {
-      if (type === 'image') {
+      if (type === 'image' || type === 'audio' || type === 'video') {
         const dataUrl = await this._readFileAsDataURL(file);
         this._pendingAttachments.push({
           id: this.generateId(),
-          name, type, mime: mime || 'image/*', size: file.size, dataUrl
+          name, type, mime: mime || `${type}/*`, size: file.size, dataUrl
+        });
+      } else if (type === 'pdf') {
+        // Always parse PDF locally for text fallback; also store dataUrl for native file-sending models
+        const dataUrl = await this._readFileAsDataURL(file);
+        const text = await this._extractPdfAttachmentText(file);
+        this._pendingAttachments.push({
+          id: this.generateId(),
+          name, type, mime: 'application/pdf', size: file.size,
+          dataUrl,
+          text: text || `[PDF file attached: ${name} — text extraction unavailable]`
         });
       } else if (type === 'text') {
         const text = await this._readFileAsText(file);
@@ -2912,14 +3067,6 @@ class SNNSidePanel {
           id: this.generateId(),
           name, type, mime: mime || 'text/plain', size: file.size,
           text: text.substring(0, 200000)
-        });
-      } else if (type === 'pdf') {
-        // Best-effort: extract text via offscreen PDF.js if available; else note binary attach
-        const text = await this._extractPdfAttachmentText(file);
-        this._pendingAttachments.push({
-          id: this.generateId(),
-          name, type, mime: 'application/pdf', size: file.size,
-          text: text || `[PDF file attached: ${name} — text extraction unavailable]`
         });
       } else {
         // Unknown binary: store name only
@@ -2953,9 +3100,11 @@ class SNNSidePanel {
           <button class="sp-attach-chip-remove" data-id="${a.id}" title="Remove">×</button>
         </div>`;
       }
-      const badge = a.type === 'pdf' ? 'PDF' : (a.type === 'text' ? 'TXT' : 'FILE');
+      const badgeMap = { audio: 'AUDIO', video: 'VIDEO', pdf: 'PDF', text: 'TXT', file: 'FILE' };
+      const badge = badgeMap[a.type] || 'FILE';
+      const badgeCls = (a.type === 'audio' || a.type === 'video' || a.type === 'pdf') ? ` ${a.type}` : '';
       return `<div class="sp-attach-chip" data-id="${a.id}">
-        <span class="sp-attach-chip-badge">${badge}</span>
+        <span class="sp-attach-chip-badge${badgeCls}">${badge}</span>
         <span class="sp-attach-chip-name" title="${this.escapeHtml(a.name)}">${this.escapeHtml(a.name)}</span>
         <button class="sp-attach-chip-remove" data-id="${a.id}" title="Remove">×</button>
       </div>`;
@@ -2975,7 +3124,7 @@ class SNNSidePanel {
     if (!attachments?.length) return '';
     const parts = [];
     for (const a of attachments) {
-      if (a.type === 'image') continue;
+      if (a.type === 'image' || a.type === 'audio' || a.type === 'video') continue;
       if (a.text) {
         parts.push(`--- ${a.name} ---\n${a.text}`);
       } else {
