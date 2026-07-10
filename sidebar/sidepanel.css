@@ -432,8 +432,8 @@ body.theme-dark {
 
 /* Session Lock active — subtle accent on the input area */
 .sp-input-area.sp-locked {
-  border-top-color: var(--sp-accent);
-  box-shadow: inset 0 2px 0 var(--sp-accent);
+  border:solid 2px var(--sp-accent);
+  border-radius: 10px;
 }
 
 .sp-input-row {
@@ -466,6 +466,12 @@ body.theme-dark {
   background: var(--sp-btn-hover);
   border-color: var(--sp-border);
   color: var(--sp-text);
+}
+.sp-lock-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  display: block;
 }
 .sp-lock-btn.locked {
   color: var(--sp-accent);
