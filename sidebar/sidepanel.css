@@ -210,14 +210,6 @@ body.theme-dark {
   font-weight: 400;
   letter-spacing: 0.3px;
 }
-.sp-welcome-input-tags {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}
 
 /* ── Selection Bar ────────────────────────────────────────────── */
 .sp-selection-bar {
