@@ -3,6 +3,24 @@
 // Sends everything to background service worker via chrome.runtime.sendMessage.
 // The side panel UI is a separate chrome.sidePanel page — NO DOM injection.
 
+// ── DEBUG LOGGING ──────────────────────────────────────────────────
+const SNN_D = {
+  enabled: true,
+  module: 'Content',
+  _ts: () => new Date().toISOString().slice(11, 23),
+  _fmt(o) {
+    if (o === undefined) return 'undefined';
+    if (o === null) return 'null';
+    if (typeof o === 'string') return o.length > 200 ? o.slice(0, 200) + '…(' + o.length + ')' : o;
+    if (o instanceof Error) return `[${o.name}] ${o.message}`;
+    try { return JSON.stringify(o).slice(0, 300); } catch(e) { return String(o).slice(0, 300); }
+  },
+  log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ff8a65;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+};
+const D = SNN_D;
+
 // ── Safe API wrapper — survives extension reloads/updates ─────────
 // chrome.runtime.sendMessage can throw SYNCHRONOUSLY when the
 // extension context is invalidated (not just reject the promise),
@@ -25,6 +43,7 @@ class SNNContentExtractor {
   }
 
   async init() {
+    D.log('INIT', { url: window.location.href, hostname: window.location.hostname });
     this.extractAndSend();
     this.setupSelectionMonitoring();
     this.setupNavigationDetection();
@@ -54,7 +73,7 @@ class SNNContentExtractor {
     // Instead, we send the PDF URL to background.js which uses an offscreen
     // document + PDF.js to extract the actual text.
     if (this._isPdfPage()) {
-      console.log('[SNN Content] PDF detected — delegating to background PDF.js extraction');
+      D.log('PDF detected — delegating to background PDF.js extraction', { url: url.substring(0, 100) });
       
       // For file:// URLs, the service worker can't fetch them.
       // We need to fetch the PDF from the page context and pass the bytes.
@@ -96,18 +115,21 @@ class SNNContentExtractor {
       () => this.extractAllText()
     ];
 
+    let methodUsed = 'none';
     for (const method of methods) {
       try {
         textContent = await method();
-        if (textContent.length > 200) break;
+        if (textContent.length > 200) { methodUsed = method.name || 'unknown'; break; }
       } catch (e) { /* try next method */ }
     }
 
     if (textContent.length < 100) {
       textContent = this.extractBruteForce();
+      methodUsed = 'bruteForce';
     }
 
     const wordCount = this.countWords(textContent);
+    D.log('extractAndSend', { method: methodUsed, wordCount, contentLen: textContent.length, url: url.substring(0, 80) });
     const content = `=== WEBPAGE CONTENT ===\nTitle: ${title}\nURL: ${url}\n\n${textContent}\n=== END ===`;
 
     safeSendMessage({

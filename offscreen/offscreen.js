@@ -5,6 +5,24 @@
 // Receives PDF URLs/bytes from background.js, extracts text via PDF.js,
 // and sends the extracted text back.
 
+// ── DEBUG LOGGING ──────────────────────────────────────────────────
+const SNN_D = {
+  enabled: true,
+  module: 'Offscreen',
+  _ts: () => new Date().toISOString().slice(11, 23),
+  _fmt(o) {
+    if (o === undefined) return 'undefined';
+    if (o === null) return 'null';
+    if (typeof o === 'string') return o.length > 200 ? o.slice(0, 200) + '…(' + o.length + ')' : o;
+    if (o instanceof Error) return `[${o.name}] ${o.message}`;
+    try { return JSON.stringify(o).slice(0, 300); } catch(e) { return String(o).slice(0, 300); }
+  },
+  log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#aed581;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+};
+const D = SNN_D;
+
 import * as pdfjsLib from '../lib/pdf.min.mjs';
 
 // ── Configure PDF.js worker ───────────────────────────────────────
@@ -15,16 +33,18 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = '../lib/pdf.worker.min.mjs';
 // ═══════════════════════════════════════════════════════════════════
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'offscreen:extractPdf') {
+    D.log('← PDF extract request', { url: (message.url || '').substring(0, 100), hasBuffer: !!message.arrayBuffer });
     _extractPdfText(message.url, message.arrayBuffer)
-      .then(text => sendResponse({ success: true, text }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
-    return true; // keep channel open for async response
+      .then(text => { D.log('PDF extract OK', { textLen: text.length }); sendResponse({ success: true, text }); })
+      .catch(err => { D.error('PDF extract FAIL', { error: err.message }); sendResponse({ success: false, error: err.message }); });
+    return true;
   }
 
   if (message.action === 'offscreen:extractPdfFromBuffer') {
+    D.log('← PDF buffer extract request', { byteLen: message.arrayBuffer?.byteLength || 0 });
     _extractPdfFromArrayBuffer(message.arrayBuffer)
-      .then(text => sendResponse({ success: true, text }))
-      .catch(err => sendResponse({ success: false, error: err.message }));
+      .then(text => { D.log('PDF buffer extract OK', { textLen: text.length }); sendResponse({ success: true, text }); })
+      .catch(err => { D.error('PDF buffer extract FAIL', { error: err.message }); sendResponse({ success: false, error: err.message }); });
     return true;
   }
 });
@@ -42,17 +62,19 @@ async function _extractPdfText(url, arrayBuffer) {
   let data;
 
   if (arrayBuffer) {
-    // Already have the bytes (e.g. from background fetch for local files)
+    D.log('_extractPdfText: using provided buffer');
     data = arrayBuffer;
   } else if (url) {
-    // Fetch the PDF ourselves
+    D.log('_extractPdfText: fetching URL', { url: url.substring(0, 100) });
     try {
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) {
         throw new Error(`Failed to fetch PDF: HTTP ${response.status}`);
       }
       data = await response.arrayBuffer();
+      D.log('_extractPdfText: fetched', { byteLen: data.byteLength });
     } catch (fetchErr) {
+      D.error('_extractPdfText: fetch failed', { error: fetchErr.message });
       throw new Error(`Could not fetch PDF: ${fetchErr.message}`);
     }
   } else {
@@ -70,11 +92,14 @@ async function _extractPdfFromArrayBuffer(data) {
     throw new Error('Empty PDF data received');
   }
 
+  D.log('_extractPdfFromArrayBuffer', { byteLen: data.byteLength });
+
   // Load the PDF document
   const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
 
   const numPages = pdf.numPages;
+  D.log('PDF loaded', { numPages });
   const pageTexts = [];
 
   // Extract text from each page
@@ -90,7 +115,9 @@ async function _extractPdfFromArrayBuffer(data) {
   // Clean up
   await loadingTask.destroy();
 
-  return pageTexts.join('\n\n');
+  const result = pageTexts.join('\n\n');
+  D.log('_extractPdfFromArrayBuffer DONE', { numPages, totalChars: result.length });
+  return result;
 }
 
 /**

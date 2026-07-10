@@ -5,6 +5,24 @@
 // v2.1 — Extended with agent action relay, tab management, screenshots,
 // context menus, notifications, alarms, and download support.
 
+// ── DEBUG LOGGING ──────────────────────────────────────────────────
+const SNN_D = {
+  enabled: true,
+  module: 'BgSW',
+  _ts: () => new Date().toISOString().slice(11, 23),
+  _fmt(o) {
+    if (o === undefined) return 'undefined';
+    if (o === null) return 'null';
+    if (typeof o === 'string') return o.length > 300 ? o.slice(0, 300) + '…(' + o.length + ')' : o;
+    if (o instanceof Error) return `[${o.name}] ${o.message}`;
+    try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
+  },
+  log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#64b5f6;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+};
+const D = SNN_D;
+
 // ── Side Panel Behavior ───────────────────────────────────────────
 // Open side panel when user clicks the extension icon
 chrome.sidePanel
@@ -307,6 +325,7 @@ async function _makeAbsoluteUrl(rawUrl, tabId) {
 // ═══════════════════════════════════════════════════════════════
 async function _handleBgAgentAction(message, sendResponse) {
   const p = message.payload || {};
+  D.log('_handleBgAgentAction', { action: message.action, payloadKeys: Object.keys(p).join(','), tabId: p.tabId });
 
   try {
     switch (message.action) {
@@ -478,6 +497,11 @@ function _getCapabilities() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
 
+  // ── Log ALL messages (except high-frequency context/selection) ──
+  if (!['updatePageContext', 'updateSelection', 'clearSelection', 'requestPageContent'].includes(message.action)) {
+    D.log('← MSG', { action: message.action, sender: sender.tab ? `tab:${sender.tab.id}` : (sender.id || 'ext'), payloadKeys: message.payload ? Object.keys(message.payload).join(',') : 'none' });
+  }
+
   // ── Page Context ──────────────────────────────────────────────
   if (message.action === 'updatePageContext') {
     chrome.storage.session.set({
@@ -606,6 +630,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   ];
 
   if (BG_AGENT_ACTIONS.includes(message.action)) {
+    D.log('→ ROUTE BG', message.action);
     _handleBgAgentAction(message, sendResponse);
     return true;
   }
@@ -614,8 +639,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // PAGE-LEVEL AGENT ACTIONS — Forward to content script
   // ═══════════════════════════════════════════════════════════════
   if (message.action && message.action.startsWith('agent:')) {
+    D.log('→ ROUTE PAGE', message.action);
     chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
       if (!tab?.id) {
+        D.warn('→ ROUTE PAGE: no active tab');
         sendResponse({
           success: false,
           error: {
@@ -627,9 +654,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
         return;
       }
+      D.log('→ FORWARD to tab', { tabId: tab.id, action: message.action });
       chrome.tabs.sendMessage(tab.id, message).then((response) => {
         sendResponse(response);
-      }).catch(() => {
+      }).catch((err) => {
+        D.error('→ FORWARD FAILED', { tabId: tab.id, action: message.action, error: err.message });
         sendResponse({
           success: false,
           error: {

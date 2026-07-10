@@ -2,6 +2,24 @@
 // Full chat UI running in Chrome's native side panel (chrome.sidePanel API).
 // Communicates with content script & background via chrome.storage.session + runtime messages.
 
+// ── DEBUG LOGGING ──────────────────────────────────────────────────
+const SNN_D = {
+  enabled: true,
+  module: 'SidePanel',
+  _ts: () => new Date().toISOString().slice(11, 23),
+  _fmt(o) {
+    if (o === undefined) return 'undefined';
+    if (o === null) return 'null';
+    if (typeof o === 'string') return o.length > 300 ? o.slice(0, 300) + '…(' + o.length + ')' : o;
+    if (o instanceof Error) return `[${o.name}] ${o.message}`;
+    try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
+  },
+  log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ce93d8;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+};
+const D = SNN_D;
+
 class SNNSidePanel {
   constructor() {
     this.chatHistory = [];
@@ -80,6 +98,7 @@ class SNNSidePanel {
 
   // ── Init ────────────────────────────────────────────────────────
   async init() {
+    D.log('init START', { windowId: null });
     await this.applySettings();
 
     // ── Load Session Lock state BEFORE loading sessions ──
@@ -242,6 +261,7 @@ class SNNSidePanel {
         if (ctx && ctx.tabId && ctx.tabId !== this.currentTabId) return;
         this.pageContext = ctx;
         if (this.pageContext) {
+          D.log('Page context updated', { title: (ctx?.title || '').substring(0, 60), wordCount: ctx?.wordCount, tabId: ctx?.tabId, isPdf: ctx?.isPdf });
           this.currentDomain = this.pageContext.domain || this.currentDomain;
           this._updateTabIndicator();
         }
@@ -446,6 +466,7 @@ class SNNSidePanel {
 
   async _onTabSwitched(tabId, url, domain) {
     if (tabId === this.currentTabId) return; // Same tab, nothing to do
+    D.log('_onTabSwitched', { fromTabId: this.currentTabId, toTabId: tabId, domain, chatLock: this._chatLockEnabled });
 
     // ═══════════════════════════════════════════════════════════
     // SESSION LOCK: bypass per-tab session switching entirely
@@ -589,6 +610,8 @@ class SNNSidePanel {
     const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
     // ── Snapshot tab so we can discard stale responses after tab switch ──
     const sendTabId = this.currentTabId;
+
+    D.log('sendMessage', { msgLen: message.length, msgPreview: message.substring(0, 80), contextType: contextSnapshot?.type, attachmentCount: attachments.length, tabId: sendTabId, chatLock: this._chatLockEnabled });
 
     // ── Create abort controller so we can cancel in-flight fetch on tab switch ──
     this._activeAbortController = new AbortController();
@@ -783,6 +806,7 @@ class SNNSidePanel {
     if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
 
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    D.log('callAPI', { model, msgLen: message.length, contextType, contextLen: (context || '').length, hasSignal: !!signal });
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant. Be concise and accurate.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
 
@@ -829,6 +853,7 @@ class SNNSidePanel {
     if (!res.ok) {
       let err = `API error ${res.status}`;
       try { const d = await res.json(); if (d.error?.message) err = d.error.message; } catch (e) {}
+      D.error('callAPI FAILED', { status: res.status, error: err });
       throw new Error(err);
     }
 
@@ -838,6 +863,7 @@ class SNNSidePanel {
       completion_tokens: data.usage?.completion_tokens || 0,
       total_tokens: data.usage?.total_tokens || 0
     };
+    D.log('callAPI OK', { tokens: this.lastTokenUsage, contentLen: (data.choices?.[0]?.message?.content || '').length });
     return data.choices[0]?.message?.content || '';
   }
 
@@ -847,6 +873,7 @@ class SNNSidePanel {
     if (!apiKey) throw new Error('OpenRouter API key not set.');
 
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    D.log('streamResponse', { model, msgLen: message.length, contextLen: (context || '').length, contextType });
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
     let userMessage = message;
@@ -896,8 +923,11 @@ class SNNSidePanel {
 
     if (!res.ok) {
       msgDiv.remove();
+      D.error('streamResponse FAILED', { status: res.status });
       throw new Error(`API error ${res.status}`);
     }
+
+    D.log('streamResponse streaming...');
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -3067,10 +3097,11 @@ class SNNSidePanel {
 
   _initAgentLoop() {
     if (typeof SNNAgentLoop === 'undefined' || typeof SNNAgentUI === 'undefined') {
-      console.warn('[SNN] Agent loop classes not loaded.');
+      D.warn('Agent loop classes not loaded.');
       return;
     }
 
+    D.log('Agent loop INIT');
     this._agentLoop = new SNNAgentLoop(this);
     this._agentUI = new SNNAgentUI(this);
 

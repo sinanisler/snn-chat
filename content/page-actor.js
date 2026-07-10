@@ -9,6 +9,31 @@
 // Prefer role/name/text over brittle CSS whenever possible.
 // ═══════════════════════════════════════════════════════════════════
 
+// ── DEBUG LOGGING ──────────────────────────────────────────────────
+const SNN_D = {
+  enabled: true,
+  module: 'PageActor',
+  _ts: () => new Date().toISOString().slice(11, 23),
+  _fmt(o) {
+    if (o === undefined) return 'undefined';
+    if (o === null) return 'null';
+    if (typeof o === 'string') return o.length > 200 ? o.slice(0, 200) + '…(' + o.length + ')' : o;
+    if (o instanceof Error) return `[${o.name || 'Error'}] ${o.message}`;
+    try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
+  },
+  log(...args) {
+    if (!this.enabled) return;
+    console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#4fc3f7;font-weight:bold', '', ...args.map(a => this._fmt(a)));
+  },
+  warn(...args) {
+    console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a)));
+  },
+  error(...args) {
+    console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a)));
+  },
+};
+const D = SNN_D;
+
 class SNNPageActor {
   constructor() {
     this._highlights = [];
@@ -17,12 +42,14 @@ class SNNPageActor {
     this._pickerHandlers = null;
     this._monitors = new Map();
     this._setupListener();
+    D.log('INIT', { url: location.href, readyState: document.readyState });
   }
 
   // ── Message Listener ────────────────────────────────────────────
   _setupListener() {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!message.action || !message.action.startsWith('agent:')) return;
+      D.log('← RECEIVED', message.action, { taskId: message.taskId, stepId: message.stepId, payload: message.payload, meta: message.meta });
       this._dispatch(message, sendResponse);
       return true; // keep channel open for async sendResponse
     });
@@ -31,6 +58,7 @@ class SNNPageActor {
   async _dispatch(msg, sendResponse) {
     const { taskId, stepId, action, payload, meta } = msg;
     const startTime = performance.now();
+    D.log('_dispatch START', action, { taskId, stepId, payload, meta });
     try {
       let result;
       switch (action) {
@@ -64,14 +92,24 @@ class SNNPageActor {
           return this._respond(sendResponse, false, { code: 'UNKNOWN_ACTION', message: `Unknown action: "${action}"`, retryable: false, suggestion: 'Check available actions.' }, stepId);
       }
       const duration = Math.round(performance.now() - startTime);
+      D.log('_dispatch OK', action, { duration_ms: duration, result_keys: result ? Object.keys(result) : 'none' });
       this._respond(sendResponse, true, { ...result, _duration_ms: duration }, stepId);
     } catch (err) {
       const duration = Math.round(performance.now() - startTime);
-      this._respond(sendResponse, false, this._categorizeError(err, action, payload, duration), stepId);
+      const catErr = this._categorizeError(err, action, payload, duration);
+      D.error('_dispatch FAIL', action, { duration_ms: duration, error: err.message, stack: err.stack?.split('\n').slice(0,3).join(' | '), categorized: catErr });
+      this._respond(sendResponse, false, catErr, stepId);
     }
   }
 
   _respond(sendResponse, success, data, stepId) {
+    const response = {
+      action: success ? 'agent:result' : 'agent:error',
+      stepId, success,
+      ...(success ? { result: data } : { error: data }),
+      pageState: this._snapshotPageState()
+    };
+    D.log(success ? '→ RESPOND OK' : '→ RESPOND ERROR', { stepId, data_keys: Object.keys(data).join(','), pageState: response.pageState.url });
     try {
       sendResponse({
         action: success ? 'agent:result' : 'agent:error',
@@ -117,7 +155,8 @@ class SNNPageActor {
   // ELEMENT RESOLUTION ENGINE
   // ═══════════════════════════════════════════════════════════════
   _resolveElement(selector, options = {}) {
-    if (!selector) throw new Error('No selector provided');
+    if (!selector) { D.warn('_resolveElement: empty selector!'); throw new Error('No selector provided'); }
+    D.log('_resolveElement', { selector: selector.substring(0, 150), allowHidden: options.allowHidden });
 
     // :text("exact text") — tiered priority: most specific interactive elements first
     if (selector.startsWith(':text(')) {
@@ -322,13 +361,24 @@ class SNNPageActor {
     // Standard CSS
     try {
       const all = document.querySelectorAll(selector);
-      if (all.length === 0) throw new Error(`No element matching "${selector}"`);
-      if (!options.allowHidden) {
-        for (const el of all) { if (el.offsetParent || /^(BODY|HTML)$/i.test(el.tagName)) return el; }
+      if (all.length === 0) {
+        D.warn('_resolveElement CSS: no matches for', selector);
+        throw new Error(`No element matching "${selector}"`);
       }
+      if (!options.allowHidden) {
+        for (const el of all) {
+          if (el.offsetParent || /^(BODY|HTML)$/i.test(el.tagName)) {
+            D.log('_resolveElement OK (CSS)', { selector, tag: el.tagName, text: (el.textContent||'').trim().slice(0,60), visible: true });
+            return el;
+          }
+        }
+        D.warn('_resolveElement CSS: found but ALL hidden', { selector, total: all.length });
+      }
+      D.log('_resolveElement OK (CSS, allowHidden)', { selector, tag: all[0].tagName, text: (all[0].textContent||'').trim().slice(0,60) });
       return all[0];
     } catch (e) {
       if (/No element/.test(e.message)) throw e;
+      D.error('_resolveElement CSS error', { selector, error: e.message });
       throw new Error(`Invalid selector "${selector}": ${e.message}`);
     }
   }
@@ -428,7 +478,9 @@ class SNNPageActor {
   // ACTION: Click — Multi-strategy for SPA/dynamic pages
   // ═══════════════════════════════════════════════════════════════
   async click(selector, options = {}) {
+    D.log('click START', { selector });
     const el = this._resolveElement(selector, options);
+    D.log('click resolved element', { tag: el.tagName, text: (el.textContent||'').trim().slice(0,50), id: el.id, class: (el.className||'').slice(0,40) });
     await this._ensureInteractable(el, options);
     const r = el.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -494,7 +546,9 @@ class SNNPageActor {
   // ═══════════════════════════════════════════════════════════════
   async type(selector, text, options = {}) {
     if (text == null) throw new Error('No text provided');
+    D.log('type START', { selector, textLen: String(text).length, textPreview: String(text).substring(0, 60) });
     const el = this._resolveElement(selector, options);
+    D.log('type resolved element', { tag: el.tagName, type: el.type, placeholder: el.placeholder, name: el.name, id: el.id });
     await this._ensureInteractable(el, options);
     el.focus();
     const str = String(text);
@@ -838,12 +892,15 @@ class SNNPageActor {
   // ACTION: Page Script
   // ═══════════════════════════════════════════════════════════════
   async page_script(code, options = {}) {
-    if (!code) throw new Error('No code provided');
+    if (!code) { D.warn('page_script: no code provided'); throw new Error('No code provided'); }
+    D.log('page_script EXECUTE', { codeLen: code.length, codePreview: code.substring(0, 200), options });
     try {
       const fn = new Function('document', 'window', 'options', code);
       const result = await fn(document, window, options);
+      D.log('page_script OK', { resultType: typeof result, resultPreview: typeof result === 'string' ? result.substring(0, 200) : String(result).substring(0, 200) });
       return { action: 'page_script', result };
     } catch (e) {
+      D.error('page_script FAIL', { error: e.message, stack: e.stack?.split('\n').slice(0,4).join(' | '), codeSnippet: code.substring(0, 300) });
       throw new Error(`Script error: ${e.message}`);
     }
   }

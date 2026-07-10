@@ -13,6 +13,26 @@
 // 5. All promises are raced against timeouts.
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+
+
+// ── DEBUG LOGGING ──────────────────────────────────────────────────
+const SNN_D = {
+  enabled: true,
+  module: 'AgentLoop',
+  _ts: () => new Date().toISOString().slice(11, 23),
+  _fmt(o) {
+    if (o === undefined) return 'undefined';
+    if (o === null) return 'null';
+    if (typeof o === 'string') return o.length > 300 ? o.slice(0, 300) + '…(' + o.length + ')' : o;
+    if (o instanceof Error) return `[${o.name}] ${o.message}`;
+    try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
+  },
+  log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#81c784;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+};
+const D = SNN_D;
+
 class SNNAgentLoop {
   constructor(sidePanel) {
     this.sp = sidePanel; // reference to SNNSidePanel instance
@@ -90,6 +110,7 @@ class SNNAgentLoop {
    */
   cancel(reason = 'user') {
     if (this._state === 'IDLE') return;
+    D.warn('CANCEL', { reason, currentState: this._state });
     this._cancelled = true;
     this._cancelReason = reason;
     const label = reason === 'tab-switch' ? 'Tab switched â€” task interrupted' : 'User cancelled';
@@ -111,6 +132,7 @@ class SNNAgentLoop {
       return;
     }
 
+    D.log('▶ run START', { msgPreview: userMessage.substring(0, 100), contextType: context?.type, tabId, model: this.sp._selectedModelInfo?.id || 'unknown' });
     this._reset();
     this._sendTabId = tabId;
     this._taskId = this._generateId();
@@ -253,9 +275,11 @@ class SNNAgentLoop {
       // If LLM produced a final answer without using tools,
       // return the content so the sidepanel can stream it directly.
       if (finalContent && this._stepResults.length === 0) {
+        D.log('▶ run DONE (chat)', { contentLen: finalContent.length });
         return { type: 'chat', content: finalContent };
       }
 
+      D.log('▶ run DONE (action)', { stepResults: this._stepResults.length, llmResponseLen: (finalContent || '').length });
       return {
         type: 'action',
         results: this._stepResults,
@@ -263,6 +287,7 @@ class SNNAgentLoop {
       };
 
     } catch (err) {
+      D.error('▶ run CRASHED', { error: err.message, stack: err.stack?.split('\n').slice(0,3).join(' | ') });
       if (!this._cancelled) {
         const failData = {
           phase: 'AGENTIC_LOOP',
@@ -422,6 +447,10 @@ CRITICAL RULES:
       temperature: settings.temperature ?? 0.7
     };
 
+    const msgCount = messages.length;
+    const lastMsg = messages[msgCount - 1];
+    D.log('→ LLM CALL', { model, msgCount, toolCount: tools.length, lastRole: lastMsg?.role, lastContentLen: typeof lastMsg?.content === 'string' ? lastMsg.content.length : 'multipart' });
+
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -435,10 +464,15 @@ CRITICAL RULES:
 
     if (!res.ok) {
       const errText = await res.text().catch(() => 'Unknown error');
+      D.error('← LLM ERROR', { status: res.status, errText: errText.substring(0, 300) });
       throw new Error(`API error ${res.status}: ${errText.substring(0, 200)}`);
     }
 
-    return await res.json();
+    const json = await res.json();
+    const choice = json.choices?.[0];
+    const toolCalls = choice?.message?.tool_calls;
+    D.log('← LLM OK', { finishReason: choice?.finish_reason, contentLen: (choice?.message?.content || '').length, toolCallCount: toolCalls?.length || 0, toolNames: toolCalls?.map(tc => tc.function?.name).join(',') || 'none' });
+    return json;
   }
 
   /**
@@ -448,6 +482,7 @@ CRITICAL RULES:
   async _executeToolCall(fnName, fnArgs, iteration) {
     // Map tool name to action name (remove snn_ prefix)
     const actionName = fnName.startsWith('snn_') ? fnName.slice(4) : fnName;
+    D.log('_executeToolCall', { fnName, actionName, iteration, args: fnArgs });
 
     // Special handling for capability query
     if (actionName === 'getCapabilities') {
@@ -507,6 +542,7 @@ CRITICAL RULES:
 
     while (!result.success && this._attemptCount < this.MAX_RETRIES && !this._cancelled) {
       this._attemptCount++;
+      D.warn('RETRY', { attempt: this._attemptCount, maxRetries: this.MAX_RETRIES, action: step.action, errorCode: result.error?.code, errorMsg: result.error?.message });
       this._transition('RETRYING', {
         attempt: this._attemptCount,
         maxRetries: this.MAX_RETRIES,
@@ -672,20 +708,25 @@ CRITICAL RULES:
       message.payload.tabId = this._sendTabId;
     }
 
+    D.log('→ SEND', { action: message.action, stepId: message.stepId, payload: message.payload, timeout });
+
     try {
       // Race: response vs timeout
       const response = await this._sendWithTimeout(message, timeout);
 
       if (!response) {
+        D.warn('← TIMEOUT', { action: message.action, timeout });
         return {
           success: false,
           error: { code: 'TIMEOUT', message: `Action timed out after ${timeout / 1000}s.`, retryable: true, suggestion: 'The page may be slow. Try again or increase the timeout.' }
         };
       }
 
+      D.log('← RESPONSE', { action: message.action, success: response.success, errorCode: response.error?.code, resultKeys: response.result ? Object.keys(response.result).join(',') : 'none' });
       return response; // { success: bool, result?: {}, error?: {} }
 
     } catch (err) {
+      D.error('← DISPATCH_ERROR', { action: message.action, error: err.message });
       return {
         success: false,
         error: {
@@ -703,12 +744,13 @@ CRITICAL RULES:
    * racing against a timeout. Returns null on timeout.
    */
   async _sendWithTimeout(message, timeout) {
+    const isBgAction = this._BG_ACTIONS.has(message.action);
+    D.log('_sendWithTimeout', { action: message.action, isBgAction, sendTabId: this._sendTabId, timeout });
     return new Promise((resolve) => {
       let settled = false;
-      const timer = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, timeout);
+      const timer = setTimeout(() => { if (!settled) { settled = true; D.warn('_sendWithTimeout TIMEOUT', { action: message.action, timeout }); resolve(null); } }, timeout);
 
       // Route page actions to the specific tab (not broadcast) to prevent cross-tab interference
-      const isBgAction = this._BG_ACTIONS.has(message.action);
       const sendPromise = isBgAction
         ? chrome.runtime.sendMessage(message)
         : (this._sendTabId
@@ -720,8 +762,10 @@ CRITICAL RULES:
       }).catch((err) => {
         if (!settled) {
           settled = true; clearTimeout(timer);
+          D.warn('_sendWithTimeout SEND FAILED', { action: message.action, isBgAction, error: err.message, willRetry: !isBgAction && !!this._sendTabId });
           if (!isBgAction && this._sendTabId) {
-            chrome.runtime.sendMessage(message).then((r) => { resolve(r); }).catch(() => {
+            chrome.runtime.sendMessage(message).then((r) => { D.log('_sendWithTimeout fallback OK', { action: message.action }); resolve(r); }).catch(() => {
+              D.error('_sendWithTimeout fallback FAILED', { action: message.action });
               resolve({ success: false, error: { code: 'NETWORK_ERROR', message: 'Could not reach the page. The tab may have closed.', retryable: false, suggestion: 'Reopen the page and try again.' } });
             });
           } else {
@@ -947,6 +991,7 @@ CRITICAL RULES:
   _transition(newState, detail = {}) {
     const prev = this._state;
     this._state = newState;
+    D.log(`STATE: ${prev} → ${newState}`, detail);
     if (this.onStateChange) {
       this.onStateChange(newState, prev, detail);
     }
