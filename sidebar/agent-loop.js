@@ -144,7 +144,7 @@ class SNNAgentLoop {
           : context.detail;
         messages.splice(1, 0, {
           role: 'system',
-          content: `[PAGE CONTENT â€” ALREADY PROVIDED. DO NOT use getPageInfo, findElements, getElementText, or extractTable to re-read it. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
+          content: `[PAGE CONTENT â€” ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
         });
       }
 
@@ -288,11 +288,11 @@ class SNNAgentLoop {
     const enabled = (name) => !disabled.includes(name);
 
     const allTools = [
-      // â”€â”€ Page Interaction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      { name: 'snn_click', desc: 'Click a button, link, or element on the page. Uses multi-strategy click (synthetic events + native click + ancestor click + keyboard) for SPA compatibility.', params: {
+      // ── Core Interaction ────────────────────────────────────────
+      { name: 'snn_click', desc: 'Click a button, link, or element on the page. Uses multi-strategy click (synthetic events + native click + ancestor click + keyboard) for SPA compatibility. Also use for checkboxes, radio buttons, and to open dropdowns before selecting options.', params: {
         selector: { type: 'string', desc: 'PREFERRED: :role("button","Submit") or :text("exact visible text") or :name("email") or :contains("partial"). CSS only as last resort.' }
       }, required: ['selector'] },
-      { name: 'snn_type', desc: 'Type text into an input field or textarea', params: {
+      { name: 'snn_type', desc: 'Type text into an input field or textarea. Use after snn_click to focus the field.', params: {
         selector: { type: 'string', desc: 'PREFERRED: :name("email"), :role("textbox","Search"), :text("placeholder/label"), or CSS as last resort' },
         text: { type: 'string', desc: 'Text to type' },
         clearFirst: { type: 'boolean', desc: 'Clear existing text first (default false)' }
@@ -301,84 +301,27 @@ class SNNAgentLoop {
         direction: { type: 'string', desc: 'up, down, left, right, top, or bottom' },
         amount: { type: 'integer', desc: 'Pixels to scroll (ignored for top/bottom)' }
       }, required: ['direction'] },
-      { name: 'snn_highlight', desc: 'Visually highlight an element with a colored overlay', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains. CSS last resort.' },
-        color: { type: 'string', desc: 'CSS color for the highlight border (optional)' }
-      }, required: ['selector'] },
-      { name: 'snn_hover', desc: 'Hover the mouse over an element to trigger tooltips/dropdowns', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains. CSS last resort.' }
-      }, required: ['selector'] },
-      { name: 'snn_pressKey', desc: 'Press a keyboard key (Enter, Escape, Tab, ArrowDown, etc.)', params: {
-        key: { type: 'string', desc: 'Key name: Enter, Escape, Tab, ArrowDown, ArrowUp, PageDown, etc.' },
-        selector: { type: 'string', desc: 'Optional: target element to send key to' }
-      }, required: ['key'] },
-      { name: 'snn_wait', desc: 'Wait for a specified number of milliseconds', params: {
+      { name: 'snn_wait', desc: 'Wait for a specified number of milliseconds (e.g., for page loads, animations, or debounce)', params: {
         ms: { type: 'integer', desc: 'Milliseconds to wait (default 1000)' }
       }, required: [] },
 
-      // â”€â”€ Page Info & Extraction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      { name: 'snn_getPageInfo', desc: 'Get summary of current page: title, URL, forms, links, images, buttons count', params: {}, required: [] },
-      { name: 'snn_findElements', desc: 'Find all elements matching a selector, returns tag, text, visibility, attributes for each', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains, or CSS like "button", "input[type=text]", "h2"' },
-        limit: { type: 'integer', desc: 'Max results (default 50)' }
-      }, required: ['selector'] },
-      { name: 'snn_extractTable', desc: 'Extract a table as structured data (headers + rows)', params: {
-        selector: { type: 'string', desc: 'Selector for the table element (default: first table on page)' }
-      }, required: [] },
-      { name: 'snn_getElementText', desc: 'Get the full text content of a specific element', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :role/:text/:name/:contains. CSS last resort.' }
-      }, required: ['selector'] },
+      // ── Page Sensing ─────────────────────────────────────────────
       { name: 'snn_screenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
+      { name: 'snn_execute_js', desc: 'Execute arbitrary JavaScript in the current page DOM context and return the result. Use for ANY page operation not covered by dedicated tools: MODIFYING page styles (CSS, colors, sizes, backgrounds, fonts, visibility, layout), adding/removing/hiding elements, changing text content, reading page data (title, URL, element text, tables), finding elements, extracting info, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling, copying to clipboard, navigating history, and more. You CAN change how the page looks — use this tool to do it. Return JSON-serializable data.', params: {
+        code: { type: 'string', desc: 'JavaScript code to execute. Has access to document, window. Use document.querySelector(), etc.' }
+      }, required: ['code'] },
 
-      // â”€â”€ Forms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      { name: 'snn_fillForm', desc: 'Fill multiple form fields at once', params: {
-        fields: { type: 'array', desc: 'Array of {selector, value} objects. Prefer :name/:role/:text selectors.', items: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } }
-      }, required: ['fields'] },
-      { name: 'snn_selectDropdown', desc: 'Select an option from a dropdown/select element', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :name("country") or :role("combobox","Country")' },
-        value: { type: 'string', desc: 'Option value or visible text to select' }
-      }, required: ['selector', 'value'] },
-      { name: 'snn_checkToggle', desc: 'Check or uncheck a checkbox/radio input', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :name("agree") or :role("checkbox","I agree") or :text("I agree")' },
-        checked: { type: 'boolean', desc: 'true to check, false to uncheck' }
-      }, required: ['selector', 'checked'] },
-
-      // â”€â”€ Navigation & Browser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── Navigation & Browser ─────────────────────────────────────
       { name: 'snn_navigate', desc: 'Navigate the current tab to a URL. The page links will be auto-detected from navigation.', params: {
         url: { type: 'string', desc: 'Full URL or just the link text (e.g., "homepage", "blog"). If not a full URL, agent will scan page links to find match.' }
       }, required: ['url'] },
       { name: 'snn_openTab', desc: 'Open a URL in a new browser tab', params: {
         url: { type: 'string', desc: 'URL to open' }
       }, required: ['url'] },
-      { name: 'snn_goBack', desc: 'Go back in browser history', params: {}, required: [] },
-      { name: 'snn_goForward', desc: 'Go forward in browser history', params: {}, required: [] },
-      { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] },
-
-      // â”€â”€ Batch & Scroll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      { name: 'snn_scrollAndAct', desc: 'Scroll through a virtual-list / infinite-scroll / lazy-rendering page and perform an action on matching elements as they load. Handles scroll pacing, render waiting, and deduplication. Use this for batch operations that span beyond the visible viewport â€” clicking many items, extracting data from feeds, etc. ONE call replaces dozens of individual scroll+click cycles.', params: {
-        selector: { type: 'string', desc: 'CSS selector for the elements to act on (e.g., "button[aria-label=\'Like\']", ".heart-icon")' },
-        maxItems: { type: 'integer', desc: 'Maximum items to process before stopping (default 50)' },
-        action: { type: 'string', desc: '"click" (default) or "extract" to collect element data instead' },
-        containerSelector: { type: 'string', desc: 'Optional: CSS selector for the scrollable container/feed element. Auto-detected if omitted.' },
-        expandSelector: { type: 'string', desc: 'Optional: selector for "Show more" / "Load more" / "Expand" buttons to click when encountered' },
-        clickDelay: { type: 'integer', desc: 'Base delay in ms between actions (default 400). Actual delay = clickDelay + random(0, clickJitter).' },
-        clickJitter: { type: 'integer', desc: 'Random extra ms added to clickDelay for human-like pacing (default 600).' },
-        maxScrolls: { type: 'integer', desc: 'Maximum scroll steps before giving up (default 40).' },
-        stopWhen: { type: 'string', desc: 'Optional JS expression evaluated per item. Return true to stop early. Receives `el` and `index`.' }
-      }, required: ['selector'] },
-
-      // â”€â”€ Advanced â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      { name: 'snn_evaluate', desc: 'Execute custom JavaScript on the page and return the result', params: {
-        code: { type: 'string', desc: 'JavaScript code to execute. Use document.querySelector() etc.' }
-      }, required: ['code'] },
-      { name: 'snn_startPicker', desc: 'Enter element picker mode: hover to highlight elements, click to select one. Returns element info.', params: {}, required: [] },
-      { name: 'snn_copyToClipboard', desc: 'Copy text to the system clipboard', params: {
-        text: { type: 'string', desc: 'Text to copy' }
-      }, required: ['text'] },
-      { name: 'snn_getCapabilities', desc: 'Get the full list of all available actions and capabilities', params: {}, required: [] }
+      { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] }
     ];
 
-    // Build OpenRouter tool format
+// Build OpenRouter tool format
     const tools = [];
     for (const t of allTools) {
       const actionName = t.name.replace('snn_', '');
@@ -418,37 +361,42 @@ class SNNAgentLoop {
    * Build the system prompt for the tool-calling LLM.
    */
   _buildToolSystemPrompt(settings) {
-    // Core behavioral prompt lives HERE in code â€” not in user-editable settings.
+    // Core behavioral prompt lives HERE in code — not in user-editable settings.
     // The user's custom instruction (if any) is appended as seasoning at the end.
     const userInstruction = (settings.agentPrompt || '').trim();
 
-    let prompt = `You are SNN Chat, a browser agent with REAL-TIME web page interaction capabilities. You can click buttons, type into fields, scroll, navigate to URLs, fill forms, take screenshots, extract data, find elements, execute JavaScript, and more. You have access to tools (functions) for all of these.
+    let prompt = `You are SNN Chat, a browser extension agent running inside the USER'S OWN BROWSER. You help the user interact with and customize web pages they are viewing. Modifying page styles, colors, or content via JavaScript in the user's own browser is perfectly legitimate — you are not hacking or altering anyone else's website; you are customizing the user's personal browsing experience, just like a browser extension or dev tools would.
 
-CRITICAL â€” WHEN TO USE TOOLS:
-- ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, fill a form, take a screenshot, etc.
-- For informational questions ("summarize this page", "what is this about?", "explain...", "what colors..."), the page content is ALREADY provided to you in the system messages. Answer DIRECTLY from that context â€” do NOT call getPageInfo, findElements, getElementText, or extractTable to re-read it.
+You can click buttons, type into fields, scroll, navigate, take screenshots, execute arbitrary JavaScript (including modifying page styles, colors, layouts, and content), reload pages, and open new tabs. You have access to tools (functions) for all of these.
+
+CRITICAL — WHEN TO USE TOOLS:
+- ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, take a screenshot, reload, change how the page looks, etc.
+- For informational questions ("summarize this page", "what is this about?", "explain...", "what colors..."), the page content is ALREADY provided to you in the system messages. Answer DIRECTLY from that context — do NOT use any tools to re-read it.
 - If you already have the information needed to answer, JUST ANSWER. Don't reach for tools unnecessarily.
 
 WHEN YOU DO USE TOOLS:
 1. Say something brief like "On it!" then call the tool immediately.
-2. You can chain multiple tool calls: e.g., navigate â†’ wait â†’ click â†’ findElements.
+2. You can chain multiple tool calls: e.g., navigate → wait → click → type.
 3. After tools return results, synthesize a helpful response in the user's language.
-4. SELECTOR PRIORITY (most robust first â€” ALWAYS follow this order):
-   a) :role("button","Submit") / :role("link","Home") / :role("textbox","Search") â€” ARIA role + accessible name
-   b) :name("email") â€” form control name/id
-   c) :text("exact visible text") â€” exact visible label/text
-   d) :contains("partial text") â€” partial visible text
+4. SELECTOR PRIORITY (most robust first — ALWAYS follow this order):
+   a) :role("button","Submit") / :role("link","Home") / :role("textbox","Search") — ARIA role + accessible name
+   b) :name("email") — form control name/id
+   c) :text("exact visible text") — exact visible label/text
+   d) :contains("partial text") — partial visible text
    e) CSS selectors only as a LAST RESORT (classes/ids break often)
 5. When navigating: if the user says "go to X page", use snn_navigate.
-6. The click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks.
-7. For batch operations on virtual-list / infinite-scroll pages (social feeds, comment threads, search results, product listings, any page that loads content as you scroll): use snn_scrollAndAct. It handles scrolling, render waiting, deduplication, and pacing automatically. ONE call replaces many individual scroll+click cycles. Use it whenever the user asks to act on "all", "the first N", "many", or "every" item in a scrollable feed.
+6. The snn_click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks. Use it for buttons, links, checkboxes, radio buttons, and opening dropdowns.
+7. snn_type types text into inputs. Click the field first with snn_click, then type with snn_type.
+8. MODIFYING THE PAGE: Use snn_execute_js to change how the page looks or behaves. You CAN: change colors, fonts, sizes, backgrounds, hide elements, add content, restyle anything, run animations. Example: to make buttons red — snn_execute_js with code: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red'). Example: to hide an element — snn_execute_js with code: document.querySelector('.banner').style.display = 'none'.
+9. For ANY operation not covered by dedicated tools, use snn_execute_js. It runs arbitrary JavaScript in the page and returns the result. Use it for: reading page data, finding elements, extracting tables, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling to elements, copying to clipboard, navigating history, and more.
+10. For batch operations on infinite-scroll pages: use snn_scroll to reveal content, then snn_execute_js to find and process elements.
 
 CRITICAL RULES:
 - NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
-- NEVER say "I can help with that, would you like me to..." or "Want me to?" â€” instead say "Let me do that now" and call the tool.
-- If a tool call fails, try a different approach (different selector strategy: role â†’ name â†’ text â†’ contains). Don't give up after one failure.
+- NEVER say "I can help with that, would you like me to..." or "Want me to?" — instead say "Let me do that now" and call the tool.
+- If a tool call fails, try a different approach (different selector strategy: role → name → text → contains). Don't give up after one failure.
 - For simple questions about page content: ANSWER FROM CONTEXT, don't use tools.
-- NEVER say you cannot interact with the page â€” you CAN.`;
+- NEVER say you cannot interact with the page — you CAN.`;
 
     // Append user's custom instruction if they've set one (and it's not the default identity stamp)
     if (userInstruction && userInstruction !== this.sp._getDefaultAgentPrompt?.()) {
@@ -461,7 +409,7 @@ CRITICAL RULES:
   /**
    * Call OpenRouter with tools parameter.
    */
-  async _callLLMWithTools(messages, tools, settings) {
+  _callLLMWithTools(messages, tools, settings) {
     const apiKey = settings.openrouterKey;
     const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
 
@@ -625,32 +573,9 @@ CRITICAL RULES:
       case 'click': return { selector: args.selector || '' };
       case 'type': return { selector: args.selector || '', text: args.text || '', options: args.clearFirst ? { clearFirst: true } : {} };
       case 'scroll': return { direction: args.direction || 'down', amount: args.amount || 500 };
-      case 'highlight': return { selector: args.selector || '', options: args.color ? { color: args.color } : {} };
-      case 'hover': return { selector: args.selector || '' };
-      case 'pressKey': return { key: args.key || 'Enter', selector: args.selector || null };
       case 'wait': return { ms: args.ms || 1000 };
-      case 'findElements': return { selector: args.selector || '', options: args.limit ? { limit: args.limit } : {} };
-      case 'extractTable': return { selector: args.selector || '' };
-      case 'getElementText': return { selector: args.selector || '' };
-      case 'fillForm': return { fields: args.fields || [] };
-      case 'selectDropdown': return { selector: args.selector || '', value: args.value || '' };
-      case 'checkToggle': return { selector: args.selector || '', checked: args.checked !== false };
       case 'openTab': return { url: args.url || '' };
-      case 'evaluate': return { code: args.code || '' };
-      case 'copyToClipboard': return { text: args.text || '' };
-      case 'scrollAndAct': return {
-        selector: args.selector || '',
-        options: {
-          maxItems: args.maxItems ?? 50,
-          action: args.action || 'click',
-          containerSelector: args.containerSelector || null,
-          expandSelector: args.expandSelector || null,
-          clickDelay: args.clickDelay ?? 400,
-          clickJitter: args.clickJitter ?? 600,
-          maxScrolls: args.maxScrolls ?? 40,
-          stopWhen: args.stopWhen || null
-        }
-      };
+      case 'execute_js': return { code: args.code || '' };
       default: return args || {};
     }
   }
@@ -664,28 +589,12 @@ CRITICAL RULES:
       case 'snn_click': return `Click ${a.selector || 'element'}`;
       case 'snn_type': return `Type "${(a.text || '').substring(0, 30)}" into ${a.selector || 'field'}`;
       case 'snn_scroll': return a.direction === 'bottom' ? 'Scroll to bottom of page' : `Scroll ${a.direction || 'down'} ${a.amount || ''}`;
-      case 'snn_highlight': return `Highlight ${a.selector || 'element'}`;
-      case 'snn_hover': return `Hover over ${a.selector || 'element'}`;
-      case 'snn_pressKey': return `Press ${a.key || 'key'}`;
       case 'snn_wait': return `Wait ${a.ms || 1000}ms`;
-      case 'snn_getPageInfo': return 'Get page information';
-      case 'snn_findElements': return `Find "${a.selector || 'elements'}"`;
-      case 'snn_extractTable': return 'Extract table data';
-      case 'snn_getElementText': return `Get text of ${a.selector || 'element'}`;
       case 'snn_screenshot': return 'Take screenshot';
-      case 'snn_fillForm': return `Fill ${(a.fields || []).length} form fields`;
-      case 'snn_selectDropdown': return `Select "${a.value || ''}" in dropdown`;
-      case 'snn_checkToggle': return `${a.checked !== false ? 'Check' : 'Uncheck'} toggle`;
+      case 'snn_execute_js': return 'Execute JavaScript';
       case 'snn_navigate': return `Navigate to ${a.url || 'page'}`;
       case 'snn_openTab': return `Open tab: ${a.url || ''}`;
-      case 'snn_goBack': return 'Go back';
-      case 'snn_goForward': return 'Go forward';
       case 'snn_reload': return 'Reload page';
-      case 'snn_evaluate': return 'Execute JavaScript';
-      case 'snn_startPicker': return 'Element picker mode';
-      case 'snn_copyToClipboard': return 'Copy to clipboard';
-      case 'snn_getCapabilities': return 'List capabilities';
-      case 'snn_scrollAndAct': return `Scroll & ${a.action || 'click'} "${a.selector || 'elements'}" (up to ${a.maxItems || 50} items)`;
       default: return fnName;
     }
   }
@@ -987,17 +896,10 @@ CRITICAL RULES:
     };
 
     // Weight categories by action type
-    if (actionName === 'type' || actionName === 'fillForm') {
+    if (actionName === 'type') {
       push(elements.inputs, 'input', 15);
       push(elements.selects, 'select', 5);
       push(elements.buttons, 'button', 0);
-    } else if (actionName === 'selectDropdown') {
-      push(elements.selects, 'select', 20);
-      push(elements.inputs, 'input', 5);
-    } else if (actionName === 'checkToggle') {
-      push(elements.inputs, 'input', 15);
-      push(elements.buttons, 'button', 5);
-      push(elements.clickables, 'clickable', 0);
     } else {
       // click / hover / highlight / getElementText / etc.
       push(elements.buttons, 'button', 15);
@@ -1169,7 +1071,7 @@ CRITICAL RULES:
       const limit = settings.htmlParseLimit || 300;
 
       const result = await this._dispatchAction({
-        action: 'evaluate',
+        action: 'execute_js',
         id: this._generateId(),
         params: {
           code: `(function() {

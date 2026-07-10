@@ -446,7 +446,7 @@ function _getCapabilities() {
       { action: 'copyToClipboard', description: 'Copy text to clipboard', params: ['text'] },
       { action: 'startPicker', description: 'Enter element picker mode — hover to highlight, click to select', params: [] },
       { action: 'getViewportInfo', description: 'Get viewport dimensions and scroll position', params: [] },
-      { action: 'evaluate', description: 'Execute custom JavaScript on the page', params: ['code'] },
+      { action: 'execute_js', description: 'Execute custom JavaScript on the page', params: ['code'] },
       { action: 'startMonitoring', description: 'Watch for a DOM element to appear or change', params: ['selector', 'options'] }
     ],
     browserActions: [

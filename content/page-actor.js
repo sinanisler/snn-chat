@@ -53,7 +53,7 @@ class SNNPageActor {
         case 'agent:wait':             result = await this.wait(payload.ms || 1000); break;
         case 'agent:extractTable':     result = this.extractTable(payload.selector, payload.options); break;
         case 'agent:getElementText':   result = this.getElementText(payload.selector); break;
-        case 'agent:evaluate':         result = await this.evaluate(payload.code, payload.options); break;
+        case 'agent:execute_js':       result = await this.execute_js(payload.code, payload.options); break;
         case 'agent:getClipboard':     result = { text: await this.getClipboard() }; break;
         case 'agent:copyToClipboard':  await this.copyToClipboard(payload.text); result = { copied: true }; break;
         case 'agent:getViewportInfo':  result = this.getViewportInfo(); break;
@@ -835,14 +835,14 @@ class SNNPageActor {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ACTION: Evaluate JS
+  // ACTION: Execute JS
   // ═══════════════════════════════════════════════════════════════
-  async evaluate(code, options = {}) {
+  async execute_js(code, options = {}) {
     if (!code) throw new Error('No code provided');
     try {
       const fn = new Function('document', 'window', 'options', code);
       const result = await fn(document, window, options);
-      return { action: 'evaluate', result };
+      return { action: 'execute_js', result };
     } catch (e) {
       throw new Error(`Script error: ${e.message}`);
     }

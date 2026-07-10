@@ -1464,36 +1464,19 @@ class SNNSidePanel {
           ${this.toggleHtml('s-action-click', 'Click', 'Click buttons, links, and elements', s.disabledActions ? !s.disabledActions.includes('click') : true)}
           ${this.toggleHtml('s-action-type', 'Type / Input', 'Type text into fields and forms', s.disabledActions ? !s.disabledActions.includes('type') : true)}
           ${this.toggleHtml('s-action-scroll', 'Scroll', 'Scroll up, down, or to elements', s.disabledActions ? !s.disabledActions.includes('scroll') : true)}
-          ${this.toggleHtml('s-action-highlight', 'Highlight', 'Visually highlight page elements', s.disabledActions ? !s.disabledActions.includes('highlight') : true)}
-          ${this.toggleHtml('s-action-hover', 'Hover', 'Hover over elements to trigger tooltips', s.disabledActions ? !s.disabledActions.includes('hover') : true)}
-          ${this.toggleHtml('s-action-pressKey', 'Press Key', 'Send keyboard keys (Enter, Escape, etc.)', s.disabledActions ? !s.disabledActions.includes('pressKey') : true)}
-        </div>
-        <div class="sp-section">
-          <h4>Form & Data Actions</h4>
-          ${this.toggleHtml('s-action-fillForm', 'Fill Forms', 'Auto-fill multiple form fields', s.disabledActions ? !s.disabledActions.includes('fillForm') : true)}
-          ${this.toggleHtml('s-action-selectDropdown', 'Select Dropdowns', 'Choose options from select elements', s.disabledActions ? !s.disabledActions.includes('selectDropdown') : true)}
-          ${this.toggleHtml('s-action-checkToggle', 'Toggle Checkboxes', 'Check/uncheck checkboxes and radios', s.disabledActions ? !s.disabledActions.includes('checkToggle') : true)}
-          ${this.toggleHtml('s-action-extractTable', 'Extract Tables', 'Extract table data as structured text', s.disabledActions ? !s.disabledActions.includes('extractTable') : true)}
-          ${this.toggleHtml('s-action-findElements', 'Find Elements', 'Search page for matching elements', s.disabledActions ? !s.disabledActions.includes('findElements') : true)}
-          ${this.toggleHtml('s-action-getPageInfo', 'Page Info', 'Get summary of current page', s.disabledActions ? !s.disabledActions.includes('getPageInfo') : true)}
+          ${this.toggleHtml('s-action-screenshot', 'Screenshot', 'Capture visible page area', s.disabledActions ? !s.disabledActions.includes('screenshot') : true)}
+          ${this.toggleHtml('s-action-execute_js', 'Execute JavaScript', 'Run custom JS on the page for any operation', s.disabledActions ? !s.disabledActions.includes('execute_js') : true)}
         </div>
         <div class="sp-section">
           <h4>Navigation & Browser Actions</h4>
           ${this.toggleHtml('s-action-navigate', 'Navigate', 'Go to URLs or page links', s.disabledActions ? !s.disabledActions.includes('navigate') : true)}
           ${this.toggleHtml('s-action-openTab', 'Open Tabs', 'Open URLs in new tabs', s.disabledActions ? !s.disabledActions.includes('openTab') : true)}
-          ${this.toggleHtml('s-action-goBack', 'Go Back/Forward', 'Browser history navigation', s.disabledActions ? !s.disabledActions.includes('goBack') : true)}
-          ${this.toggleHtml('s-action-screenshot', 'Screenshot', 'Capture visible page area', s.disabledActions ? !s.disabledActions.includes('screenshot') : true)}
           ${this.toggleHtml('s-action-reload', 'Reload Page', 'Refresh the current page', s.disabledActions ? !s.disabledActions.includes('reload') : true)}
         </div>
         <div class="sp-section">
-          <h4>Advanced</h4>
-          ${this.toggleHtml('s-action-evaluate', 'Execute JavaScript', 'Run custom JS on the page', s.disabledActions ? !s.disabledActions.includes('evaluate') : true)}
-          ${this.toggleHtml('s-action-startPicker', 'Element Picker', 'Hover to highlight, click to select elements', s.disabledActions ? !s.disabledActions.includes('startPicker') : true)}
-          ${this.toggleHtml('s-action-clipboard', 'Clipboard', 'Read from and write to clipboard', s.disabledActions ? !s.disabledActions.includes('getClipboard') : true)}
-          ${this.toggleHtml('s-action-monitor', 'DOM Monitoring', 'Watch for elements to appear/change', s.disabledActions ? !s.disabledActions.includes('startMonitoring') : true)}
-        </div>
-        <div class="sp-section">
           <h4>Custom Instruction <span style="font-weight:400;color:var(--sp-text-secondary)">(optional)</span></h4>
+          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">Add a personal touch — appended to every request. Leave empty for default behavior.</p>
+          <div class="sp-field"><h4>Custom Instruction <span style="font-weight:400;color:var(--sp-text-secondary)">(optional)</span></h4>
           <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">Add a personal touch — appended to every request. Leave empty for default behavior.</p>
           <div class="sp-field">
             <textarea id="s-agent-prompt" rows="2" placeholder="e.g. Always respond in Spanish. or Use emojis freely." style="font-size:12px;font-family:monospace;">${this.escapeHtml(s.agentPrompt || '')}</textarea>
@@ -2029,10 +2012,9 @@ class SNNSidePanel {
   _getDisabledActionsFromSettings() {
     const s = this.els.settingsBody;
     const allActions = [
-      'click', 'type', 'scroll', 'highlight', 'hover', 'pressKey',
-      'fillForm', 'selectDropdown', 'checkToggle', 'extractTable', 'findElements', 'getPageInfo',
-      'navigate', 'openTab', 'goBack', 'screenshot', 'reload',
-      'evaluate', 'startPicker', 'getClipboard', 'startMonitoring'
+      'click', 'type', 'scroll',
+      'navigate', 'openTab', 'screenshot', 'reload',
+      'execute_js'
     ];
     const disabled = [];
     for (const action of allActions) {
@@ -2737,6 +2719,8 @@ class SNNSidePanel {
       /^(find|search|look\s*for)\s/,
       /^(extract|get|pull)\s.*(table|data|info)/,
       /^(do|perform|execute|run)\s/,
+      /^(make|change|modify|style|color|recolor|restyle|update|set|turn|paint)\b/,
+      /(red|blue|green|yellow|purple|orange|pink|black|white|gray|grey|bigger|smaller|larger|wider|taller|hide|show|remove|delete)\b/,
     ];
     for (const p of actionPatterns) {
       if (p.test(msg)) return false;
