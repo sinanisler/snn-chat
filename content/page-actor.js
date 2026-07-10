@@ -889,7 +889,10 @@ class SNNPageActor {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ACTION: Page Script
+  // ACTION: Page Script (content-script fallback)
+  // Primary execution path: agent:page_script is routed to background.js
+  // which uses chrome.scripting.executeScript(world:'MAIN') to bypass CSP.
+  // This method remains as a direct-call fallback for internal use.
   // ═══════════════════════════════════════════════════════════════
   async page_script(code, options = {}) {
     if (!code) { D.warn('page_script: no code provided'); throw new Error('No code provided'); }
@@ -1083,10 +1086,30 @@ class SNNPageActor {
       for (const el of fresh) {
         if (acted >= maxItems) break;
 
-        // Optional early-stop condition
+        // Optional early-stop condition — injected via <script> to avoid CSP unsafe-eval
         if (stopWhen) {
           try {
-            const shouldStop = new Function('el', 'index', 'return ' + stopWhen)(el, acted);
+            const uid = '__snn_stop_' + Math.random().toString(36).slice(2);
+            el.setAttribute('data-snn-stop', uid);
+
+            const stopScript = document.createElement('script');
+            stopScript.textContent = [
+              '(function(){',
+              'var _el=document.querySelector("[data-snn-stop=\\"' + uid + '\\"]");',
+              'if(_el){',
+              'window["' + uid + '"]=!!(' + stopWhen + ');',
+              '_el.removeAttribute("data-snn-stop");',
+              '}',
+              '})();'
+            ].join('\n');
+            (document.documentElement || document.head).appendChild(stopScript);
+            stopScript.remove();
+
+            const shouldStop = !!window[uid];
+            delete window[uid];
+            // Fallback cleanup if injected script didn't remove attribute
+            if (el.hasAttribute('data-snn-stop')) el.removeAttribute('data-snn-stop');
+
             if (shouldStop) { acted = maxItems; break; }
           } catch (_) { /* ignore bad expression */ }
         }

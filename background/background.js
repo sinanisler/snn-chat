@@ -428,12 +428,77 @@ async function _handleBgAgentAction(message, sendResponse) {
         return;
       }
 
+      case 'agent:page_script': {
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No target tab for page script.', retryable: false } }); return; }
+        const code = p.code;
+        if (!code) { sendResponse({ success: false, error: { code: 'NO_CODE', message: 'No code provided for page_script.', retryable: false } }); return; }
+        D.log('page_script EXECUTE via executeScript', { tabId, codeLen: code.length, codePreview: String(code).substring(0, 120) });
+        try {
+          const result = await _executePageScriptInMainWorld(tabId, code, p.options || {});
+          // Use null instead of undefined so JSON.stringify preserves the key for the LLM
+          const value = result !== undefined ? result : null;
+          D.log('page_script OK', { resultType: typeof result, isUndefined: result === undefined });
+          sendResponse({ success: true, result: { action: 'page_script', result: value } });
+        } catch (err) {
+          D.error('page_script FAIL', { error: err.message });
+          sendResponse({ success: false, error: { code: 'SCRIPT_ERROR', message: err.message, retryable: true, suggestion: 'The page may block script execution. Try a different approach.' } });
+        }
+        return;
+      }
+
       default:
         sendResponse({ success: false, error: { code: 'UNKNOWN_BG_ACTION', message: `Unknown background action: ${message.action}`, retryable: false } });
     }
   } catch (err) {
     sendResponse({ success: false, error: { code: 'BG_ACTION_FAILED', message: err.message, retryable: false } });
   }
+}
+
+/**
+ * Execute a dynamic code string in the page's MAIN world via chrome.scripting.executeScript.
+ * This bypasses the extension's CSP (which blocks new Function() in content scripts)
+ * because the browser itself injects the pre-compiled wrapper function.
+ *
+ * Inside the MAIN world, the wrapper uses eval() to run the user's code.
+ * This works on most pages; pages with strict CSP (no unsafe-eval) will get a clear error.
+ */
+async function _executePageScriptInMainWorld(tabId, code, options) {
+  // Wrapper that runs in MAIN world — receives the code string, executes it via eval(),
+  // and returns {ok, value} or {ok, error}. Handles both sync and async (Promise) returns.
+  // Uses DIRECT eval(codeStr) — NOT wrapped in an IIFE — because eval() returns
+  // the completion value of the last statement, whereas (function(){...})() always
+  // returns undefined without an explicit `return`.
+  function injectedFn(codeStr, opts) {
+    try {
+      var __r = eval(codeStr);
+      if (__r && typeof __r.then === 'function') {
+        return __r.then(
+          function(v) { return { ok: true, value: v }; },
+          function(e) { return { ok: false, error: (e && e.message) || String(e) }; }
+        );
+      }
+      return { ok: true, value: __r };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: injectedFn,
+    args: [code, options || {}]
+  });
+
+  const outcome = results[0]?.result;
+  if (!outcome) {
+    throw new Error('Script produced no result');
+  }
+  if (!outcome.ok) {
+    throw new Error(outcome.error || 'Unknown script error');
+  }
+  return outcome.value;
 }
 
 /**
@@ -626,7 +691,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
     'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
     'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
-    'agent:listActions', 'agent:getCapabilities'
+    'agent:listActions', 'agent:getCapabilities', 'agent:page_script'
   ];
 
   if (BG_AGENT_ACTIONS.includes(message.action)) {

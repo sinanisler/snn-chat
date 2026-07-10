@@ -59,7 +59,7 @@ class SNNAgentLoop {
       'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
       'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
       'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
-      'agent:listActions', 'agent:getCapabilities'
+      'agent:listActions', 'agent:getCapabilities', 'agent:page_script'
     ]);
 
     // â”€â”€ Callbacks (set by sidepanel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -702,7 +702,7 @@ CRITICAL RULES:
     // â”€â”€ Inject tabId for background actions that need a target tab â”€â”€
     const TAB_DEPENDENT_ACTIONS = new Set([
       'agent:navigate', 'agent:goBack', 'agent:goForward',
-      'agent:reload', 'agent:screenshot'
+      'agent:reload', 'agent:screenshot', 'agent:page_script'
     ]);
     if (TAB_DEPENDENT_ACTIONS.has(message.action) && this._sendTabId) {
       message.payload.tabId = this._sendTabId;
