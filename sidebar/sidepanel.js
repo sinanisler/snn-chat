@@ -88,7 +88,7 @@ class SNNSidePanel {
       // Tab indicator in header
       tabDomain: this.el('tab-domain'),
       // Session Lock
-      chatLockCheckbox: this.el('chat-lock-checkbox'),
+      chatLockBtn: this.el('chat-lock-btn'),
       // Attachments
       attachBar: this.el('attach-bar'),
       attachBtn: this.el('attach-btn'),
@@ -196,17 +196,17 @@ class SNNSidePanel {
     this.els.userInput.addEventListener('input', () => this.autoResize());
 
     this.el('model-settings-btn').addEventListener('click', () => this.openSettings());
-    this.el('settings-btn').addEventListener('click', () => this.openSettings());
+
     this.el('new-chat-btn').addEventListener('click', () => this.newSession());
     this.el('history-btn').addEventListener('click', () => this.openHistory());
-    this.el('clear-context-btn').addEventListener('click', () => this.clearChat());
+
     this.el('clear-selection').addEventListener('click', () => this.clearSelection());
     this.el('close-settings').addEventListener('click', () => this.closeSettings());
     this.el('close-history').addEventListener('click', () => this.closeHistory());
     this.els.dismissInputContext.addEventListener('click', () => this.dismissInputContext());
 
-    // Session Lock checkbox
-    this.els.chatLockCheckbox.addEventListener('change', () => this._toggleChatLock());
+    // Session Lock button (header lock icon)
+    this.els.chatLockBtn.addEventListener('click', () => this._toggleChatLock());
 
     // File attachments: button, file picker, paste, drag/drop
     this._setupAttachmentHandlers();
@@ -565,8 +565,7 @@ class SNNSidePanel {
   // Show current tab domain in the header
   _updateTabIndicator() {
     if (this.els.tabDomain && this.currentDomain) {
-      const prefix = this._chatLockEnabled ? '🔒 ' : '';
-      this.els.tabDomain.textContent = prefix + this.currentDomain;
+      this.els.tabDomain.textContent = this.currentDomain;
       this.els.tabDomain.title = (this._chatLockEnabled ? '[Locked] ' : '') + 'Active tab: ' + this.currentDomain;
     }
   }
@@ -577,6 +576,14 @@ class SNNSidePanel {
    */
   _updateLockVisuals() {
     this._updateTabIndicator();
+    // Update the lock icon button in the header
+    if (this.els.chatLockBtn) {
+      this.els.chatLockBtn.textContent = this._chatLockEnabled ? '🔒' : '🔓';
+      this.els.chatLockBtn.classList.toggle('locked', this._chatLockEnabled);
+      this.els.chatLockBtn.title = this._chatLockEnabled
+        ? 'Session Locked — one session across all tabs. Click to unlock.'
+        : 'Session Lock: When enabled, your chat session is shared across all tabs. Click to toggle.';
+    }
     const footer = document.querySelector('.sp-input-area');
     if (footer) {
       footer.classList.toggle('sp-locked', this._chatLockEnabled);
@@ -2306,7 +2313,7 @@ class SNNSidePanel {
         this.currentSessionId = '__locked__';
         this._historyKey = this._chatLockKey;
         this._chatLockEnabled = true;
-        this.els.chatLockCheckbox.checked = true;
+
         this.totalTokensUsed = 0;
         this._contextConsumedInSession = false;
         this.activeContext = null;
@@ -2523,8 +2530,8 @@ class SNNSidePanel {
 
   /**
    * Persist a pointer to the currently-active session so it survives
-   * sidebar close/reopen. Called after newSession, saveChatHistory,
-   * and clearChat so the pointer always reflects reality.
+   * sidebar close/reopen. Called after newSession and saveChatHistory
+   * so the pointer always reflects reality.
    */
   async _saveActiveSessionPtr() {
     const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
@@ -2603,22 +2610,6 @@ class SNNSidePanel {
     this.showToast('New chat started');
   }
 
-  async clearChat() {
-    if (this.chatHistory.length) await this.saveChatHistory();
-    this.chatHistory = [];
-    this.totalTokensUsed = 0;
-    this._contextConsumedInSession = false;
-    this.activeContext = null;
-    this.els.chatMessages.innerHTML = '';
-    this.els.welcomeScreen.style.display = '';
-    this.els.smartPrompts.style.display = 'block';
-    this.els.tokenCounter.style.display = 'none';
-    this.refreshActiveContext();
-    this.renderQuickActions();
-    // Keep the active-session pointer in sync
-    this._saveActiveSessionPtr();
-  }
-
   /**
    * Reset the loading/UI state. Call this whenever an in-flight
    * sendMessage is abandoned (tab switch, cancellation, etc.) to
@@ -2647,7 +2638,6 @@ class SNNSidePanel {
     const { snn_chat_lock } = await chrome.storage.sync.get('snn_chat_lock');
     if (snn_chat_lock) {
       this._chatLockEnabled = true;
-      this.els.chatLockCheckbox.checked = true;
       this._historyKey = this._chatLockKey;
       this.currentSessionId = '__locked__';
       this._updateLockVisuals();
@@ -2673,7 +2663,7 @@ class SNNSidePanel {
    */
   async _toggleChatLock() {
     const wasLocked = this._chatLockEnabled;
-    this._chatLockEnabled = this.els.chatLockCheckbox.checked;
+    this._chatLockEnabled = !wasLocked;
 
     if (this._chatLockEnabled && !wasLocked) {
       // ═══ LOCKING: save current → switch to unified session ═══

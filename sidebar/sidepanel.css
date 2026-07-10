@@ -442,18 +442,7 @@ body.theme-dark {
   align-items: center;
   margin-bottom: 8px;
 }
-.sp-input-actions { display: flex; gap: 6px; }
-.sp-input-actions button {
-  background: none;
-  border: none;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 4px 10px;
-  border-radius: 5px;
-  color: var(--sp-text-secondary);
-  font-weight: 500;
-}
-.sp-input-actions button:hover { background: var(--sp-btn-hover); color: var(--sp-text); }
+.sp-input-actions-spacer { flex: 1; }
 
 .sp-input-row-right {
   display: flex;
@@ -461,23 +450,26 @@ body.theme-dark {
   gap: 10px;
 }
 
-.sp-session-lock {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
+/* ── Lock button in header ──────────────────────────────────── */
+.sp-icon-btn {
+  background: none;
+  border: 1px solid transparent;
   color: var(--sp-text-secondary);
+  font-size: 16px;
   cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.15s;
+  line-height: 1;
 }
-
-.sp-session-lock input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--sp-accent);
-  cursor: pointer;
-  margin: 0;
+.sp-icon-btn:hover {
+  background: var(--sp-btn-hover);
+  border-color: var(--sp-border);
+  color: var(--sp-text);
+}
+.sp-lock-btn.locked {
+  color: var(--sp-accent);
+  border-color: var(--sp-accent);
 }
 
 .sp-token-counter {
@@ -609,6 +601,7 @@ body.theme-dark {
   outline: none;
   background: var(--sp-input-bg);
   color: var(--sp-text);
+  height: 46px;
   min-height: 46px;
   max-height: 130px;
   line-height: 1.5;
