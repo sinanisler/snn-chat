@@ -2937,6 +2937,9 @@ class SNNSidePanel {
       } else if (msg.role === 'agent-action') {
         // Restore action history entry (colored status bubble)
         this._renderPersistedActionEntry(msg);
+      } else if (msg.role === 'agent-status') {
+        // Restore agent status entry (e.g. "Analyzing your request...")
+        this._renderPersistedStatusEntry(msg);
       }
     }
 
@@ -2951,12 +2954,54 @@ class SNNSidePanel {
   _renderPersistedActionEntry(msg) {
     const entry = document.createElement('div');
     entry.className = `snn-action-entry snn-action-${msg.status || 'info'}`;
-    const icons = { start: '▶️', ok: '✅', fail: '❌', info: 'ℹ️', cancelled: '⬅️' };
-    const icon = icons[msg.status] || '•';
+    const icons = { start: '<i class="fas fa-play"></i>', ok: '<i class="fas fa-circle-check"></i>', fail: '<i class="fas fa-circle-xmark"></i>', info: '<i class="fas fa-circle-info"></i>', cancelled: '<i class="fas fa-arrow-left"></i>' };
+    const icon = icons[msg.status] || '<i class="fas fa-circle"></i>';
     entry.innerHTML = `
       <span class="snn-action-entry-icon">${icon}</span>
       <span class="snn-action-entry-text">${this.escapeHtml(msg.description || '')}</span>
       ${msg.detail ? `<span class="snn-action-entry-detail">${this.escapeHtml(msg.detail)}</span>` : ''}
+    `;
+    this.els.chatMessages.appendChild(entry);
+  }
+
+  /**
+   * Render a persisted agent-status entry (survives tab switches).
+   * Shows state transitions like "Analyzing your request..." in chat.
+   */
+  _renderPersistedStatusEntry(msg) {
+    // Inline status config — mirrors agent-ui.js _statusEntryConfig
+    const configMap = {
+      PARSING:   { icon: 'fa-magnifying-glass', cls: 'snn-status-parsing',   label: 'Analyzing your request...' },
+      PLANNING:  { icon: 'fa-list-check',        cls: 'snn-status-planning',  label: 'Building action plan...' },
+      EXECUTING: { icon: 'fa-bolt',              cls: 'snn-status-executing', label: 'Working...' },
+      WAITING:   { icon: 'fa-hourglass-half',    cls: 'snn-status-waiting',   label: 'Waiting for page...' },
+      OBSERVING: { icon: 'fa-eye',               cls: 'snn-status-observing', label: 'Checking result...' },
+      RETRYING:  { icon: 'fa-arrows-rotate',     cls: 'snn-status-retrying',  label: 'Retrying...' },
+      REPORTING: { icon: 'fa-chart-simple',       cls: 'snn-status-reporting', label: 'Compiling results...' },
+      FAILED:    { icon: 'fa-triangle-exclamation', cls: 'snn-status-failed', label: 'Failed' },
+      BLOCKED:   { icon: 'fa-lock',              cls: 'snn-status-blocked',   label: 'Waiting for permission...' },
+      CANCELLED: { icon: 'fa-xmark',             cls: 'snn-status-cancelled', label: 'Cancelled' },
+      IDLE:      { icon: 'fa-circle-check',      cls: 'snn-status-idle',      label: 'Done' }
+    };
+    const config = configMap[msg.state];
+
+    if (!config) {
+      // Fallback — render a generic status entry
+      const entry = document.createElement('div');
+      entry.className = 'snn-status-entry snn-status-info';
+      entry.innerHTML = `
+        <span class="snn-status-entry-icon"><i class="fas fa-circle-info"></i></span>
+        <span class="snn-status-entry-text">${this.escapeHtml(msg.label || msg.state || '')}</span>
+      `;
+      this.els.chatMessages.appendChild(entry);
+      return;
+    }
+
+    const entry = document.createElement('div');
+    entry.className = `snn-status-entry ${config.cls}`;
+    entry.innerHTML = `
+      <span class="snn-status-entry-icon"><i class="fas ${config.icon}"></i></span>
+      <span class="snn-status-entry-text">${this.escapeHtml(msg.label || config.label)}</span>
     `;
     this.els.chatMessages.appendChild(entry);
   }
@@ -3789,7 +3834,7 @@ class SNNSidePanel {
 
     div.innerHTML = `
       <div class="snn-result-card-header">
-        <span class="snn-result-card-icon">🤖</span>
+        <span class="snn-result-card-icon"><i class="fas fa-robot"></i></span>
         <span class="snn-result-card-title">${this.escapeHtml(capData.description || 'Here\'s what I can do:')}</span>
       </div>
       <div class="snn-result-card-body">
@@ -3824,19 +3869,28 @@ class SNNSidePanel {
       if (newState === 'CANCELLED' && detail?.reason?.startsWith('Tab switched')) {
         if (this._agentUI) {
           this._agentUI.hideProgress();
-          this._agentUI.renderStatusBar('IDLE');
+          this._agentUI.hideStatusBar();
         }
         return;
       }
 
-      // Update status bar
-      if (this._agentUI) this._agentUI.renderStatusBar(newState, detail);
+      // ── Persistent status entry in chat history ─────────────
+      // Every non-IDLE state gets a chat entry so the user can
+      // see the full agent workflow as a scrollable history.
+      if (newState !== 'IDLE' && newState !== 'CANCELLED') {
+        if (this._agentUI) this._agentUI.addStatusEntry(newState, detail);
+      }
+
+      // IDLE marks the end of a run — add a completion note
+      if (newState === 'IDLE' && prevState !== 'IDLE') {
+        if (this._agentUI) this._agentUI.addStatusEntry(newState, detail);
+      }
 
       // Cleanup on terminal states
       if (newState === 'IDLE' || newState === 'CANCELLED') {
         if (this._agentUI) {
           this._agentUI.hideProgress();
-          setTimeout(() => this._agentUI.renderStatusBar('IDLE'), 1500);
+          this._agentUI.hideStatusBar();
         }
       }
     };

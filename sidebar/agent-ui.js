@@ -11,57 +11,21 @@ class SNNAgentUI {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // STATUS BAR — above the input area (moved from top of chat)
+  // STATUS BAR — deprecated; status now shown as persistent chat entries.
+  // The element is removed if it still exists from older sessions.
   // ═══════════════════════════════════════════════════════════════
   renderStatusBar(state, detail = {}) {
-    let bar = document.getElementById('snn-agent-status');
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.id = 'snn-agent-status';
-      bar.className = 'snn-agent-status';
-      // Insert above the input area (footer)
-      const inputArea = document.querySelector('.sp-input-area');
-      if (inputArea) {
-        inputArea.parentNode.insertBefore(bar, inputArea);
-      } else {
-        const chatArea = this.sp.els.chatMessages;
-        chatArea.parentNode.appendChild(bar);
-      }
-    }
-
-    const stateConfig = {
-      IDLE:       { icon: '',   cls: '',           text: '' },
-      PARSING:    { icon: '🔍', cls: 'status-parsing',   text: 'Analyzing your request...' },
-      PLANNING:   { icon: '📋', cls: 'status-planning',  text: 'Building action plan...' },
-      EXECUTING:  { icon: '⚡', cls: 'status-executing', text: `${detail.step?.description || 'Working...'}` },
-      WAITING:    { icon: '⏳', cls: 'status-waiting',   text: 'Waiting for page...' },
-      OBSERVING:  { icon: '👁', cls: 'status-observing', text: 'Checking result...' },
-      RETRYING:   { icon: '🔄', cls: 'status-retrying',  text: `Retrying (${detail.attempt || '?'}/${detail.maxRetries || '?'})...` },
-      REPORTING:  { icon: '📊', cls: 'status-reporting', text: 'Compiling results...' },
-      FAILED:     { icon: '⚠️', cls: 'status-failed',    text: '' },
-      BLOCKED:    { icon: '🔒', cls: 'status-blocked',   text: 'Waiting for permission...' },
-      CANCELLED:  { icon: '✖',  cls: 'status-cancelled', text: 'Cancelled' }
-    };
-
-    const cfg = stateConfig[state] || stateConfig.IDLE;
-
-    if (state === 'IDLE' || state === 'FAILED') {
-      bar.style.display = 'none';
-      // Also hide progress
+    // Always remove the floating status bar — status entries are now
+    // persistent chat bubbles via addStatusEntry().
+    this.hideStatusBar();
+    if (state === 'IDLE' || state === 'FAILED' || state === 'CANCELLED') {
       this.hideProgress();
-    } else {
-      bar.style.display = 'flex';
-      bar.className = `snn-agent-status ${cfg.cls}`;
-      bar.innerHTML = `
-        <span class="snn-agent-status-icon">${cfg.icon}</span>
-        <span class="snn-agent-status-text">${cfg.text}</span>
-        ${state === 'EXECUTING' || state === 'WAITING' ? `<span class="snn-agent-status-spinner"></span>` : ''}
-        <button class="snn-agent-status-cancel" title="Cancel (Escape)">✕</button>
-      `;
-      bar.querySelector('.snn-agent-status-cancel')?.addEventListener('click', () => {
-        if (this.sp._agentLoop) this.sp._agentLoop.cancel();
-      });
     }
+  }
+
+  hideStatusBar() {
+    const bar = document.getElementById('snn-agent-status');
+    if (bar) bar.remove();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -93,6 +57,89 @@ class SNNAgentUI {
   hideProgress() {
     const prog = document.getElementById('snn-agent-progress');
     if (prog) prog.style.display = 'none';
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // STATUS ENTRY — persistent chat bubble for agent state changes
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Icon + color config for persistent status entries (chat history).
+   * Mirrors renderStatusBar but produces DOM entries that live in chat.
+   */
+  _statusEntryConfig(state) {
+    const map = {
+      PARSING:   { icon: 'fa-magnifying-glass', cls: 'snn-status-parsing',   label: 'Analyzing your request...' },
+      PLANNING:  { icon: 'fa-list-check',        cls: 'snn-status-planning',  label: 'Building action plan...' },
+      EXECUTING: { icon: 'fa-bolt',              cls: 'snn-status-executing', label: 'Working...' },
+      WAITING:   { icon: 'fa-hourglass-half',    cls: 'snn-status-waiting',   label: 'Waiting for page...' },
+      OBSERVING: { icon: 'fa-eye',               cls: 'snn-status-observing', label: 'Checking result...' },
+      RETRYING:  { icon: 'fa-arrows-rotate',     cls: 'snn-status-retrying',  label: 'Retrying...' },
+      REPORTING: { icon: 'fa-chart-simple',       cls: 'snn-status-reporting', label: 'Compiling results...' },
+      FAILED:    { icon: 'fa-triangle-exclamation', cls: 'snn-status-failed', label: 'Failed' },
+      BLOCKED:   { icon: 'fa-lock',              cls: 'snn-status-blocked',   label: 'Waiting for permission...' },
+      CANCELLED: { icon: 'fa-xmark',             cls: 'snn-status-cancelled', label: 'Cancelled' },
+      IDLE:      { icon: 'fa-circle-check',      cls: 'snn-status-idle',      label: 'Done' }
+    };
+    return map[state] || null;
+  }
+
+  /**
+   * Add a persistent status entry to the chat history DOM.
+   * Unlike action entries, these represent agent state transitions.
+   */
+  addStatusEntry(state, detail = {}) {
+    const cfg = this._statusEntryConfig(state);
+    if (!cfg) return null;
+
+    // Customize label for specific states
+    let label = cfg.label;
+    if (state === 'EXECUTING' && detail.step?.description) {
+      label = detail.step.description;
+    } else if (state === 'RETRYING' && detail.attempt != null) {
+      label = `Retrying (${detail.attempt}/${detail.maxRetries || '?'})...`;
+    }
+
+    // Persist to chatHistory for survival across tab switches
+    this._persistStatusEntry(state, label, detail);
+
+    const entry = document.createElement('div');
+    entry.className = `snn-status-entry ${cfg.cls}`;
+    entry.innerHTML = `
+      <span class="snn-status-entry-icon"><i class="fas ${cfg.icon}"></i></span>
+      <span class="snn-status-entry-text">${this.sp.escapeHtml(label)}</span>
+    `;
+
+    this.sp.els.chatMessages.appendChild(entry);
+    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    return entry;
+  }
+
+  /**
+   * Persist a status entry to chatHistory for tab-switch survival.
+   */
+  _persistStatusEntry(state, label, detail = {}) {
+    // When starting a new agent run (PARSING), cancel any stale in-progress
+    // status entries from a previous run so history stays clean.
+    if (state === 'PARSING') {
+      for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
+        const m = this.sp.chatHistory[i];
+        if (m.role === 'agent-status' && !['IDLE','FAILED','CANCELLED'].includes(m.state)) {
+          m.state = 'CANCELLED';
+          m.label = 'Interrupted';
+          break; // Only cancel the most recent run
+        }
+      }
+    }
+
+    // Every state transition gets its own entry — nothing overwrites.
+    this.sp.chatHistory.push({
+      role: 'agent-status',
+      state,
+      label,
+      timestamp: Date.now()
+    });
+    this.sp.saveChatHistory().catch(() => {});
   }
 
   /**
@@ -145,8 +192,8 @@ class SNNAgentUI {
     const entry = document.createElement('div');
     entry.className = `snn-action-entry snn-action-${status}`; // status: 'start', 'ok', 'fail', 'info'
 
-    const icons = { start: '▶️', ok: '✅', fail: '❌', info: 'ℹ️' };
-    const icon = icons[status] || '•';
+    const icons = { start: '<i class="fas fa-play"></i>', ok: '<i class="fas fa-circle-check"></i>', fail: '<i class="fas fa-circle-xmark"></i>', info: '<i class="fas fa-circle-info"></i>' };
+    const icon = icons[status] || '<i class="fas fa-circle"></i>';
 
     entry.innerHTML = `
       <span class="snn-action-entry-icon">${icon}</span>
@@ -167,9 +214,9 @@ class SNNAgentUI {
     if (entries.length === 0) return;
     const last = entries[entries.length - 1];
     last.className = `snn-action-entry snn-action-${status}`;
-    const icons = { start: '▶️', ok: '✅', fail: '❌', info: 'ℹ️' };
+    const icons = { start: '<i class="fas fa-play"></i>', ok: '<i class="fas fa-circle-check"></i>', fail: '<i class="fas fa-circle-xmark"></i>', info: '<i class="fas fa-circle-info"></i>' };
     const iconEl = last.querySelector('.snn-action-entry-icon');
-    if (iconEl) iconEl.textContent = icons[status] || '•';
+    if (iconEl) iconEl.innerHTML = icons[status] || '<i class="fas fa-circle"></i>';
     if (detail) {
       const detailEl = last.querySelector('.snn-action-entry-detail');
       if (detailEl) detailEl.textContent = detail;
@@ -224,11 +271,11 @@ class SNNAgentUI {
     const entry = document.createElement('div');
     entry.className = 'snn-page-nav';
 
-    let html = `<div class="snn-page-nav-header">🧭 Page Elements — ${scan.totalLinks || 0} links, ${scan.totalButtons || 0} buttons, ${scan.totalInputs || 0} inputs, ${scan.totalForms || 0} forms</div>`;
+    let html = `<div class="snn-page-nav-header"><i class="fas fa-compass"></i> Page Elements — ${scan.totalLinks || 0} links, ${scan.totalButtons || 0} buttons, ${scan.totalInputs || 0} inputs, ${scan.totalForms || 0} forms</div>`;
 
     // Links section
     if (el.links && el.links.length > 0) {
-      html += '<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">🔗 Links</span><div class="snn-page-nav-links">';
+      html += '<div class="snn-page-nav-section"><span class="snn-page-nav-section-label"><i class="fas fa-link"></i> Links</span><div class="snn-page-nav-links">';
       html += el.links.slice(0, 12).map(l =>
         `<span class="snn-page-nav-link" title="${this.sp.escapeHtml(l.href || '')}">${this.sp.escapeHtml(l.text || '?')}</span>`
       ).join('');
@@ -238,7 +285,7 @@ class SNNAgentUI {
 
     // Buttons section
     if (el.buttons && el.buttons.length > 0) {
-      html += '<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">🔘 Buttons</span><div class="snn-page-nav-links">';
+      html += '<div class="snn-page-nav-section"><span class="snn-page-nav-section-label"><i class="fas fa-circle-dot"></i> Buttons</span><div class="snn-page-nav-links">';
       html += el.buttons.slice(0, 8).map(b =>
         `<span class="snn-page-nav-link snn-page-nav-btn" title="${this.sp.escapeHtml(b.type || 'button')}">${this.sp.escapeHtml(b.text || '?')}</span>`
       ).join('');
@@ -248,17 +295,17 @@ class SNNAgentUI {
 
     // Inputs section (collapsed)
     if (el.inputs && el.inputs.length > 0) {
-      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">📝 Inputs</span><span class="snn-page-nav-count">${el.inputs.length} fields detected</span></div>`;
+      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label"><i class="fas fa-pen-to-square"></i> Inputs</span><span class="snn-page-nav-count">${el.inputs.length} fields detected</span></div>`;
     }
 
     // Forms section
     if (el.forms && el.forms.length > 0) {
-      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">📋 Forms</span><span class="snn-page-nav-count">${el.forms.length} forms, ${el.forms.reduce((s,f) => s + (f.inputCount||0), 0)} total fields</span></div>`;
+      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label"><i class="fas fa-list-check"></i> Forms</span><span class="snn-page-nav-count">${el.forms.length} forms, ${el.forms.reduce((s,f) => s + (f.inputCount||0), 0)} total fields</span></div>`;
     }
 
     // Selects section
     if (el.selects && el.selects.length > 0) {
-      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label">📎 Dropdowns</span><span class="snn-page-nav-count">${el.selects.length} selects</span></div>`;
+      html += `<div class="snn-page-nav-section"><span class="snn-page-nav-section-label"><i class="fas fa-paperclip"></i> Dropdowns</span><span class="snn-page-nav-count">${el.selects.length} selects</span></div>`;
     }
 
     entry.innerHTML = html;
@@ -283,7 +330,7 @@ class SNNAgentUI {
 
     card.innerHTML = `
       <div class="snn-error-card-header">
-        <span class="snn-error-card-icon">⚠️</span>
+        <span class="snn-error-card-icon"><i class="fas fa-triangle-exclamation"></i></span>
         <span class="snn-error-card-title">Action Failed</span>
       </div>
       <div class="snn-error-card-body">
@@ -296,13 +343,13 @@ class SNNAgentUI {
         </div>
         ${selectorsHtml}
         ${error.detail ? `<div class="snn-error-detail">${this.sp.escapeHtml(error.detail)}</div>` : ''}
-        ${error.suggestion ? `<div class="snn-error-suggestion">💡 ${this.sp.escapeHtml(error.suggestion)}</div>` : ''}
+        ${error.suggestion ? `<div class="snn-error-suggestion"><i class="fas fa-lightbulb"></i> ${this.sp.escapeHtml(error.suggestion)}</div>` : ''}
         ${message ? `<div class="snn-error-suggestion" style="margin-top:4px;">${this.sp.escapeHtml(message)}</div>` : ''}
       </div>
       <div class="snn-error-card-actions">
-        <button class="snn-error-btn snn-error-btn-retry" data-action="retry">🔄 Retry</button>
-        <button class="snn-error-btn snn-error-btn-different" data-action="different">💡 Try Differently</button>
-        <button class="snn-error-btn snn-error-btn-dismiss" data-action="dismiss">✕ Dismiss</button>
+        <button class="snn-error-btn snn-error-btn-retry" data-action="retry"><i class="fas fa-arrows-rotate"></i> Retry</button>
+        <button class="snn-error-btn snn-error-btn-different" data-action="different"><i class="fas fa-lightbulb"></i> Try Differently</button>
+        <button class="snn-error-btn snn-error-btn-dismiss" data-action="dismiss"><i class="fas fa-xmark"></i> Dismiss</button>
       </div>
     `;
 
@@ -332,14 +379,14 @@ class SNNAgentUI {
 
     const stepsHtml = results.map((r, i) => {
       const ok = r.result && !r.result.error;
-      const icon = ok ? '✅' : '❌';
+      const icon = ok ? '<i class="fas fa-circle-check"></i>' : '<i class="fas fa-circle-xmark"></i>';
       const desc = r.step.description || r.step.action || `Step ${i + 1}`;
       return `<div class="snn-result-step"><span class="snn-result-step-icon">${icon}</span> ${this.sp.escapeHtml(desc)} <span class="snn-result-step-attempts">(${r.attempts} attempt${r.attempts !== 1 ? 's' : ''})</span></div>`;
     }).join('');
 
     card.innerHTML = `
       <div class="snn-result-card-header">
-        <span class="snn-result-card-icon">✅</span>
+        <span class="snn-result-card-icon"><i class="fas fa-circle-check"></i></span>
         <span class="snn-result-card-title">Task Complete</span>
       </div>
       <div class="snn-result-card-body">
@@ -361,12 +408,12 @@ class SNNAgentUI {
       overlay.className = 'snn-permission-overlay';
       overlay.innerHTML = `
         <div class="snn-permission-modal">
-          <div class="snn-permission-icon">🔒</div>
+          <div class="snn-permission-icon"><i class="fas fa-lock"></i></div>
           <h3>Permission Required</h3>
           <p>${this.sp.escapeHtml(question || 'SNN needs your permission to continue.')}</p>
           <div class="snn-permission-actions">
-            <button class="snn-permission-allow">✓ Allow</button>
-            <button class="snn-permission-deny">✕ Deny</button>
+            <button class="snn-permission-allow"><i class="fas fa-check"></i> Allow</button>
+            <button class="snn-permission-deny"><i class="fas fa-xmark"></i> Deny</button>
           </div>
         </div>
       `;
