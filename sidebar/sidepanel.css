@@ -611,8 +611,10 @@ body.theme-dark #welcome-screen .sp-model-tag {
 }
 
 .sp-mqs-list {
-  flex: 1;
-  min-height: 0;          /* flexbox: allow shrinking below content height */
+  /* Explicit max-height accounts for search bar (~38px) inside the
+     300px popover — avoids the flexbox "indefinite height" trap
+     where flex:1 can't constrain against max-height. */
+  max-height: calc(300px - 38px);
   overflow-y: auto;
   padding: 4px;
   scrollbar-width: thin;
