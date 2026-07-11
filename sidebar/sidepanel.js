@@ -543,6 +543,8 @@ class SNNSidePanel {
     this.activeContext = null;
     this.pageContext = null;
     this.selection = null;
+    this._sessionModel = null;                // reset per-session model override
+    this._modelLocked = false;                // allow model selection in new session
 
     // Clear UI
     this.els.chatMessages.innerHTML = '';
@@ -561,9 +563,10 @@ class SNNSidePanel {
     // based on whether the restored history already used context.
     await this.loadMostRecentSession();
 
-    // Refresh context for the new tab
+    // Refresh context and model UI for the new tab
     this._updateLockVisuals();
     this.refreshActiveContext();
+    await this.renderModelQuickSwitch();
 
     // If no session was restored, ensure context can attach fresh
     if (this.chatHistory.length === 0) {

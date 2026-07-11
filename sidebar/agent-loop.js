@@ -210,7 +210,9 @@ class SNNAgentLoop {
             // â”€â”€ If screenshot was taken and model supports vision, inject the image â”€â”€
             // Text-only models (DeepSeek, etc.) get a text summary instead â€” no 404.
             if (fnName === 'snn_screenshot' && this._lastScreenshot) {
-              if (this._modelSupportsVision(settings.openrouterModel)) {
+              // Use per-session model for vision check (not the global settings default)
+              const effectiveModel = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+              if (this._modelSupportsVision(effectiveModel)) {
                 messages.push({
                   role: 'tool',
                   tool_call_id: tc.id,
@@ -441,7 +443,8 @@ CRITICAL RULES:
    */
   async _callLLMWithTools(messages, tools, settings) {
     const apiKey = settings.openrouterKey;
-    const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    // Use per-session model override if set, otherwise fall back to global settings default
+    const model = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
 
     const body = {
       model,
