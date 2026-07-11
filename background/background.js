@@ -339,13 +339,58 @@ async function _handleBgAgentAction(message, sendResponse) {
         if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No target tab for navigation.', retryable: false } }); return; }
         const url = await _makeAbsoluteUrl(p.url, tabId);
         await chrome.tabs.update(tabId, { url });
+        
+        // Wait for the page to finish loading (with timeout)
+        await new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }, 25000);
+          
+          const listener = (updatedTabId, changeInfo) => {
+            if (updatedTabId === tabId && changeInfo.status === 'complete') {
+              clearTimeout(timeout);
+              chrome.tabs.onUpdated.removeListener(listener);
+              // Give JS-rendered content a moment to settle
+              setTimeout(resolve, 2000);
+            }
+          };
+          chrome.tabs.onUpdated.addListener(listener);
+        });
+        
         sendResponse({ success: true, result: { navigated: true, url, tabId } });
         return;
       }
 
       case 'agent:openTab': {
-        const tab = await chrome.tabs.create({ url: p.url, active: p.active !== false, index: p.index });
+        // Open in background by default — never steal focus from the user's session
+        const tab = await chrome.tabs.create({ url: p.url, active: false, index: p.index });
         sendResponse({ success: true, result: { tabId: tab.id, url: tab.url, title: tab.title } });
+        return;
+      }
+
+      case 'agent:readPage': {
+        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No active tab to read.', retryable: false } }); return; }
+        try {
+          // Request content directly from the content script
+          const result = await chrome.tabs.sendMessage(tabId, { action: 'extractContentSync' });
+          sendResponse({ success: true, result });
+        } catch (err) {
+          // Fallback: read from session storage (content script auto-extracts on load)
+          const data = await chrome.storage.session.get(CONTEXT_KEY);
+          const ctx = data[CONTEXT_KEY];
+          if (ctx?.content) {
+            sendResponse({ success: true, result: {
+              title: ctx.title || '',
+              url: ctx.url || '',
+              content: ctx.content || '',
+              wordCount: ctx.wordCount || 0
+            }});
+          } else {
+            sendResponse({ success: false, error: { code: 'READ_FAILED', message: 'Could not read page content. The page may not be fully loaded.', retryable: true } });
+          }
+        }
         return;
       }
 
@@ -691,7 +736,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
     'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
     'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
-    'agent:listActions', 'agent:getCapabilities', 'agent:page_script'
+    'agent:listActions', 'agent:getCapabilities', 'agent:page_script',
+    'agent:readPage'
   ];
 
   if (BG_AGENT_ACTIONS.includes(message.action)) {

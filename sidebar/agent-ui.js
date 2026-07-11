@@ -94,9 +94,7 @@ class SNNAgentUI {
 
     // Customize label for specific states
     let label = cfg.label;
-    if (state === 'EXECUTING' && detail.step?.description) {
-      label = detail.step.description;
-    } else if (state === 'RETRYING' && detail.attempt != null) {
+    if (state === 'RETRYING' && detail.attempt != null) {
       label = `Retrying (${detail.attempt}/${detail.maxRetries || '?'})...`;
     }
 

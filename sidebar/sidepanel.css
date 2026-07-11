@@ -528,7 +528,7 @@ body.theme-dark #welcome-screen .sp-model-tag {
   transition: all 0.15s;
   white-space: nowrap;
   line-height: 1.4;
-  max-width: 170px;
+  max-width: 220px;
   overflow: hidden;
 }
 .sp-mqs-trigger:hover {

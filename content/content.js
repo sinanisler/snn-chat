@@ -52,11 +52,51 @@ class SNNContentExtractor {
 
   // ── Message Listener ────────────────────────────────────────────
   setupMessageListener() {
-    safeAddListener((message) => {
+    safeAddListener((message, sender, sendResponse) => {
       if (message.action === 'extractContent') {
         this.extractAndSend();
       }
+      if (message.action === 'extractContentSync') {
+        this.extractAndRespond(sendResponse);
+        return true; // keep channel open for async sendResponse
+      }
     });
+  }
+
+  // ── Sync Content Extraction (direct response for agent:readPage) ──
+  async extractAndRespond(sendResponse) {
+    const title = document.title;
+    const url = window.location.href;
+    const hostname = window.location.hostname.toLowerCase();
+    let textContent = '';
+
+    if (this._isPdfPage()) {
+      sendResponse({ title, url, content: '(PDF page — text extraction not available synchronously)', wordCount: 0, domain: hostname });
+      return;
+    }
+
+    const methods = [
+      () => this.extractSiteSpecific(hostname),
+      () => this.extractGeneric(),
+      () => this.extractVisibleText(),
+      () => this.extractAllText()
+    ];
+
+    for (const method of methods) {
+      try {
+        textContent = await method();
+        if (textContent.length > 200) break;
+      } catch (e) { /* try next method */ }
+    }
+
+    if (textContent.length < 100) {
+      textContent = this.extractBruteForce();
+    }
+
+    const wordCount = this.countWords(textContent);
+    const content = `=== WEBPAGE CONTENT ===\nTitle: ${title}\nURL: ${url}\n\n${textContent}\n=== END ===`;
+
+    sendResponse({ title, url, content, wordCount, domain: hostname });
   }
 
   // ── Page Content Extraction ──────────────────────────────────────

@@ -59,7 +59,8 @@ class SNNAgentLoop {
       'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
       'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
       'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
-      'agent:listActions', 'agent:getCapabilities', 'agent:page_script'
+      'agent:listActions', 'agent:getCapabilities', 'agent:page_script',
+      'agent:readPage', 'agent:goBack'
     ]);
 
     // â”€â”€ Callbacks (set by sidepanel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -146,10 +147,27 @@ class SNNAgentLoop {
       const tools = this._getToolDefinitions(settings);
       const systemPrompt = this._buildToolSystemPrompt(settings);
 
+      // Build messages with system prompt + conversation history so the
+      // agent REMEMBERS previous turns (critical — without this it has amnesia)
       const messages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage }
+        { role: 'system', content: systemPrompt }
       ];
+
+      // ── Inject conversation history (user + assistant messages only) ──
+      const historyMessages = this.sp.chatHistory
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .slice(-12)  // last 12 turns to stay within context window
+        .map(m => ({ role: m.role, content: m.content }));
+
+      for (const hm of historyMessages) {
+        messages.push(hm);
+      }
+
+      // Add current user message (skip if already the last history entry)
+      const lastHistMsg = historyMessages[historyMessages.length - 1];
+      if (!lastHistMsg || lastHistMsg.role !== 'user' || lastHistMsg.content !== userMessage) {
+        messages.push({ role: 'user', content: userMessage });
+      }
 
       // Add page context if available
       if (context?.type === 'page' && context?.detail) {
@@ -175,7 +193,7 @@ class SNNAgentLoop {
         });
       }
 
-      const MAX_ITERATIONS = 8;
+      const MAX_ITERATIONS = 20;
       let iteration = 0;
       let finalContent = null;
 
@@ -344,12 +362,11 @@ class SNNAgentLoop {
       }, required: ['code'] },
 
       // ── Navigation & Browser ─────────────────────────────────────
-      { name: 'snn_navigate', desc: 'Navigate the current tab to a URL. The page links will be auto-detected from navigation.', params: {
-        url: { type: 'string', desc: 'Full URL or just the link text (e.g., "homepage", "blog"). If not a full URL, agent will scan page links to find match.' }
+      { name: 'snn_navigate', desc: 'Navigate the CURRENT tab to a URL and wait for the page to fully load. After navigating, you can read the page content with snn_readPage, interact with elements (click, type, scroll), or navigate to another page. Use this for ALL web visits — everything happens in ONE tab like a human browsing. For research: navigate to a search engine → snn_type your query → snn_click search → snn_wait → snn_readPage → then navigate to result links.', params: {
+        url: { type: 'string', desc: 'Full URL to navigate to (e.g., "https://google.com/search?q=..."). If you provide just link text, the agent will scan page links to find a match.' }
       }, required: ['url'] },
-      { name: 'snn_openTab', desc: 'Open a URL in a new browser tab', params: {
-        url: { type: 'string', desc: 'URL to open' }
-      }, required: ['url'] },
+      { name: 'snn_readPage', desc: 'Read the full text content of the CURRENT page (title, URL, word count, and all extracted text). Use this after snn_navigate to read what the page says. Also use it after clicking a search result or link to read the destination page. The content is returned as plain text — analyze it to find information, links, or decide your next navigation.', params: {}, required: [] },
+      { name: 'snn_goBack', desc: 'Go back to the previous page (browser back button). Use this after reading a page to return to search results or the previous page.', params: {}, required: [] },
       { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] }
     ];
 
@@ -399,34 +416,78 @@ class SNNAgentLoop {
 
     let prompt = `You are SNN Chat, a browser extension agent running inside the USER'S OWN BROWSER. You help the user interact with and customize web pages they are viewing. Modifying page styles, colors, or content via JavaScript in the user's own browser is perfectly legitimate — you are not hacking or altering anyone else's website; you are customizing the user's personal browsing experience, just like a browser extension or dev tools would.
 
-You can click buttons, type into fields, scroll, navigate, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), reload pages, and open new tabs. You have access to tools (functions) for all of these.
+You can click buttons, type into fields, scroll, navigate to pages, read page content, go back, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), and reload pages. EVERYTHING happens in one browser tab — just like a human browsing.
 
-CRITICAL — WHEN TO USE TOOLS:
-- ONLY use tools when the user explicitly asks you to PERFORM AN ACTION: click something, type into a field, scroll, navigate to a page, take a screenshot, reload, change how the page looks, etc.
-- For informational questions ("summarize this page", "what is this about?", "explain...", "what colors..."), the page content is ALREADY provided to you in the system messages. Answer DIRECTLY from that context — do NOT use any tools to re-read it.
-- If you already have the information needed to answer, JUST ANSWER. Don't reach for tools unnecessarily.
+═══════════════════════════════════════════════════════════
+HOW TO DECIDE: SIMPLE QUESTION vs RESEARCH TASK
+═══════════════════════════════════════════════════════════
+
+SIMPLE QUESTION — ANSWER DIRECTLY FROM EXISTING CONTEXT (NO TOOLS):
+- "summarize this page" / "what is this page about?"
+- "what does this article say?"
+- "explain this concept to me"
+- "what color is the button?"
+- The page content is ALREADY provided in the system messages. Answer from it.
+- DO NOT use tools just to re-read content you already have.
+
+RESEARCH TASK — YOU MUST VISIT MULTIPLE PAGES (USE TOOLS):
+- "research X" / "find all information about Y"
+- "find his websites, profiles, and what people say about him"
+- "what are people saying about Z on Reddit/forums/social media?"
+- "find reviews of this product" / "compare X vs Y across sources"
+- "investigate..." / "look into..." / "dig into..."
+- "find me all the..." / "gather information about..."
+
+FOR RESEARCH TASKS — MANDATORY DEPTH REQUIREMENTS:
+1. Search is just the STARTING POINT. Search snippets are NOT the answer.
+2. You MUST visit AT LEAST 3-5 of the actual pages found in search results.
+3. For EACH page: snn_navigate → snn_readPage → analyze content.
+4. Use snn_goBack to return to search results between visits.
+5. Look for: discussions, comments, reviews, social posts, forum threads.
+6. Found a forum thread about the person? READ IT. Scroll if needed.
+7. Found their GitHub? READ projects, READMEs, contributions.
+8. Found Reddit/Facebook discussions? READ comments and replies.
+9. Search from multiple angles: try different queries for deeper results.
+10. The user said "research" — they want DEPTH, not a list of URLs.
+11. Keep going until you have substantial info from actual pages, NOT snippets.
+12. Only synthesize your report AFTER visiting at least 3-5 different pages.
+
+RESEARCH WORKFLOW (follow exactly):
+Step 1: snn_navigate to search engine with the query → auto-waits.
+Step 2: snn_readPage to get search results.
+Step 3: Identify the most promising 3-5 result links.
+Step 4: snn_navigate to FIRST result → auto-waits.
+Step 5: snn_readPage → carefully analyze what this page says.
+Step 6: snn_goBack to return to search results.
+Step 7: snn_navigate to SECOND result → readPage → goBack.
+... REPEAT for at least 3-5 result pages total ...
+Step N: If needed, search again with a DIFFERENT query for new angles.
+Step N+1: Visit more results from the new search.
+Step Final: Only after visiting multiple pages: synthesize a REPORT.
 
 WHEN YOU DO USE TOOLS:
-1. Say something brief like "On it!" then call the tool immediately.
-2. You can chain multiple tool calls: e.g., navigate → wait → click → type.
-3. After tools return results, synthesize a helpful response in the user's language.
-4. SELECTOR PRIORITY (most robust first — ALWAYS follow this order):
-   a) :role("button","Submit") / :role("link","Home") / :role("textbox","Search") — ARIA role + accessible name
+1. Say something brief like "On it!" or "Let me check that" then call the tool.
+2. You have PLENTY of iterations (20) — don't rush. Deep research takes time.
+3. After tools return results, analyze what you learned. Decide what to visit next.
+4. SELECTOR PRIORITY (most robust first):
+   a) :role("button","Submit") / :role("link","Home") / :role("textbox","Search")
    b) :name("email") — form control name/id
    c) :text("exact visible text") — exact visible label/text
    d) :contains("partial text") — partial visible text
-   e) CSS selectors only as a LAST RESORT (classes/ids break often)
-5. When navigating: if the user says "go to X page", use snn_navigate.
-6. The snn_click action uses multiple strategies (synthetic events, native click, ancestor click, keyboard activation) to handle modern SPA frameworks. Use it for buttons, links, checkboxes, radio buttons, and opening dropdowns.
-7. snn_type types text into inputs. Click the field first with snn_click, then type with snn_type.
-8. MODIFYING THE PAGE: Use snn_page_script to change how the page looks or behaves. You CAN: change colors, fonts, sizes, backgrounds, hide elements, add content, restyle anything, run animations. Example: to make buttons red — snn_page_script with code: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red'). Example: to hide an element — snn_page_script with code: document.querySelector('.banner').style.display = 'none'.
-9. For ANY operation not covered by dedicated tools, use snn_page_script. It runs arbitrary JavaScript in the page and returns the result. Use it for: reading page data, finding elements, extracting tables, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling to elements, copying to clipboard, navigating history, and more. CRITICAL: Your code runs via eval() at the TOP LEVEL, NOT inside a function — NEVER use a bare "return" statement. Make the last expression the return value, or wrap in an IIFE: (function(){ ...; return x; })().
-10. For batch operations on infinite-scroll pages: use snn_scroll to reveal content, then snn_page_script to find and process elements.
+   e) CSS selectors only as LAST RESORT (classes/ids break often)
+5. snn_navigate auto-waits for page load. No need for snn_wait after navigate.
+6. snn_click uses multi-strategy (synthetic + native + ancestor + keyboard).
+7. snn_type types into inputs. Click the field first with snn_click, then type.
+8. MODIFYING THE PAGE: Use snn_page_script to change colors, fonts, sizes, backgrounds, hide elements, add content. Example: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red')
+9. For ANY operation not covered by dedicated tools, use snn_page_script. CRITICAL: Your code runs via eval() at the TOP LEVEL — NEVER use bare "return". Make the last expression the return value, or wrap in IIFE: (function(){ ...; return x; })()
 
 CRITICAL RULES:
-- NEVER ask for permission or confirmation to do what the user explicitly asked. Just do it.
-- NEVER say "I can help with that, would you like me to..." or "Want me to?" — instead say "Let me do that now" and call the tool.
-- If a tool call fails, try a different approach (different selector strategy: role → name → text → contains). Don't give up after one failure.
+- NEVER open a new tab. ALL navigation happens in the current tab.
+- NEVER consider a task done after just reading search results. Snippets are NOT research.
+- For research tasks: visit AT LEAST 3-5 actual pages before reporting.
+- NEVER ask for permission. Just do what the user asked.
+- NEVER say "I can help with that, would you like me to..." — say "Let me look into this" and call tools.
+- If a tool call fails, try a different approach. Don't give up.
 - For simple questions about page content: ANSWER FROM CONTEXT, don't use tools.
 - NEVER say you cannot interact with the page — you CAN.`;
 
@@ -643,6 +704,8 @@ CRITICAL RULES:
       case 'scroll': return { direction: args.direction || 'down', amount: args.amount || 500 };
       case 'wait': return { ms: args.ms || 1000 };
       case 'openTab': return { url: args.url || '' };
+      case 'readPage': return {};
+      case 'goBack': return {};
       case 'page_script': return { code: args.code || '' };
       default: return args || {};
     }
@@ -661,7 +724,8 @@ CRITICAL RULES:
       case 'snn_screenshot': return 'Take screenshot';
       case 'snn_page_script': return 'Run Page Script';
       case 'snn_navigate': return `Navigate to ${a.url || 'page'}`;
-      case 'snn_openTab': return `Open tab: ${a.url || ''}`;
+      case 'snn_readPage': return 'Read current page content';
+      case 'snn_goBack': return 'Go back to previous page';
       case 'snn_reload': return 'Reload page';
       default: return fnName;
     }
@@ -734,7 +798,7 @@ CRITICAL RULES:
     // â”€â”€ Inject tabId for background actions that need a target tab â”€â”€
     const TAB_DEPENDENT_ACTIONS = new Set([
       'agent:navigate', 'agent:goBack', 'agent:goForward',
-      'agent:reload', 'agent:screenshot', 'agent:page_script'
+      'agent:reload', 'agent:screenshot', 'agent:page_script', 'agent:readPage'
     ]);
     if (TAB_DEPENDENT_ACTIONS.has(message.action) && this._sendTabId) {
       message.payload.tabId = this._sendTabId;
