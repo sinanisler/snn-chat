@@ -25,6 +25,7 @@ class SNNSidePanel {
     this.chatHistory = [];
     this.isLoading = false;
     this.totalTokensUsed = 0;
+    this.totalCost = 0;
     this.currentDomain = '';
     this.currentTabId = null;        // ← per-tab session tracking
     this.currentSessionId = this.generateId();
@@ -528,6 +529,7 @@ class SNNSidePanel {
     this._historyKey = null;                   // will be rebuilt from tabId
     this.chatHistory = [];
     this.totalTokensUsed = 0;
+    this.totalCost = 0;
     this.activeContext = null;
     this.pageContext = null;
     this.selection = null;
@@ -1012,7 +1014,7 @@ class SNNSidePanel {
     contentDiv.innerHTML = this.parseMarkdown(fullResponse);
     this.renderMermaid(contentDiv);
     this.addMsgActions(msgDiv, fullResponse);
-    this.addTokenInfo(msgDiv);
+    this.addTokenInfo(msgDiv, this.lastTokenUsage);
     this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
 
     return fullResponse;
@@ -1329,15 +1331,41 @@ class SNNSidePanel {
     this._ttsActiveUtterance = null;
   }
 
+  _calcMessageCost(tokenUsage) {
+    const p = this._selectedModelInfo?.pricing;
+    if (!p || !tokenUsage) return null;
+    const promptPrice = parseFloat(p.prompt);
+    const completionPrice = parseFloat(p.completion);
+    if (Number.isNaN(promptPrice) && Number.isNaN(completionPrice)) return null;
+    const cost = (tokenUsage.prompt_tokens || 0) * promptPrice + (tokenUsage.completion_tokens || 0) * completionPrice;
+    return isNaN(cost) ? null : cost;
+  }
+
+  _formatCost(cost) {
+    if (cost === null || cost === undefined) return '';
+    if (cost < 0.0001) return `$${cost.toFixed(6)}`;
+    if (cost < 0.01) return `$${cost.toFixed(4)}`;
+    if (cost < 1) return `$${cost.toFixed(3)}`;
+    return `$${cost.toFixed(2)}`;
+  }
+
   addTokenInfo(msgDiv, tokenUsage) {
     const total = (tokenUsage?.prompt_tokens || 0) + (tokenUsage?.completion_tokens || 0);
     if (total > 0) {
       const info = document.createElement('div');
       info.className = 'sp-msg-tokens';
-      info.textContent = `${total.toLocaleString()} tokens`;
-      info.title = `Prompt: ${tokenUsage.prompt_tokens || 0}, Completion: ${tokenUsage.completion_tokens || 0}`;
+      const cost = this._calcMessageCost(tokenUsage);
+      let text = `${total.toLocaleString()} tokens`;
+      let title = `Prompt: ${tokenUsage.prompt_tokens || 0}, Completion: ${tokenUsage.completion_tokens || 0}`;
+      if (cost !== null) {
+        text += ` · ${this._formatCost(cost)}`;
+        title += `\nCost: ${this._formatCost(cost)}`;
+      }
+      info.textContent = text;
+      info.title = title;
       msgDiv.appendChild(info);
       this.totalTokensUsed += total;
+      if (cost !== null) this.totalCost += cost;
       this.updateTokenCounter();
     }
   }
@@ -1376,7 +1404,11 @@ class SNNSidePanel {
   updateTokenCounter() {
     if (this.totalTokensUsed > 0) {
       this.els.tokenCounter.style.display = 'block';
-      this.els.tokenCounter.textContent = `${this.totalTokensUsed.toLocaleString()} tokens`;
+      let text = `${this.totalTokensUsed.toLocaleString()} tokens`;
+      if (this.totalCost > 0) {
+        text += ` · ${this._formatCost(this.totalCost)}`;
+      }
+      this.els.tokenCounter.textContent = text;
     } else {
       this.els.tokenCounter.style.display = 'none';
     }
@@ -1553,9 +1585,11 @@ class SNNSidePanel {
       <div class="sp-tab-content active" data-tab-content="api">
         <div class="sp-section">
           <h4>OpenRouter API</h4>
+          
           <div class="sp-field">
             <label>API Key</label>
             <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="sk-or-...">
+            <p>New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
           </div>
           <div class="sp-field">
             <label>Model</label>

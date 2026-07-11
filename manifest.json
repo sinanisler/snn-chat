@@ -55,7 +55,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sidebar/*", "assets/*", "offscreen/*", "lib/*"],
+      "resources": ["sidebar/*", "assets/*", "offscreen/*"],
       "matches": ["<all_urls>"]
     }
   ]

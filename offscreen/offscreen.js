@@ -23,10 +23,10 @@ var SNN_D = {
 };
 var D = SNN_D;
 
-import * as pdfjsLib from '../lib/pdf.min.mjs';
+import * as pdfjsLib from '../assets/lib/pdf.min.mjs';
 
 // ── Configure PDF.js worker ───────────────────────────────────────
-pdfjsLib.GlobalWorkerOptions.workerSrc = '../lib/pdf.worker.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = '../assets/lib/pdf.worker.min.mjs';
 
 // ═══════════════════════════════════════════════════════════════════
 // MESSAGE LISTENER

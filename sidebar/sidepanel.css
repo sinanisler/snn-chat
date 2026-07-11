@@ -285,7 +285,7 @@ body.theme-dark {
   display: flex;
   gap: 4px;
   margin-top: 8px;
-  opacity: 0;
+  opacity: 0.5;
   transition: opacity 0.15s;
 }
 .sp-msg:hover .sp-msg-actions { opacity: 1; }
@@ -790,6 +790,8 @@ body.theme-dark {
 }
 .sp-section small { display: block; margin-top: 4px; font-size: 13px; color: var(--sp-text-secondary); }
 .sp-section p { font-size: 14px; color: var(--sp-text-secondary); }
+.sp-section a { color: var(--sp-accent); text-decoration: none; }
+.sp-section a:hover { text-decoration: underline; }
 
 .sp-field { margin-bottom: 12px; }
 .sp-field label { display: block; font-size: 14px; font-weight: 500; color: var(--sp-text); margin-bottom: 4px; }
