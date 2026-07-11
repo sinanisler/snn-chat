@@ -204,11 +204,38 @@ body.theme-dark {
 .sp-welcome-model {
   display: block;
   margin-top: 16px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--sp-text-secondary);
   opacity: 0.55;
   font-weight: 400;
   letter-spacing: 0.3px;
+}
+
+/* ── Model capability tags (under welcome screen) ─────────────── */
+#welcome-screen .sp-model-info-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+#welcome-screen .sp-model-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 8x;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(5,86,199,0.12);
+  color: rgb(90, 136, 185);
+  border: 1px solid rgba(5,86,199,0.25);
+  text-transform: capitalize;
+}
+
+body.theme-dark #welcome-screen .sp-model-tag {
+  background: rgba(62,128,219,0.15);
+  color: #6ba5ff;
+  border-color: rgba(62,128,219,0.3);
 }
 
 /* ── Selection Bar ────────────────────────────────────────────── */
@@ -1100,25 +1127,7 @@ body.theme-dark {
   background: rgba(30,126,52,0.12);
   color: var(--sp-success);
 }
-.sp-vision-badge {
-  display: none;
-  margin-left: 6px;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 999px;
-  vertical-align: middle;
-}
-.sp-vision-badge.on {
-  display: inline-flex;
-  background: rgba(124, 58, 237, 0.14);
-  color: #7c3aed;
-}
-.sp-vision-badge.off {
-  display: inline-flex;
-  background: rgba(128,128,128,0.12);
-  color: var(--sp-text-secondary);
-} border-radius: 6px;
+ border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
   background: var(--sp-input-bg);

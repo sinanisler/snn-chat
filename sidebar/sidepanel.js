@@ -1544,26 +1544,50 @@ class SNNSidePanel {
     }
     if (fullId && this._modelsData?.[fullId]) this._selectedModelInfo = this._modelsData[fullId];
     const supports = this._modelSupportsVision(fullId || this._selectedModelInfo?.id);
-    el.classList.toggle('has-vision', !!supports);
     el.title = supports ? 'Vision-capable model' : 'Text-only model (no image input)';
-    // Inline badge next to model name
-    let badge = el.parentElement?.querySelector?.('.sp-vision-badge') || document.querySelector('.sp-vision-badge');
-    if (!badge) {
-      badge = document.createElement('span');
-      badge.className = 'sp-vision-badge';
-      el.insertAdjacentElement('afterend', badge);
+
+    // Populate model capability tags under the welcome screen
+    this._renderModelInfoTags(fullId || this._selectedModelInfo?.id);
+  }
+
+  /**
+   * Render capability tags below the welcome-screen model name.
+   * Reads input_modalities from the cached OpenRouter model data.
+   */
+  _renderModelInfoTags(modelId) {
+    const container = document.getElementById('model-info-tags');
+    if (!container) return;
+
+    const data = modelId ? (this._modelsData?.[modelId] || this._selectedModelInfo) : this._selectedModelInfo;
+    const modalities = data?.architecture?.input_modalities;
+
+    if (!Array.isArray(modalities) || modalities.length === 0) {
+      container.innerHTML = '<span class="sp-model-tag">text</span>';
+      return;
     }
-    if (supports) {
-      badge.textContent = 'Vision';
-      badge.style.display = 'inline-flex';
-      badge.classList.add('on');
-      badge.classList.remove('off');
-    } else {
-      badge.textContent = 'Text';
-      badge.style.display = 'inline-flex';
-      badge.classList.add('off');
-      badge.classList.remove('on');
+
+    // Normalise modality names and deduplicate
+    const seen = new Set();
+    const tags = [];
+    for (const mod of modalities) {
+      const raw = String(mod).toLowerCase().trim();
+      let label = null;
+      if (/text|language/i.test(raw)) label = 'text';
+      else if (/image|vision/i.test(raw)) label = 'image';
+      else if (/video/i.test(raw)) label = 'video';
+      else if (/file|pdf|document/i.test(raw)) label = 'file';
+      else if (/audio/i.test(raw)) label = 'audio';
+      if (label && !seen.has(label)) {
+        seen.add(label);
+        tags.push(label);
+      }
     }
+
+    if (tags.length === 0) tags.push('text');
+
+    container.innerHTML = tags.map(t =>
+      `<span class="sp-model-tag">${t}</span>`
+    ).join('');
   }
 
   openSettings() { this.els.settingsOverlay.classList.add('visible'); this.renderSettings(); }
