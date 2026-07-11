@@ -1937,7 +1937,6 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   margin: 4px 0;
   border: 1px solid var(--sp-border);
   border-radius: 8px;
-  overflow: hidden;
   background: var(--sp-ai-msg-bg);
   animation: snn-slide-up 0.2s ease;
 }
