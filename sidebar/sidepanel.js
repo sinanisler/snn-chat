@@ -513,7 +513,7 @@ class SNNSidePanel {
       // ── Check for pending context-menu prompts targeting this tab ──
       this._checkContextMenuPrompt();
 
-      this.showToast(`Tab: ${this.currentDomain || 'new tab'} (🔒 session locked)`);
+      this.showToast(`Tab: ${this.escapeHtml(this.currentDomain || 'new tab')} <i class="fas fa-lock"></i> session locked`);
       return;
     }
 
@@ -596,7 +596,9 @@ class SNNSidePanel {
     this._updateTabIndicator();
     // Update the lock icon button in the header
     if (this.els.chatLockBtn) {
-      this.els.chatLockBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path d="M256 160L256 224L384 224L384 160C384 124.7 355.3 96 320 96C284.7 96 256 124.7 256 160zM192 224L192 160C192 89.3 249.3 32 320 32C390.7 32 448 89.3 448 160L448 224C483.3 224 512 252.7 512 288L512 512C512 547.3 483.3 576 448 576L192 576C156.7 576 128 547.3 128 512L128 288C128 252.7 156.7 224 192 224z"/></svg>';
+      this.els.chatLockBtn.innerHTML = this._chatLockEnabled
+        ? '<i class="fas fa-lock"></i>'
+        : '<i class="fas fa-lock-open"></i>';
       this.els.chatLockBtn.classList.toggle('locked', this._chatLockEnabled);
       this.els.chatLockBtn.title = this._chatLockEnabled
         ? 'Session Locked — one session across all tabs. Click to unlock.'
@@ -2685,7 +2687,8 @@ class SNNSidePanel {
 
   /**
    * Render history items. Default: current site on top.
-   * Search filters the visible list; with "Search globally" it searches all sessions' message content.
+   * When "Search globally" is enabled, ALL sessions from ALL domains are shown in one unified list.
+   * Search filters the visible list; with "Search globally" it also searches all sessions' message content.
    */
   _renderHistoryList(siteHistories, otherHistories, query, searchGlobal) {
     const list = this.els.historyBody.querySelector('#history-list');
@@ -2702,12 +2705,13 @@ class SNNSidePanel {
       return false;
     };
 
-    // When searching globally, search the full combined list.
-    // When not global, keep site-first ordering and filter each group.
+    // When "Search globally" is enabled, show ALL histories from all domains
+    // in one unified flat list, regardless of whether there's a text query.
+    // When NOT global, keep site-first ordering with grouped sections.
     let sections = [];
-    if (query && searchGlobal) {
+    if (searchGlobal) {
       const all = [...siteHistories, ...otherHistories].filter(h => matches(h, query));
-      sections = [{ title: 'All sessions', items: all }];
+      if (all.length) sections = [{ title: query ? 'Search results' : 'All sessions', items: all }];
     } else {
       const site = siteHistories.filter(h => matches(h, query));
       const other = otherHistories.filter(h => matches(h, query));
@@ -2732,8 +2736,9 @@ class SNNSidePanel {
         const isCurrent = (this.historyKey === h.key) || (this._historyKey === h.key);
         html += `
           <div class="sp-history-item${isCurrent ? ' current' : ''}" data-key="${this.escapeHtml(h.key)}" data-domain="${this.escapeHtml(h.domain || '')}">
-            <div class="sp-history-title">${this.escapeHtml(h.domain || 'session')} — ${date} (${msgCount} msgs)</div>
-            <div class="sp-history-preview">"${this.escapeHtml(previewShort)}"</div>
+            <div class="sp-history-title">${this.escapeHtml(h.domain || 'session')}</div>
+            <div class="sp-history-meta">${date} · ${msgCount} msgs</div>
+            ${previewShort ? `<div class="sp-history-preview">"${this.escapeHtml(previewShort)}"</div>` : ''}
             <button class="sp-history-delete" data-key="${this.escapeHtml(h.key)}">×</button>
           </div>`;
       }
@@ -2773,7 +2778,7 @@ class SNNSidePanel {
         const lastUser = [...data.messages].reverse().find(m => m.role === 'user');
         histories.push({
           key,
-          domain: '🔒 Global Session',
+          domain: 'Global Session',
           sessionId: '__locked__',
           tabId: null,
           isLocked: true,
@@ -2846,7 +2851,7 @@ class SNNSidePanel {
         this._updateLockVisuals();
         this.restoreChat();
         this.closeHistory();
-        this.showToast('🔒 Global session loaded');
+        this.showToast('<i class="fas fa-lock"></i> Global session loaded');
         return;
       }
     }
@@ -3174,7 +3179,7 @@ class SNNSidePanel {
       this.refreshActiveContext();
       await this.renderQuickActions();
       await this.renderModelQuickSwitch();
-      this.showToast('Chat cleared (🔒 session locked)');
+      this.showToast('Chat cleared <i class="fas fa-lock"></i> session locked');
       return;
     }
     // ── Save old session first ────────────────────────────────
@@ -3296,7 +3301,7 @@ class SNNSidePanel {
       this.els.tokenCounter.style.display = 'none';
       this._updateLockVisuals();
       await this.renderModelQuickSwitch();
-      this.showToast('🔒 Session Locked — one session across all tabs');
+      this.showToast('<i class="fas fa-lock"></i> Session Locked — one session across all tabs');
     } else if (!this._chatLockEnabled && wasLocked) {
       // ═══ UNLOCKING: save locked → back to per-tab ═══
       await this.saveChatHistory();
@@ -3317,7 +3322,7 @@ class SNNSidePanel {
       await this.loadMostRecentSession();
       this._updateLockVisuals();
       await this.renderModelQuickSwitch();
-      this.showToast('🔓 Session Unlocked — per-tab sessions restored');
+      this.showToast('<i class="fas fa-lock-open"></i> Session Unlocked — per-tab sessions restored');
     }
 
     await this._saveChatLockState();
@@ -4110,7 +4115,7 @@ class SNNSidePanel {
     if (existing) existing.remove();
     const toast = document.createElement('div');
     toast.className = `sp-toast ${type}`;
-    toast.textContent = msg;
+    toast.innerHTML = msg;
     document.body.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add('show'));
     setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 2500);

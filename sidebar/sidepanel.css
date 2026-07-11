@@ -725,10 +725,8 @@ body.theme-dark #welcome-screen .sp-model-tag {
   border-color: var(--sp-border);
   color: var(--sp-text);
 }
-.sp-lock-btn svg {
-  width: 16px;
-  height: 16px;
-  fill: currentColor;
+.sp-lock-btn i {
+  font-size: 14px;
   display: block;
 }
 .sp-lock-btn.locked {
@@ -1144,38 +1142,49 @@ body.theme-dark #welcome-screen .sp-model-tag {
 }
 .sp-history-global input { accent-color: var(--sp-accent); }
 .sp-history-section-title {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.5px;
   color: var(--sp-text-secondary);
-  margin: 10px 0 8px;
+  margin: 8px 0 4px;
+  padding: 0 2px;
 }
 
 .sp-history-item {
   background: var(--sp-ai-msg-bg);
   border: 1px solid var(--sp-ai-msg-border);
-  border-radius: 8px;
-  padding: 12px 14px;
-  margin-bottom: 8px;
+  border-radius: 6px;
+  padding: 6px 28px 6px 10px;
+  margin-bottom: 4px;
   cursor: pointer;
   transition: all 0.15s;
   position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
 }
-.sp-history-item:hover { border-color: var(--sp-accent); transform: translateY(-1px); }
+.sp-history-item:hover { border-color: var(--sp-accent); }
 .sp-history-item.current { border-color: var(--sp-accent); background: var(--sp-context-bg); }
-.sp-history-title { font-size: 14px; font-weight: 600; color: var(--sp-text); }
-.sp-history-meta { font-size: 13px; color: var(--sp-text-secondary); margin-top: 3px; }
+.sp-history-title {
+  font-size: 12px; font-weight: 600; color: var(--sp-text);
+  white-space: nowrap;
+}
+.sp-history-meta { font-size: 11px; color: var(--sp-text-secondary); }
 .sp-history-preview {
-  font-size: 13px; color: var(--sp-text-secondary); font-style: italic;
-  margin-top: 6px; padding: 6px 8px; background: rgba(128,128,128,0.08); border-radius: 4px;
+  font-size: 11px; color: var(--sp-text-secondary); font-style: italic;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .sp-history-delete {
-  position: absolute; top: 8px; right: 8px;
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
   background: rgba(220,53,69,0.15); border: none; color: var(--sp-danger);
-  width: 26px; height: 26px; border-radius: 50%; font-size: 14px; font-weight: bold;
+  width: 20px; height: 20px; border-radius: 50%; font-size: 12px; font-weight: bold;
   cursor: pointer; display: flex; align-items: center; justify-content: center;
-  opacity: 0; transition: all 0.15s;
+  opacity: 0; transition: all 0.15s; line-height: 1;
 }
 .sp-history-item:hover .sp-history-delete { opacity: 1; }
 .sp-history-delete:hover { background: var(--sp-danger); color: #fff; }
