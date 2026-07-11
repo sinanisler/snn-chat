@@ -75,27 +75,18 @@ class SNNAgentLoop {
    * Prefers OpenRouter model metadata (architecture.input_modalities)
    * cached by the side panel; falls back to a conservative name heuristic.
    */
+  /**
+   * Check if the current model supports image/vision input.
+   * Delegates to side panel's _getModelInputModalities for authoritative data.
+   */
   _modelSupportsVision(modelId) {
+    // Delegate to side panel's comprehensive modality detection
+    if (this.sp && typeof this.sp._getModelInputModalities === 'function') {
+      return this.sp._getModelInputModalities(modelId).has('image');
+    }
     if (!modelId) return false;
 
-    // 1) Authoritative: cached OpenRouter model data from settings/model picker
-    const cached = this.sp?._modelsData?.[modelId] || this.sp?._selectedModelInfo;
-    const modalities = cached?.architecture?.input_modalities
-      || cached?.architecture?.modality?.split?.(',')
-      || null;
-    if (Array.isArray(modalities)) {
-      return modalities.some(m => /image|vision/i.test(String(m)));
-    }
-    if (typeof modalities === 'string' && /image|vision/i.test(modalities)) {
-      return true;
-    }
-    // Explicit modality string like "text+image"
-    const modality = cached?.architecture?.modality;
-    if (typeof modality === 'string' && /image|vision/i.test(modality)) {
-      return true;
-    }
-
-    // 2) Fallback heuristic for uncached models
+    // Fallback heuristic for uncached models (standalone)
     const m = modelId.toLowerCase();
     return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
   }

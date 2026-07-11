@@ -559,7 +559,14 @@ body.theme-dark #welcome-screen .sp-model-tag {
   border-radius: 4px;
   background: rgba(5,86,199,0.12);
   color: var(--sp-accent);
+  white-space: nowrap;
 }
+/* Per-type badge colours */
+.sp-attach-chip-badge[data-type="audio"] { background: rgba(30,126,52,0.14); color: var(--sp-success); }
+.sp-attach-chip-badge[data-type="video"] { background: rgba(124,58,237,0.14); color: #7c3aed; }
+.sp-attach-chip-badge[data-type="pdf"]   { background: rgba(192,57,43,0.12); color: var(--sp-danger); }
+.sp-attach-chip-badge[data-type="text"]  { background: rgba(128,128,128,0.12); color: var(--sp-text-secondary); }
+.sp-attach-chip-badge[data-type="file"]  { background: rgba(184,96,11,0.12); color: var(--sp-warning); }
 .sp-attach-chip-name {
   max-width: 140px;
   overflow: hidden;

@@ -58,6 +58,18 @@ class SNNSidePanel {
     this._modelsData = {};
     this._selectedModelInfo = null;
 
+    // ── File size limits per type (bytes) ────────────────────
+    this._FILE_LIMITS = {
+      image: 8 * 1024 * 1024,     // 8 MB
+      audio: 10 * 1024 * 1024,    // 10 MB
+      video: 20 * 1024 * 1024,    // 20 MB (warn about token cost)
+      pdf:    8 * 1024 * 1024,    // 8 MB
+      text:   2 * 1024 * 1024,    // 2 MB
+      file:   8 * 1024 * 1024     // 8 MB (generic fallback)
+    };
+    this._MAX_ATTACHMENTS_TOTAL = 6;
+    this._MAX_ATTACHMENTS_VIDEO = 1;  // only 1 video at a time
+
     // ── TTS (Text-to-Speech) state ───────────────────────────
     this._ttsVoices = [];                  // cached voice list
     this._ttsSpeakingMsgEl = null;         // message element currently being read
@@ -666,9 +678,9 @@ class SNNSidePanel {
       type: a.type,
       mime: a.mime,
       size: a.size,
-      // Keep image data for vision re-sends; keep text content for text files
-      dataUrl: a.type === 'image' ? a.dataUrl : undefined,
-      text: a.type === 'text' || a.type === 'pdf' ? a.text : undefined
+      // Keep data URLs for re-sends (image, audio, video); keep text content for text/pdf files
+      dataUrl: (a.type === 'image' || a.type === 'audio' || a.type === 'video') ? a.dataUrl : undefined,
+      text: (a.type === 'text' || a.type === 'pdf' || a.type === 'file') ? a.text : undefined
     }));
     this.chatHistory.push({
       role: 'user', content: displayMessage,
@@ -763,8 +775,10 @@ class SNNSidePanel {
         if (contextType === 'none') contextType = 'files';
       }
 
-      // Stash image attachments for vision injection in callAPI/streamResponse
+      // Stash multimodal attachments for injection in callAPI/streamResponse
       this._pendingImageAttachments = attachments.filter(a => a.type === 'image' && a.dataUrl);
+      this._pendingAudioAttachments = attachments.filter(a => a.type === 'audio' && a.dataUrl);
+      this._pendingVideoAttachments = attachments.filter(a => a.type === 'video' && a.dataUrl);
 
       let response;
       if (settings.enableStreaming !== false) {
@@ -775,6 +789,8 @@ class SNNSidePanel {
         this.removeLoadingMsg();
       }
       this._pendingImageAttachments = null;
+      this._pendingAudioAttachments = null;
+      this._pendingVideoAttachments = null;
 
       // ── Tab-switch guard: discard if user switched tabs during API call ──
       if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
@@ -845,8 +861,8 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach images (user attachments + last screenshot) if model supports vision ──
-    this._injectVisionContent(messages, userMessage, model);
+    // ── Inject multimodal content (images, audio, video) if model supports it ──
+    this._injectMultimodalContent(messages, userMessage, model);
 
     const body = {
       model,
@@ -909,8 +925,8 @@ class SNNSidePanel {
       { role: 'user', content: userMessage }
     ];
 
-    // ── Attach images (user attachments + last screenshot) if model supports vision ──
-    this._injectVisionContent(messages, userMessage, model);
+    // ── Inject multimodal content (images, audio, video) if model supports it ──
+    this._injectMultimodalContent(messages, userMessage, model);
 
     const body = {
       model, messages, stream: true,
@@ -1053,14 +1069,19 @@ class SNNSidePanel {
   }
 
   _renderMessageAttachmentsHtml(attachments) {
+    const iconMap = {
+      image: '🖼', audio: '🎵', video: '🎬',
+      pdf: '📄', text: '📝', file: '📎'
+    };
     let html = '<div class="sp-msg-attachments">';
     for (const a of attachments) {
       if (a.type === 'image' && a.dataUrl) {
         html += `<div class="sp-msg-attach-item sp-msg-attach-image"><img src="${a.dataUrl}" alt="${this.escapeHtml(a.name || 'image')}" title="${this.escapeHtml(a.name || '')}"></div>`;
       } else {
-        const icon = a.type === 'pdf' ? 'PDF' : 'FILE';
+        const icon = iconMap[a.type] || '📎';
+        const badge = a.type === 'pdf' ? 'PDF' : a.type === 'audio' ? 'AUDIO' : a.type === 'video' ? 'VIDEO' : 'FILE';
         const size = a.size ? ` · ${this._formatBytes(a.size)}` : '';
-        html += `<div class="sp-msg-attach-item sp-msg-attach-file"><span class="sp-msg-attach-badge">${icon}</span><span>${this.escapeHtml(a.name || 'file')}${size}</span></div>`;
+        html += `<div class="sp-msg-attach-item sp-msg-attach-file"><span class="sp-msg-attach-badge">${icon} ${badge}</span><span>${this.escapeHtml(a.name || 'file')}${size}</span></div>`;
       }
     }
     html += '</div>';
@@ -1528,7 +1549,7 @@ class SNNSidePanel {
     this._updateHeaderVisionBadge(model);
   }
 
-  _updateHeaderVisionBadge(modelId) {
+  _updateModelCapabilities(modelId) {
     const el = this.els.modelName;
     if (!el) return;
     const id = modelId
@@ -1543,12 +1564,28 @@ class SNNSidePanel {
       if (match) fullId = match;
     }
     if (fullId && this._modelsData?.[fullId]) this._selectedModelInfo = this._modelsData[fullId];
-    const supports = this._modelSupportsVision(fullId || this._selectedModelInfo?.id);
-    el.title = supports ? 'Vision-capable model' : 'Text-only model (no image input)';
+    const resolvedId = fullId || this._selectedModelInfo?.id;
+    const mods = this._getModelInputModalities(resolvedId);
+
+    // Update model name tooltip
+    const capabilities = [];
+    if (mods.has('image')) capabilities.push('vision');
+    if (mods.has('audio')) capabilities.push('audio');
+    if (mods.has('video')) capabilities.push('video');
+    if (mods.has('file'))  capabilities.push('file');
+    el.title = capabilities.length > 0
+      ? `Capabilities: ${capabilities.join(', ')}`
+      : 'Text-only model (no multimodal input)';
 
     // Populate model capability tags under the welcome screen
-    this._renderModelInfoTags(fullId || this._selectedModelInfo?.id);
+    this._renderModelInfoTags(resolvedId);
+
+    // Refresh the attach button & file input accept based on modalities
+    this._refreshAttachButton(resolvedId);
   }
+
+  // Backward-compat alias
+  _updateHeaderVisionBadge(modelId) { this._updateModelCapabilities(modelId); }
 
   /**
    * Render capability tags below the welcome-screen model name.
@@ -3021,53 +3058,176 @@ class SNNSidePanel {
   }
 
   /**
-   * Check if a model supports image/vision input.
-   * Prefers OpenRouter model metadata (architecture.input_modalities).
+   * Return a Set of supported input modalities for the given model.
+   * Reads architecture.input_modalities from cached OpenRouter model data.
+   * Falls back to name-based heuristics for uncached models.
+   * @returns {Set<string>} e.g. Set { 'text', 'image', 'audio', 'video', 'file' }
    */
-  _modelSupportsVision(modelId) {
-    if (!modelId) return false;
+  _getModelInputModalities(modelId) {
+    const result = new Set(['text']); // text is always supported
+    if (!modelId) return result;
 
+    // 1) Authoritative: cached OpenRouter model data
     const cached = this._modelsData?.[modelId] || this._selectedModelInfo;
     const modalities = cached?.architecture?.input_modalities || null;
-    if (Array.isArray(modalities)) {
-      return modalities.some(m => /image|vision/i.test(String(m)));
-    }
-    const modality = cached?.architecture?.modality;
-    if (typeof modality === 'string' && /image|vision/i.test(modality)) {
-      return true;
+    if (Array.isArray(modalities) && modalities.length > 0) {
+      for (const mod of modalities) {
+        const raw = String(mod).toLowerCase().trim();
+        if (/image|vision/i.test(raw)) result.add('image');
+        else if (/audio/i.test(raw)) result.add('audio');
+        else if (/video/i.test(raw)) result.add('video');
+        else if (/file|pdf|document/i.test(raw)) result.add('file');
+      }
+      return result;
     }
 
-    // Fallback heuristic for uncached models
+    // 2) Fallback heuristic for uncached models
     const m = modelId.toLowerCase();
-    return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
+    // Vision-capable models
+    if (/gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m)) {
+      result.add('image');
+      result.add('file');
+    }
+    // Audio-capable models (GPT-4o-audio, Gemini with audio)
+    if (/gpt-4o-audio|gemini|gpt-4o/i.test(m)) result.add('audio');
+    // Video-capable models (Gemini)
+    if (/gemini/i.test(m)) result.add('video');
+    return result;
   }
 
   /**
-   * Inject image attachments + last screenshot into the last user message
-   * when the selected model supports vision.
+   * Check if a model supports image/vision input.
+   * Delegates to _getModelInputModalities. Kept for backward compat with agent-loop.
    */
-  _injectVisionContent(messages, userMessage, model) {
+  _modelSupportsVision(modelId) {
+    return this._getModelInputModalities(modelId).has('image');
+  }
+
+  // ── Limit helpers ──────────────────────────────────────────────
+  /** Get per-type max bytes; falls back to generic 'file' limit. */
+  _getMaxBytesForType(type) {
+    return this._FILE_LIMITS[type] || this._FILE_LIMITS.file || 8 * 1024 * 1024;
+  }
+
+  /** Get max count of attachments per type. */
+  _getMaxCountForType(type) {
+    if (type === 'video') return this._MAX_ATTACHMENTS_VIDEO || 1;
+    return this._MAX_ATTACHMENTS_TOTAL || 6;
+  }
+
+  // ── Dynamic attach button ──────────────────────────────────────
+  /**
+   * Update the attach button title, visibility, and file input accept
+   * based on the currently selected model's input modalities.
+   */
+  _refreshAttachButton(modelId) {
+    const btn = this.els.attachBtn;
+    const input = this.els.attachInput;
+    if (!btn || !input) return;
+
+    const mods = this._getModelInputModalities(modelId);
+    const hasImage = mods.has('image');
+    const hasAudio = mods.has('audio');
+    const hasVideo = mods.has('video');
+    const hasFile  = mods.has('file');
+
+    // Build accept string
+    const acceptParts = [];
+    if (hasImage) acceptParts.push('image/*');
+    if (hasAudio) acceptParts.push('audio/*');
+    if (hasVideo) acceptParts.push('video/*');
+    if (hasFile || hasImage) {
+      acceptParts.push('.pdf');
+    }
+    // Always allow text files
+    acceptParts.push('.txt,.md,.csv,.json,.log,.html,.htm,.xml,.js,.ts,.css,.py,.rb,.go,.rs,.java,.c,.cpp,.h,.yml,.yaml');
+
+    input.setAttribute('accept', acceptParts.join(','));
+
+    // Only hide for text-only models (no image, audio, video, or file)
+    const hasAnyAttachment = hasImage || hasAudio || hasVideo || hasFile;
+    btn.style.display = hasAnyAttachment ? '' : 'none';
+
+    // Build descriptive title
+    const supported = [];
+    if (hasImage) supported.push('image');
+    if (hasAudio) supported.push('audio');
+    if (hasVideo) supported.push('video');
+    if (hasFile)  supported.push('PDF');
+    supported.push('text');
+    btn.title = `Attach ${supported.join(', ')} or text file`;
+  }
+
+  /**
+   * Inject multimodal content (images, audio, video) into the last user message
+   * based on what the selected model supports.
+   */
+  _injectMultimodalContent(messages, userMessage, model) {
+    const mods = this._getModelInputModalities(model);
+    const parts = [{ type: 'text', text: userMessage || 'Please analyze the attached file(s).' }];
+    let anyInjected = false;
+
+    // ── Images ──
     const images = [];
-    const pending = this._pendingImageAttachments || [];
-    for (const a of pending) {
+    const pendingImg = this._pendingImageAttachments || [];
+    for (const a of pendingImg) {
       if (a?.dataUrl) images.push(a.dataUrl);
     }
     if (this._lastScreenshot) {
       images.push(this._lastScreenshot);
       this._lastScreenshot = null;
     }
-    if (!images.length) return;
-
-    if (!this._modelSupportsVision(model)) {
+    if (images.length && mods.has('image')) {
+      for (const url of images) {
+        parts.push({ type: 'image_url', image_url: { url } });
+      }
+      anyInjected = true;
+    } else if (images.length && !mods.has('image')) {
       this.showToast('Current model does not support vision — images not sent to the model.', 'warning');
-      return;
     }
 
-    const parts = [{ type: 'text', text: userMessage || 'Please analyze the attached image(s).' }];
-    for (const url of images) {
-      parts.push({ type: 'image_url', image_url: { url } });
+    // ── Audio ──
+    const pendingAudio = this._pendingAudioAttachments || [];
+    if (pendingAudio.length && mods.has('audio')) {
+      for (const a of pendingAudio) {
+        if (a?.dataUrl) {
+          // Extract format from mime e.g. 'audio/mp3' → 'mp3'
+          const fmt = (a.mime || 'audio/wav').split('/')[1] || 'wav';
+          parts.push({
+            type: 'input_audio',
+            input_audio: { data: a.dataUrl, format: fmt }
+          });
+        }
+      }
+      anyInjected = true;
+    } else if (pendingAudio.length && !mods.has('audio')) {
+      this.showToast('Current model does not support audio input — audio not sent.', 'warning');
     }
-    messages[messages.length - 1] = { role: 'user', content: parts };
+
+    // ── Video ──
+    const pendingVideo = this._pendingVideoAttachments || [];
+    if (pendingVideo.length && mods.has('video')) {
+      for (const v of pendingVideo) {
+        if (v?.dataUrl) {
+          const fmt = (v.mime || 'video/mp4').split('/')[1] || 'mp4';
+          parts.push({
+            type: 'input_video',
+            input_video: { data: v.dataUrl, format: fmt }
+          });
+        }
+      }
+      anyInjected = true;
+    } else if (pendingVideo.length && !mods.has('video')) {
+      // Append as text note instead so the model at least knows about the file
+      const names = pendingVideo.map(v => v.name).join(', ');
+      this.showToast('Current model does not support video input — video info sent as text reference.', 'warning');
+      parts.push({ type: 'text', text: `[Video file(s) attached but current model cannot process video: ${names}]` });
+      anyInjected = true;
+    }
+
+    if (anyInjected) {
+      messages[messages.length - 1] = { role: 'user', content: parts };
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -3119,38 +3279,74 @@ class SNNSidePanel {
 
   async _addAttachmentFile(file) {
     if (!file) return;
-    const MAX_BYTES = 8 * 1024 * 1024; // 8MB soft limit
-    if (file.size > MAX_BYTES) {
-      this.showToast(`"${file.name}" is too large (max 8MB).`, 'error');
-      return;
-    }
-    if ((this._pendingAttachments || []).length >= 6) {
-      this.showToast('Maximum 6 attachments per message.', 'warning');
-      return;
-    }
-
     const mime = file.type || '';
     const name = file.name || 'file';
     const lower = name.toLowerCase();
+
+    // ── Classify file type ─────────────────────────────────────
     let type = 'file';
-    if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(lower)) type = 'image';
+    if (mime.startsWith('image/') || /\\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(lower)) type = 'image';
+    else if (mime.startsWith('audio/') || /\\.(mp3|wav|ogg|flac|m4a|aac|opus|weba|wma)$/i.test(lower)) type = 'audio';
+    else if (mime.startsWith('video/') || /\\.(mp4|webm|mkv|avi|mov|wmv|flv|m4v|ogv|3gp)$/i.test(lower)) type = 'video';
     else if (mime === 'application/pdf' || lower.endsWith('.pdf')) type = 'pdf';
     else if (
       mime.startsWith('text/') ||
       /json|xml|javascript|typescript|csv/.test(mime) ||
-      /\.(txt|md|csv|json|log|html?|xml|js|ts|css|py|rb|go|rs|java|c|cpp|h|yml|yaml)$/i.test(lower)
+      /\\.(txt|md|csv|json|log|html?|xml|js|ts|css|py|rb|go|rs|java|c|cpp|h|yml|yaml)$/i.test(lower)
     ) type = 'text';
 
+    // ── Size check (per-type limits) ───────────────────────────
+    const maxBytes = this._getMaxBytesForType(type);
+    if (file.size > maxBytes) {
+      const maxMB = (maxBytes / 1024 / 1024).toFixed(1);
+      this.showToast(`"${name}" is too large for ${type} (max ${maxMB} MB).`, 'error');
+      return;
+    }
+
+    // ── Count check (per-type & total) ────────────────────────
+    const pending = this._pendingAttachments || [];
+    const totalMax = this._MAX_ATTACHMENTS_TOTAL || 6;
+    if (pending.length >= totalMax) {
+      this.showToast(`Maximum ${totalMax} attachments per message.`, 'warning');
+      return;
+    }
+    const typeMax = this._getMaxCountForType(type);
+    const typeCount = pending.filter(a => a.type === type).length;
+    if (typeCount >= typeMax) {
+      this.showToast(`Maximum ${typeMax} ${type} file${typeMax > 1 ? 's' : ''} per message.`, 'warning');
+      return;
+    }
+
+    // ── Read file and store ────────────────────────────────────
     try {
       if (type === 'image') {
         const dataUrl = await this._readFileAsDataURL(file);
-        this._pendingAttachments.push({
+        pending.push({
           id: this.generateId(),
           name, type, mime: mime || 'image/*', size: file.size, dataUrl
         });
+      } else if (type === 'audio') {
+        // Audio: read as base64 data URL for models that accept inline audio
+        const dataUrl = await this._readFileAsDataURL(file);
+        pending.push({
+          id: this.generateId(),
+          name, type, mime: mime || 'audio/*', size: file.size, dataUrl,
+          text: `[Audio file attached: ${name} (${this._formatBytes(file.size)})]`
+        });
+      } else if (type === 'video') {
+        // Video: read as base64 data URL (size-limited, expensive in tokens)
+        const dataUrl = await this._readFileAsDataURL(file);
+        pending.push({
+          id: this.generateId(),
+          name, type, mime: mime || 'video/*', size: file.size, dataUrl,
+          text: `[Video file attached: ${name} (${this._formatBytes(file.size)}). Video processing is limited — describe what you want analyzed.]`
+        });
+        // Warn about high token cost for video
+        const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+        this.showToast(`Video attached (${sizeMB} MB). Large videos incur high token costs.`, 'warning');
       } else if (type === 'text') {
         const text = await this._readFileAsText(file);
-        this._pendingAttachments.push({
+        pending.push({
           id: this.generateId(),
           name, type, mime: mime || 'text/plain', size: file.size,
           text: text.substring(0, 200000)
@@ -3158,14 +3354,14 @@ class SNNSidePanel {
       } else if (type === 'pdf') {
         // Best-effort: extract text via offscreen PDF.js if available; else note binary attach
         const text = await this._extractPdfAttachmentText(file);
-        this._pendingAttachments.push({
+        pending.push({
           id: this.generateId(),
           name, type, mime: 'application/pdf', size: file.size,
           text: text || `[PDF file attached: ${name} — text extraction unavailable]`
         });
       } else {
         // Unknown binary: store name only
-        this._pendingAttachments.push({
+        pending.push({
           id: this.generateId(),
           name, type: 'file', mime: mime || 'application/octet-stream', size: file.size,
           text: `[Binary file attached: ${name}]`
@@ -3187,6 +3383,16 @@ class SNNSidePanel {
       return;
     }
     bar.style.display = 'flex';
+
+    const badgeMap = {
+      image: 'IMG', audio: 'AUD', video: 'VID',
+      pdf: 'PDF', text: 'TXT', file: 'FILE'
+    };
+    const iconMap = {
+      image: '🖼', audio: '🎵', video: '🎬',
+      pdf: '📄', text: '📝', file: '📎'
+    };
+
     bar.innerHTML = list.map(a => {
       if (a.type === 'image' && a.dataUrl) {
         return `<div class="sp-attach-chip" data-id="${a.id}">
@@ -3195,9 +3401,10 @@ class SNNSidePanel {
           <button class="sp-attach-chip-remove" data-id="${a.id}" title="Remove">×</button>
         </div>`;
       }
-      const badge = a.type === 'pdf' ? 'PDF' : (a.type === 'text' ? 'TXT' : 'FILE');
+      const badge = badgeMap[a.type] || 'FILE';
+      const icon = iconMap[a.type] || '📎';
       return `<div class="sp-attach-chip" data-id="${a.id}">
-        <span class="sp-attach-chip-badge">${badge}</span>
+        <span class="sp-attach-chip-badge" data-type="${a.type}">${icon} ${badge}</span>
         <span class="sp-attach-chip-name" title="${this.escapeHtml(a.name)}">${this.escapeHtml(a.name)}</span>
         <button class="sp-attach-chip-remove" data-id="${a.id}" title="Remove">×</button>
       </div>`;
@@ -3217,6 +3424,7 @@ class SNNSidePanel {
     if (!attachments?.length) return '';
     const parts = [];
     for (const a of attachments) {
+      // Images/video/audio are sent via content parts, skip them in text context
       if (a.type === 'image') continue;
       if (a.text) {
         parts.push(`--- ${a.name} ---\n${a.text}`);
