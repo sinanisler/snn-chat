@@ -159,9 +159,9 @@ body.theme-dark {
   gap: 12px;
 }
 
-.sp-header-left { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; }
+.sp-header-left { display: flex; gap: ; align-items: center; flex: 1; min-width: 0; }
 .sp-header-center { display: flex; justify-content: center; align-items: center; flex: 0 1 auto; min-width: 0; }
-.sp-header-right { display: flex; gap: 8px; align-items: center; flex: 1; justify-content: flex-end; }
+.sp-header-right { display: flex; gap: ; align-items: center; flex: 1; justify-content: flex-end; }
 
 .sp-tab-domain {
   font-size: 11px;
@@ -188,7 +188,7 @@ body.theme-dark {
   font-size: 15px;
   font-weight: 500;
   cursor: pointer;
-  padding: 6px 12px;
+  padding: 6px 6px;
   border-radius: 6px;
   transition: all 0.15s;
   white-space: nowrap;
@@ -755,7 +755,7 @@ body.theme-dark {
 /* ── Settings Tabs ────────────────────────────────────────────── */
 .sp-tabs {
   display: flex;
-  gap: 2px;
+  gap: 10px;
   margin-bottom: 18px;
   border-bottom: 2px solid var(--sp-border);
   overflow-x: auto;
