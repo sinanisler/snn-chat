@@ -2652,96 +2652,60 @@ class SNNSidePanel {
       return;
     }
 
-    // Site-related sessions first (current domain), then the rest
-    const currentDomain = (this.currentDomain || '').toLowerCase();
-    const siteHistories = currentDomain
-      ? histories.filter(h => !h.isLocked && (h.domain || '').toLowerCase() === currentDomain)
-      : [];
-    const otherHistories = histories.filter(h => !siteHistories.includes(h));
-
     let html = `
       <div class="sp-history-toolbar">
-        <input type="text" class="sp-history-search" id="history-search" placeholder="Search history...">
-        <label class="sp-history-global" title="Search across all domains and sessions">
-          <input type="checkbox" id="history-search-global">
-          <span>Search globally</span>
-        </label>
+        <input type="text" class="sp-history-search" id="history-search" placeholder="Search all sessions...">
       </div>
       <div id="history-list"></div>`;
 
     this.els.historyBody.innerHTML = html;
-    this._renderHistoryList(siteHistories, otherHistories, '', false);
+    this._renderHistoryList(histories, '');
 
     const searchInput = this.els.historyBody.querySelector('#history-search');
-    const globalCb = this.els.historyBody.querySelector('#history-search-global');
-
-    const runFilter = () => {
+    searchInput?.addEventListener('input', () => {
       const q = (searchInput?.value || '').trim().toLowerCase();
-      const global = !!globalCb?.checked;
-      this._renderHistoryList(siteHistories, otherHistories, q, global);
-    };
-
-    searchInput?.addEventListener('input', runFilter);
-    globalCb?.addEventListener('change', runFilter);
+      this._renderHistoryList(histories, q);
+    });
   }
 
   /**
-   * Render history items. Default: current site on top.
-   * When "Search globally" is enabled, ALL sessions from ALL domains are shown in one unified list.
-   * Search filters the visible list; with "Search globally" it also searches all sessions' message content.
+   * Render all history items — always one unified flat list across ALL domains.
+   * No sections, no toggles. Search scans domain name, preview, and full message content.
    */
-  _renderHistoryList(siteHistories, otherHistories, query, searchGlobal) {
+  _renderHistoryList(allHistories, query) {
     const list = this.els.historyBody.querySelector('#history-list');
     if (!list) return;
 
-    const matches = (h, q) => {
-      if (!q) return true;
-      // Always match domain / preview metadata
-      const meta = `${h.domain || ''} ${h.lastMessage || ''}`.toLowerCase();
-      if (meta.includes(q)) return true;
-      // Global search: scan full message content
-      if (searchGlobal && h.searchText && h.searchText.includes(q)) return true;
-      // Local search (not global): still allow matching last message / domain only
-      return false;
-    };
-
-    // When "Search globally" is enabled, show ALL histories from all domains
-    // in one unified flat list, regardless of whether there's a text query.
-    // When NOT global, keep site-first ordering with grouped sections.
-    let sections = [];
-    if (searchGlobal) {
-      const all = [...siteHistories, ...otherHistories].filter(h => matches(h, query));
-      if (all.length) sections = [{ title: query ? 'Search results' : 'All sessions', items: all }];
-    } else {
-      const site = siteHistories.filter(h => matches(h, query));
-      const other = otherHistories.filter(h => matches(h, query));
-      if (site.length) sections.push({ title: this.currentDomain ? `This site · ${this.currentDomain}` : 'This site', items: site });
-      if (other.length) sections.push({ title: site.length ? 'Other sessions' : 'Sessions', items: other });
+    let filtered = allHistories;
+    if (query) {
+      const q = query;
+      filtered = allHistories.filter(h => {
+        const meta = `${h.domain || ''} ${h.lastMessage || ''}`.toLowerCase();
+        if (meta.includes(q)) return true;
+        if (h.searchText && h.searchText.includes(q)) return true;
+        return false;
+      });
     }
 
-    if (!sections.length || sections.every(s => !s.items.length)) {
-      list.innerHTML = `<div class="sp-empty-state">No matching sessions.${query && !searchGlobal ? '<br><small>Enable “Search globally” to search all domains.</small>' : ''}</div>`;
+    if (!filtered.length) {
+      list.innerHTML = '<div class="sp-empty-state">No matching sessions.</div>';
       return;
     }
 
     let html = '';
-    for (const section of sections) {
-      if (!section.items.length) continue;
-      html += `<div class="sp-history-section-title">${this.escapeHtml(section.title)}</div>`;
-      for (const h of section.items) {
-        const msgCount = Math.floor(h.messageCount / 2);
-        const date = new Date(h.lastUpdated).toLocaleDateString();
-        const preview = h.lastMessage || '';
-        const previewShort = preview.length > 60 ? preview.substring(0, 60) + '...' : preview;
-        const isCurrent = (this.historyKey === h.key) || (this._historyKey === h.key);
-        html += `
+    for (const h of filtered) {
+      const msgCount = Math.floor(h.messageCount / 2);
+      const date = new Date(h.lastUpdated).toLocaleDateString();
+      const preview = h.lastMessage || '';
+      const previewShort = preview.length > 60 ? preview.substring(0, 60) + '...' : preview;
+      const isCurrent = (this.historyKey === h.key) || (this._historyKey === h.key);
+      html += `
           <div class="sp-history-item${isCurrent ? ' current' : ''}" data-key="${this.escapeHtml(h.key)}" data-domain="${this.escapeHtml(h.domain || '')}">
             <div class="sp-history-title">${this.escapeHtml(h.domain || 'session')}</div>
-            <div class="sp-history-meta">${date} · ${msgCount} msgs</div>
-            ${previewShort ? `<div class="sp-history-preview">"${this.escapeHtml(previewShort)}"</div>` : ''}
-            <button class="sp-history-delete" data-key="${this.escapeHtml(h.key)}">×</button>
+            <div class="sp-history-meta">${date} \u00b7 ${msgCount} msgs</div>
+            ${previewShort ? `<div class="sp-history-preview">\u201c${this.escapeHtml(previewShort)}\u201d</div>` : ''}
+            <button class="sp-history-delete" data-key="${this.escapeHtml(h.key)}">\u00d7</button>
           </div>`;
-      }
     }
     list.innerHTML = html;
 

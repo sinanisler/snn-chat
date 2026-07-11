@@ -1131,25 +1131,6 @@ body.theme-dark #welcome-screen .sp-model-tag {
   margin-bottom: 0;
 }
 .sp-history-search:focus { outline: none; border-color: var(--sp-input-focus); }
-.sp-history-global {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--sp-text-secondary);
-  user-select: none;
-  cursor: pointer;
-}
-.sp-history-global input { accent-color: var(--sp-accent); }
-.sp-history-section-title {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--sp-text-secondary);
-  margin: 8px 0 4px;
-  padding: 0 2px;
-}
 
 .sp-history-item {
   background: var(--sp-ai-msg-bg);
