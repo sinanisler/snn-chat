@@ -57,6 +57,11 @@ class SNNSidePanel {
     this._modelsData = {};
     this._selectedModelInfo = null;
 
+    // ── TTS (Text-to-Speech) state ───────────────────────────
+    this._ttsVoices = [];                  // cached voice list
+    this._ttsSpeakingMsgEl = null;         // message element currently being read
+    this._ttsActiveUtterance = null;       // current SpeechSynthesisUtterance
+
     this.cacheDom();
     this.setupListeners();
     this.init();
@@ -172,6 +177,7 @@ class SNNSidePanel {
     await this.loadMostRecentSession();
     this.renderQuickActions();
     this.setupVoice();
+    this._loadVoicesAsync();       // preload TTS voices (async)
     this.setupContextWatcher();
     this._setupTabTracking();
     this._initAgentLoop();
@@ -612,6 +618,9 @@ class SNNSidePanel {
     const message = this.els.userInput.value.trim();
     const attachments = [...(this._pendingAttachments || [])];
     if ((!message && attachments.length === 0) || this.isLoading) return;
+
+    // Stop any active TTS when user sends a new message
+    this._stopTTS();
 
     // ── Snapshot the context that will be attached to THIS message ──
     const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
@@ -1152,7 +1161,7 @@ class SNNSidePanel {
     actions.className = 'sp-msg-actions';
     actions.innerHTML = `
       <button class="sp-msg-action copy" title="Copy">Copy</button>
-      <button class="sp-msg-action speak" title="Read aloud">Read</button>
+      <button class="sp-msg-action speak" title="Read aloud">▶ Read</button>
     `;
 
     actions.querySelector('.copy').addEventListener('click', () => {
@@ -1160,16 +1169,164 @@ class SNNSidePanel {
       this.showToast('Copied!', 'success');
     });
 
-    actions.querySelector('.speak').addEventListener('click', () => {
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.cancel();
-      } else {
-        const u = new SpeechSynthesisUtterance(content);
-        window.speechSynthesis.speak(u);
+    const speakBtn = actions.querySelector('.speak');
+
+    speakBtn.addEventListener('click', () => {
+      // If already speaking THIS message → stop
+      if (this._ttsSpeakingMsgEl === msgDiv) {
+        this._stopTTS();
+        return;
       }
+      // If speaking a different message → cancel it first
+      if (this._ttsSpeakingMsgEl) {
+        this._stopTTS();
+      }
+
+      // ── Start speaking from beginning ──
+      const cleanText = this._stripMarkdownForTTS(content);
+      if (!cleanText.trim()) {
+        this.showToast('Nothing to read.', 'warning');
+        return;
+      }
+
+      this._ttsSpeak(cleanText, msgDiv, speakBtn);
     });
 
     msgDiv.appendChild(actions);
+  }
+
+  // ── TTS (Text-to-Speech) ──────────────────────────────────────
+
+  /** Strip markdown/code from text so TTS reads clean prose. */
+  _stripMarkdownForTTS(mdText) {
+    if (!mdText) return '';
+    // Remove mermaid/code blocks entirely (unreadable as speech)
+    const noCode = mdText.replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1'); // inline code: keep content, drop backticks
+    // Parse remaining markdown to HTML, then extract textContent
+    const temp = document.createElement('div');
+    if (typeof marked !== 'undefined') {
+      try { temp.innerHTML = marked.parse(noCode); } catch (e) { temp.textContent = noCode; }
+    } else {
+      temp.textContent = noCode;
+    }
+    // Collapse whitespace, trim
+    return (temp.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  /** Preload available TTS voices (they load asynchronously in Chrome). */
+  _loadVoicesAsync() {
+    this._ttsVoices = speechSynthesis.getVoices();
+    if (this._ttsVoices.length > 0) {
+      D.log('TTS voices loaded (sync)', this._ttsVoices.length);
+      return;
+    }
+    // Voices haven't populated yet — wait for the event
+    speechSynthesis.addEventListener('voiceschanged', () => {
+      this._ttsVoices = speechSynthesis.getVoices();
+      D.log('TTS voices loaded (async)', this._ttsVoices.length);
+    }, { once: true });
+  }
+
+  /** Detect language using Chrome's built-in CLD (Compact Language Detector). */
+  _ttsDetectLanguage(text) {
+    return new Promise((resolve) => {
+      if (!chrome.i18n || !chrome.i18n.detectLanguage) {
+        resolve('en'); // fallback for contexts where the API is unavailable
+        return;
+      }
+      chrome.i18n.detectLanguage(text, (result) => {
+        if (chrome.runtime.lastError || !result?.languages?.length) {
+          resolve('en');
+          return;
+        }
+        const top = result.languages[0].language; // e.g. 'en', 'tr', 'de'
+        D.log('TTS lang detected', { lang: top, confidence: result.languages[0].percentage });
+        resolve(top);
+      });
+    });
+  }
+
+  /** Find the best matching voice for a given language code (e.g. 'en' → 'en-US' voice). */
+  _ttsFindVoice(langCode) {
+    // Refresh cache in case voices loaded since last check
+    if (this._ttsVoices.length === 0) {
+      this._ttsVoices = speechSynthesis.getVoices();
+    }
+    const voices = this._ttsVoices;
+    if (voices.length === 0) return null;
+
+    // 1) Exact lang match (e.g. 'en-US' === 'en-US')
+    let match = voices.find(v => v.lang === langCode);
+    // 2) Prefix match (e.g. 'en' matches 'en-US', 'en-GB')
+    if (!match) match = voices.find(v => v.lang.startsWith(langCode + '-'));
+    // 3) Broader prefix match (e.g. 'zh' matches 'zh-CN')
+    if (!match) match = voices.find(v => v.lang.startsWith(langCode));
+    // 4) Prefer a local (premium) voice among same-language matches
+    const sameLang = voices.filter(v => v.lang.startsWith(langCode));
+    const premium = sameLang.find(v => v.localService);
+    if (premium) match = premium;
+    // 5) Any same-language voice
+    if (!match && sameLang.length > 0) match = sameLang[0];
+
+    D.log('TTS voice selected', { forLang: langCode, voice: match?.name, voiceLang: match?.lang });
+    return match || null;
+  }
+
+  /** Core speak method: detect language, pick voice, start speaking, wire up UI state. */
+  async _ttsSpeak(cleanText, msgDiv, speakBtn) {
+    // Detect language (with settings override)
+    const settings = await this.getSettings();
+    let langCode;
+    if (settings.ttsLanguage && settings.ttsLanguage !== 'auto') {
+      langCode = settings.ttsLanguage;
+    } else {
+      // Only detect if we have enough text (CLD needs a few words)
+      langCode = cleanText.length > 20
+        ? await this._ttsDetectLanguage(cleanText)
+        : 'en';
+    }
+
+    const voice = this._ttsFindVoice(langCode);
+
+    const u = new SpeechSynthesisUtterance(cleanText);
+    u.lang = langCode;
+    if (voice) u.voice = voice;
+
+    // ── Wire up UI state ──
+    this._ttsSpeakingMsgEl = msgDiv;
+    this._ttsActiveUtterance = u;
+    msgDiv.classList.add('speaking');
+    speakBtn.textContent = '⏹ Stop';
+    speakBtn.classList.add('active-speak');
+
+    u.onend = () => this._stopTTS();
+    u.onerror = (e) => {
+      D.warn('TTS utterance error', e.error);
+      // 'interrupted' is normal when user clicks Stop — don't show toast
+      if (e.error !== 'interrupted') {
+        this.showToast('Speech error: ' + (e.error || 'unknown'), 'error');
+      }
+      this._stopTTS();
+    };
+
+    D.log('TTS speaking', { lang: langCode, voice: voice?.name, chars: cleanText.length });
+    window.speechSynthesis.speak(u);
+  }
+
+  /** Stop all TTS and reset UI state. */
+  _stopTTS() {
+    window.speechSynthesis.cancel();
+    if (this._ttsSpeakingMsgEl) {
+      this._ttsSpeakingMsgEl.classList.remove('speaking');
+      const btn = this._ttsSpeakingMsgEl.querySelector('.speak');
+      if (btn) {
+        btn.textContent = '▶ Read';
+        btn.classList.remove('active-speak');
+      }
+      this._ttsSpeakingMsgEl = null;
+    }
+    this._ttsActiveUtterance = null;
   }
 
   addTokenInfo(msgDiv, tokenUsage) {
@@ -1270,6 +1427,7 @@ class SNNSidePanel {
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.enableQuickActions === undefined) s.enableQuickActions = true;
           if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
+          if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
           if (s.htmlParseLimit === undefined) s.htmlParseLimit = 300;
           if (s.autoScan === undefined) s.autoScan = true;
           if (s.disabledActions === undefined) s.disabledActions = [];
@@ -1450,6 +1608,28 @@ class SNNSidePanel {
           ${this.toggleHtml('s-enable-streaming', 'Streaming Responses', 'See AI responses in real-time', s.enableStreaming !== false)}
           ${this.toggleHtml('s-enable-quick-actions', 'Quick Actions', 'Show prompt suggestions for new chats', s.enableQuickActions !== false)}
           ${this.toggleHtml('s-enable-voice-input', 'Voice Input', 'Click mic button or hold Space to dictate', s.enableVoiceInput !== false)}
+        </div>
+        <div class="sp-section">
+          <h4>Text-to-Speech</h4>
+          <div class="sp-field">
+            <label>TTS Language</label>
+            <select id="s-tts-lang">
+              <option value="auto" ${(s.ttsLanguage || 'auto') === 'auto' ? 'selected' : ''}>Auto-detect</option>
+              <option value="en" ${s.ttsLanguage === 'en' ? 'selected' : ''}>English</option>
+              <option value="tr" ${s.ttsLanguage === 'tr' ? 'selected' : ''}>Türkçe</option>
+              <option value="de" ${s.ttsLanguage === 'de' ? 'selected' : ''}>Deutsch</option>
+              <option value="fr" ${s.ttsLanguage === 'fr' ? 'selected' : ''}>Français</option>
+              <option value="es" ${s.ttsLanguage === 'es' ? 'selected' : ''}>Español</option>
+              <option value="ru" ${s.ttsLanguage === 'ru' ? 'selected' : ''}>Русский</option>
+              <option value="zh" ${s.ttsLanguage === 'zh' ? 'selected' : ''}>中文</option>
+              <option value="ja" ${s.ttsLanguage === 'ja' ? 'selected' : ''}>日本語</option>
+              <option value="ko" ${s.ttsLanguage === 'ko' ? 'selected' : ''}>한국어</option>
+              <option value="ar" ${s.ttsLanguage === 'ar' ? 'selected' : ''}>العربية</option>
+              <option value="pt" ${s.ttsLanguage === 'pt' ? 'selected' : ''}>Português</option>
+              <option value="it" ${s.ttsLanguage === 'it' ? 'selected' : ''}>Italiano</option>
+            </select>
+            <small>Auto-detect uses Chrome's language detector. Override to force a specific voice when reading.</small>
+          </div>
         </div>
         <div class="sp-section">
           <h4>Keyboard Shortcut</h4>
@@ -2092,6 +2272,7 @@ class SNNSidePanel {
       enableStreaming: getChecked('s-enable-streaming'),
       enableQuickActions: getChecked('s-enable-quick-actions'),
       enableVoiceInput: getChecked('s-enable-voice-input'),
+      ttsLanguage: getVal('s-tts-lang') || 'auto',
       quickActions: this.getQuickActionsFromEditor(),
       // Actions tab
       htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 300,
