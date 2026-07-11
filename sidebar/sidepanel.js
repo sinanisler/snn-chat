@@ -547,7 +547,7 @@ class SNNSidePanel {
     this._modelLocked = false;                // allow model selection in new session
 
     // Clear UI
-    this.els.chatMessages.innerHTML = '';
+    this._clearChatMessages();
     this.els.welcomeScreen.style.display = '';
     this.els.tokenCounter.style.display = 'none';
     this.els.inputContextIndicator.style.display = 'none';
@@ -2879,7 +2879,7 @@ class SNNSidePanel {
     await chrome.storage.local.remove([key]);
     if (this.historyKey === key) {
       this.chatHistory = [];
-      this.els.chatMessages.innerHTML = '';
+      this._clearChatMessages();
     }
     this.renderHistory();
     this.showToast('Session deleted');
@@ -2891,7 +2891,7 @@ class SNNSidePanel {
     const keys = Object.keys(all).filter(k => k.startsWith('snn_chat_history_'));
     await chrome.storage.local.remove(keys);
     this.chatHistory = [];
-    this.els.chatMessages.innerHTML = '';
+    this._clearChatMessages();
     if (this.els.historyOverlay.classList.contains('visible')) this.renderHistory();
     this.showToast('All history cleared');
   }
@@ -2919,8 +2919,21 @@ class SNNSidePanel {
     this.showToast('History exported!', 'success');
   }
 
-  async restoreChat() {
+  /**
+   * Clear the chat messages container while preserving the welcome screen.
+   * Using innerHTML = '' detaches the welcome screen from the DOM, so we
+   * must re-attach it afterwards.
+   */
+  _clearChatMessages() {
     this.els.chatMessages.innerHTML = '';
+    if (this.els.welcomeScreen) {
+      this.els.chatMessages.appendChild(this.els.welcomeScreen);
+      this.els.welcomeScreen.style.display = '';
+    }
+  }
+
+  async restoreChat() {
+    this._clearChatMessages();
     this.totalTokensUsed = 0;
     this.els.welcomeScreen.style.display = this.chatHistory.length === 0 ? '' : 'none';
 
@@ -3155,7 +3168,7 @@ class SNNSidePanel {
       this.activeContext = null;
       this._sessionModel = null;
       this._modelLocked = false;
-      this.els.chatMessages.innerHTML = '';
+      this._clearChatMessages();
       this.els.welcomeScreen.style.display = '';
       this.els.tokenCounter.style.display = 'none';
       this.refreshActiveContext();
@@ -3191,7 +3204,7 @@ class SNNSidePanel {
     // ── Persist the pointer NOW so reopen picks up THIS session ──
     await this._saveActiveSessionPtr();
     // ── Clear UI ──────────────────────────────────────────────
-    this.els.chatMessages.innerHTML = '';
+    this._clearChatMessages();
     this.els.welcomeScreen.style.display = '';
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
@@ -3272,7 +3285,7 @@ class SNNSidePanel {
         this.chatHistory = [];
         this._sessionModel = null;
         this._modelLocked = false;
-        this.els.chatMessages.innerHTML = '';
+        this._clearChatMessages();
         this.els.welcomeScreen.style.display = '';
       }
 
@@ -3291,7 +3304,7 @@ class SNNSidePanel {
       this.currentSessionId = this.generateId();
       this._historyKey = null;
       this.chatHistory = [];
-      this.els.chatMessages.innerHTML = '';
+      this._clearChatMessages();
       this.els.welcomeScreen.style.display = '';
       this.els.tokenCounter.style.display = 'none';
       this._sessionModel = null;
@@ -3875,14 +3888,15 @@ class SNNSidePanel {
       }
 
       // ── Persistent status entry in chat history ─────────────
-      // Every non-IDLE state gets a chat entry so the user can
+      // Every active state gets a chat entry so the user can
       // see the full agent workflow as a scrollable history.
       if (newState !== 'IDLE' && newState !== 'CANCELLED') {
         if (this._agentUI) this._agentUI.addStatusEntry(newState, detail);
       }
 
-      // IDLE marks the end of a run — add a completion note
-      if (newState === 'IDLE' && prevState !== 'IDLE') {
+      // Terminal states — add a closing entry so the run is clearly bookended
+      if ((newState === 'IDLE' && prevState !== 'IDLE') ||
+          (newState === 'CANCELLED' && prevState !== 'CANCELLED')) {
         if (this._agentUI) this._agentUI.addStatusEntry(newState, detail);
       }
 

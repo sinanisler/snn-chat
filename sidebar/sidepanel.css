@@ -1876,7 +1876,6 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   margin: 1px 0;
   border-radius: 6px;
   font-size: 12px;
-  animation: snn-slide-up 0.2s ease;
   max-width: 100%;
 }
 .snn-status-entry.snn-status-parsing   { background: rgba(5,86,199,0.06); color: var(--sp-accent); border-left: 2px solid var(--sp-accent); }
