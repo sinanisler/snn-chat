@@ -222,8 +222,16 @@ class SNNAgentLoop {
             const fnName = tc.function?.name || '';
             const fnArgs = this._safeParseJSON(tc.function?.arguments || '{}');
 
+            // Signal that navigation may happen (click on link, navigate, goBack)
+            if (fnName === 'snn_click' || fnName === 'snn_navigate' || fnName === 'snn_goBack') {
+              this._expectNavigation = true;
+            }
+
             // Map tool name to our action and execute
             const actionResult = await this._executeToolCall(fnName, fnArgs, iteration);
+
+            // Clear navigation expectation after action completes
+            this._expectNavigation = false;
 
             // â”€â”€ If screenshot was taken and model supports vision, inject the image â”€â”€
             // Text-only models (DeepSeek, etc.) get a text summary instead â€” no 404.
@@ -273,12 +281,36 @@ class SNNAgentLoop {
             }
           }
 
+          // Guard: don't transition if agent was cancelled during tool execution
+          if (this._cancelled) break;
+
           this._transition('OBSERVING', { iteration });
           continue; // Loop back to let LLM process tool results
         }
 
-        // â”€â”€ Final content (no more tool calls) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Final content (no more tool calls) ────────────────────
         if (msg.content && !msg.tool_calls) {
+          // ── LLM SELF-AUDIT ────────────────────────────────────
+          // No regex. No language assumptions. The LLM reads the
+          // original request and decides if it actually fulfilled it
+          // or just hallucinated actions in prose.
+          if (!this._selfAuditDone) {
+            this._selfAuditDone = true;
+            D.log('SELF-AUDIT', { iteration, contentPreview: msg.content.substring(0, 100) });
+            messages.push({
+              role: 'user',
+              content: `[SYSTEM SELF-AUDIT — read the user's original request and answer honestly.]
+
+User's original request: """${userMessage}"""
+
+Based on this request and everything that has happened so far:
+- If the user asked you to PERFORM any action (click something, type something, navigate somewhere, scroll, search, fill a form, modify the page, etc.) that you have NOT yet executed with a tool → call the appropriate tool NOW. Do NOT describe it in text — actually call snn_click, snn_type, snn_navigate, etc.
+- If the user only asked a QUESTION or for information (summarize, explain, what is, etc.) → you may respond with text.
+
+Be honest. The user will see if you claim to have done something you did not.`
+            });
+            continue; // Give the LLM one chance to self-correct
+          }
           finalContent = msg.content;
           break;
         }
@@ -1105,6 +1137,8 @@ CRITICAL RULES:
     this._cancelReason = null;
     this._pendingResolve = null;
     this._lastScreenshot = null;
+    this._selfAuditDone = false;
+    this._expectNavigation = false;
   }
 
   // ── Utilities ───────────────────────────────────────────────────

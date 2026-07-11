@@ -487,20 +487,36 @@ class SNNPageActor {
 
     let clicked = false;
 
-    // ── Strategy 1: Full synthetic event sequence (works for vanilla JS & jQuery) ──
-    try {
-      for (const T of [['pointerdown', PointerEvent], ['mousedown', MouseEvent], ['pointerup', PointerEvent], ['mouseup', MouseEvent], ['click', MouseEvent]]) {
-        el.dispatchEvent(new T[1](T[0], { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window }));
-      }
-      clicked = true;
-    } catch (e) { /* continue */ }
+    // ── Detect native click elements (browser handles navigation/submit natively) ──
+    const tag = el.tagName.toLowerCase();
+    const hasNativeClick = (tag === 'a' && el.href) || tag === 'button' ||
+                           (tag === 'input' && (el.type === 'submit' || el.type === 'button' || el.type === 'reset'));
 
-    // ── Strategy 2: Native .click() — triggers React/Vue synthetic handlers ──
-    try {
-      if (el.focus) el.focus();
-      el.click();
-      clicked = true;
-    } catch (e) { /* some elements throw on .click() */ }
+    if (hasNativeClick) {
+      // ── Native elements: use ONLY native .click() — no synthetic double-fire ──
+      try {
+        if (el.focus) el.focus();
+        el.click();
+        clicked = true;
+      } catch (e) { /* fall through to multi-strategy */ }
+    }
+
+    if (!clicked) {
+      // ── Strategy 1: Full synthetic event sequence (works for vanilla JS & jQuery) ──
+      try {
+        for (const T of [['pointerdown', PointerEvent], ['mousedown', MouseEvent], ['pointerup', PointerEvent], ['mouseup', MouseEvent], ['click', MouseEvent]]) {
+          el.dispatchEvent(new T[1](T[0], { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window }));
+        }
+        clicked = true;
+      } catch (e) { /* continue */ }
+
+      // ── Strategy 2: Native .click() — triggers React/Vue synthetic handlers ──
+      try {
+        if (el.focus) el.focus();
+        el.click();
+        clicked = true;
+      } catch (e) { /* some elements throw on .click() */ }
+    }
 
     // ── Strategy 3: Click the closest interactive ancestor (handles icon-inside-button) ──
     if (!clicked || options.forceAncestor) {

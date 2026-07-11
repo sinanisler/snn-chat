@@ -517,6 +517,16 @@ class SNNSidePanel {
       return;
     }
 
+    // ── Don't cancel if the agent itself caused this navigation ──
+    if (this._agentLoop && this._agentLoop._expectNavigation) {
+      D.log('_onTabSwitched: agent-initiated navigation, skipping cancel');
+      // Update tab reference so subsequent actions target the new page
+      this.currentTabId = tabId;
+      this.currentDomain = domain || '';
+      chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
+      return;
+    }
+
     // ── Cancel any running agent loop BEFORE clearing state ──
     if (this._agentLoop && this._agentLoop.isBusy) {
       this._agentLoop.cancel('tab-switch');
@@ -685,13 +695,17 @@ class SNNSidePanel {
     });
     await this.saveChatHistory();
 
-    // ── Try Agent Loop first ───────────────────────────────────
-    // Skip agent loop for informational queries when page context is available —
-    // go straight to streaming chat (faster, and the LLM already has the context).
-    // Also skip agent when user attached files (chat path handles multimodal/text files).
-    const skipAgent = attachments.length > 0 || this._shouldSkipAgentLoop(message || displayMessage, contextSnapshot);
+    // ── UNIFIED AGENT PATH ─────────────────────────────────────
+    // ALL messages go through the agent loop. The LLM itself decides
+    // whether to use tools (click, type, navigate, etc.) or just respond
+    // with text. No regex gate that can misroute action requests into
+    // a tool-less plain-chat path where the model hallucinates actions.
+    //
+    // Attachments with multimodal files (images, audio, video) still use
+    // the plain chat path because the agent loop doesn't handle them yet.
+    const hasMultimodalAttachments = attachments.some(a => a.type === 'image' || a.type === 'audio' || a.type === 'video');
 
-    if (this._agentLoop && !this._agentLoop.isBusy && !skipAgent) {
+    if (this._agentLoop && !this._agentLoop.isBusy && !hasMultimodalAttachments) {
       try {
         const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId);
 
@@ -716,41 +730,33 @@ class SNNSidePanel {
             );
             await this.saveChatHistory();
           }
-          // Agent loop handled it
-          this.isLoading = false;
-          this.els.sendBtn.disabled = false;
-          this.els.userInput.focus();
-          if (this.selection) { this.clearSelection(); }
-          else { this.activeContext = null; this.refreshActiveContext(); }
-          this._checkContextMenuPrompt();
+          this._finishSendMessage();
           return;
         }
 
-        // ── Agent returned { type:'chat', content } — stream it directly ──
+        // ── Agent returned { type:'chat', content } — stream it ──
         if (agentResult && agentResult.type === 'chat' && agentResult.content) {
           await this.streamRenderMessage(agentResult.content);
           this.chatHistory.push(
             { role: 'assistant', content: agentResult.content, tokenUsage: this.lastTokenUsage }
           );
           await this.saveChatHistory();
-          this.isLoading = false;
-          this.els.sendBtn.disabled = false;
-          this.els.userInput.focus();
-          if (this.selection) { this.clearSelection(); }
-          else { this.activeContext = null; this.refreshActiveContext(); }
-          this._checkContextMenuPrompt();
+          this._finishSendMessage();
           return;
         }
-        // agentResult.type === 'chat' without content → fall through to normal chat
+
+        // agentResult null or type:'chat' without content (e.g. no API key) →
+        // fall through to plain chat so the user gets a proper error message.
       } catch (agentErr) {
-        // Agent loop threw an unhandled error — do NOT fall through to regular chat.
-        // The error was already surfaced to the user via onError callback.
-        console.warn('Agent loop failed:', agentErr.message);
-        this._resetLoadingState();
-        return;
+        // Agent loop threw an unhandled error — surfaced via onError callback.
+        // Fall through to plain chat as last resort so the user isn't left hanging.
+        D.warn('Agent loop failed, falling back to plain chat:', agentErr.message);
       }
     }
 
+    // ── PLAIN CHAT FALLBACK ─────────────────────────────────────
+    // Only reached when: agent is unavailable, agent is busy,
+    // multimodal attachments are present, or agent errored out.
     try {
       const settings = await this.getSettings();
       let context = '';
@@ -812,21 +818,7 @@ class SNNSidePanel {
       this.addMessage('ai', `Error: ${error.message}`);
     }
 
-    // Clear active context after sending (selection consumed)
-    if (this.selection) {
-      this.clearSelection(); // calls refreshActiveContext() internally
-    } else {
-      this.activeContext = null;
-      this.refreshActiveContext();
-    }
-
-    this.isLoading = false;
-    this.els.sendBtn.disabled = false;
-    this.els.userInput.focus();
-    this._activeAbortController = null;
-
-    // Flush any context-menu prompt that arrived while we were loading
-    this._checkContextMenuPrompt();
+    this._finishSendMessage();
   }
 
   async callAPI(message, context, contextType, signal) {
@@ -3293,53 +3285,25 @@ class SNNSidePanel {
   }
 
   /**
-   * Smart gateway: skip the agent loop for informational queries
-   * when page context is already available. This avoids wasteful
-   * non-streaming LLM calls and goes straight to streaming chat.
+   * Shared cleanup after sendMessage completes (agent or plain chat path).
+   * Resets loading state, clears context, re-focuses input.
    */
-  _shouldSkipAgentLoop(message, contextSnapshot) {
-    if (!contextSnapshot || contextSnapshot.type !== 'page') return false;
-
-    const msg = message.toLowerCase().trim();
-
-    // Action patterns — these NEED the agent loop
-    const actionPatterns = [
-      /^(click|press|hit|tap|push)\b/,
-      /^(type|enter|write|input|fill)\b/,
-      /^(scroll|go to|navigate|open)\b/,
-      /^(take|capture|grab)\s.*(screenshot|screen)/,
-      /^(highlight|select|pick|choose)\b/,
-      /^(download|save|copy)\b/,
-      /^(fill|submit|complete)\s.*(form|field)/,
-      /^(check|uncheck|toggle)\b/,
-      /^(hover|mouse\s*over)\b/,
-      /^(find|search|look\s*for)\s/,
-      /^(extract|get|pull)\s.*(table|data|info)/,
-      /^(do|perform|execute|run)\s/,
-      /^(make|change|modify|style|color|recolor|restyle|update|set|turn|paint)\b/,
-      /(red|blue|green|yellow|purple|orange|pink|black|white|gray|grey|bigger|smaller|larger|wider|taller|hide|show|remove|delete)\b/,
-    ];
-    for (const p of actionPatterns) {
-      if (p.test(msg)) return false;
+  _finishSendMessage() {
+    // Clear active context after sending (selection consumed)
+    if (this.selection) {
+      this.clearSelection(); // calls refreshActiveContext() internally
+    } else {
+      this.activeContext = null;
+      this.refreshActiveContext();
     }
 
-    // Informational patterns — page context is enough
-    const infoPatterns = [
-      /^(summarize|summary|sum\s*up|tldr|overview)\b/,
-      /^(what|who|where|when|why|how)\s/,
-      /^(explain|describe|tell|elaborate)\b/,
-      /^(list|enumerate|name)\b/,
-      /^(is|are|does|do|can|could|would|should|will)\s/,
-      /^(compare|contrast|analyze)\b/,
-      /^(give|provide|show)\s.*(summary|overview|brief)/,
-      /^(what's|whats|how's|hows)\s/,
-      /^(any|are there)\s/,
-    ];
-    for (const p of infoPatterns) {
-      if (p.test(msg)) return true;
-    }
+    this.isLoading = false;
+    this.els.sendBtn.disabled = false;
+    this.els.userInput.focus();
+    this._activeAbortController = null;
 
-    return false;
+    // Flush any context-menu prompt that arrived while we were loading
+    this._checkContextMenuPrompt();
   }
 
   // ═══════════════════════════════════════════════════════════════
