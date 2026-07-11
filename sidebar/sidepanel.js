@@ -58,6 +58,10 @@ class SNNSidePanel {
     this._modelsData = {};
     this._selectedModelInfo = null;
 
+    // ── Per-session model override (locked after 1st message) ─
+    this._sessionModel = null;   // null = use global default
+    this._modelLocked = false;   // true after first message sent
+
     // ── File size limits per type (bytes) ────────────────────
     this._FILE_LIMITS = {
       image: 8 * 1024 * 1024,     // 8 MB
@@ -109,7 +113,13 @@ class SNNSidePanel {
       // Attachments
       attachBar: this.el('attach-bar'),
       attachBtn: this.el('attach-btn'),
-      attachInput: this.el('attach-input')
+      attachInput: this.el('attach-input'),
+      // Model Quick Switch
+      mqsTrigger: this.el('mqs-trigger'),
+      mqsPopover: this.el('mqs-popover'),
+      mqsSearch: this.el('mqs-search'),
+      mqsList: this.el('mqs-list'),
+      mqsCurrentModel: this.el('mqs-current-model')
     };
   }
 
@@ -188,6 +198,7 @@ class SNNSidePanel {
     await this.loadContext();
     await this.loadMostRecentSession();
     this.renderQuickActions();
+    this.renderModelQuickSwitch();
     this.setupVoice();
     this._loadVoicesAsync();       // preload TTS voices (async)
     this.setupContextWatcher();
@@ -606,6 +617,13 @@ class SNNSidePanel {
     const attachments = [...(this._pendingAttachments || [])];
     if ((!message && attachments.length === 0) || this.isLoading) return;
 
+    // ── Lock model choice for this session (first message wins) ──
+    if (!this._modelLocked) {
+      this._modelLocked = true;
+      this._persistSessionModel();
+      this.renderModelQuickSwitch(); // update button to locked state
+    }
+
     // Stop any active TTS when user sends a new message
     this._stopTTS();
 
@@ -811,7 +829,7 @@ class SNNSidePanel {
     const apiKey = settings.openrouterKey;
     if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
 
-    const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    const model = await this._getEffectiveModel();
     D.log('callAPI', { model, msgLen: message.length, contextType, contextLen: (context || '').length, hasSignal: !!signal });
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant. Be concise and accurate.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
@@ -878,7 +896,7 @@ class SNNSidePanel {
     const apiKey = settings.openrouterKey;
     if (!apiKey) throw new Error('OpenRouter API key not set.');
 
-    const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    const model = await this._getEffectiveModel();
     D.log('streamResponse', { model, msgLen: message.length, contextLen: (context || '').length, contextType });
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
@@ -1507,6 +1525,193 @@ class SNNSidePanel {
     ];
   }
 
+  // ── Model Quick Switch ──────────────────────────────────────────
+  // Returns the effective model for this session: session override
+  // if set, otherwise the global default from settings.
+  async _getEffectiveModel() {
+    if (this._sessionModel) return this._sessionModel;
+    const settings = await this.getSettings();
+    return settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+  }
+
+  async renderModelQuickSwitch() {
+    const settings = await this.getSettings();
+    const effectiveModel = this._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    const shortName = effectiveModel.includes('/')
+      ? effectiveModel.split('/').pop()
+      : effectiveModel;
+
+    // ── Update trigger button ────────────────────────────────
+    this.els.mqsCurrentModel.textContent = shortName;
+    this.els.mqsTrigger.title = this._sessionModel
+      ? `Session model: ${effectiveModel}`
+      : `Default model: ${effectiveModel}`;
+
+    // ── Locked state (after first message) ───────────────────
+    if (this._modelLocked) {
+      this.els.mqsTrigger.classList.add('locked');
+    } else {
+      this.els.mqsTrigger.classList.remove('locked');
+    }
+
+    // ── Populate dropdown list ──────────────────────────────
+    const models = Object.values(this._modelsData || {});
+    this._renderMqsDropdown(models, effectiveModel, '');
+
+    // ── Search handler ──────────────────────────────────────
+    this.els.mqsSearch.oninput = () => {
+      this._renderMqsDropdown(models, effectiveModel, this.els.mqsSearch.value.trim());
+    };
+
+    // ── Trigger click: load models if needed, then toggle ────
+    this.els.mqsTrigger.onclick = (e) => {
+      e.stopPropagation();
+      if (this._modelLocked) return; // locked — no-op
+      if (!Object.keys(this._modelsData || {}).length) {
+        const apiKey = settings.openrouterKey;
+        if (apiKey?.length > 10) {
+          this.showToast('Loading models…');
+          this.loadModels(apiKey).then(() => {
+            const updated = Object.values(this._modelsData || {});
+            this._renderMqsDropdown(updated, effectiveModel, this.els.mqsSearch.value.trim());
+            this._openMqsPopover();
+          }).catch(() => {
+            this.showToast('Failed to load models', 'warning');
+          });
+        } else {
+          this.showToast('Set API key in Settings first', 'warning');
+        }
+        return;
+      }
+      this._toggleMqsPopover();
+    };
+
+    // ── Close on outside click ──────────────────────────────
+    if (!this._mqsOutsideBound) {
+      this._mqsOutsideBound = true;
+      document.addEventListener('click', (ev) => {
+        if (!this.els.mqsTrigger?.contains(ev.target) &&
+            !this.els.mqsPopover?.contains(ev.target)) {
+          this._closeMqsPopover();
+        }
+      });
+    }
+
+    // ── Close on Escape ─────────────────────────────────────
+    this.els.mqsSearch.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') this._closeMqsPopover();
+    });
+  }
+
+  _renderMqsDropdown(models, selectedId, filterText) {
+    const list = this.els.mqsList;
+    if (!list) return;
+
+    if (!models.length) {
+      list.innerHTML = '<div class="sp-mqs-option muted">No models loaded. Add API key in Settings.</div>';
+      return;
+    }
+
+    const q = (filterText || '').toLowerCase().trim();
+    let filtered = models;
+    if (q) {
+      filtered = models.filter(m =>
+        (m.id || '').toLowerCase().includes(q) ||
+        (m.name || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Sort: selected first, then alpha by name
+    filtered = filtered.slice().sort((a, b) => {
+      if (a.id === selectedId) return -1;
+      if (b.id === selectedId) return 1;
+      return (a.name || a.id).localeCompare(b.name || b.id);
+    }).slice(0, 80);
+
+    if (!filtered.length) {
+      list.innerHTML = '<div class="sp-mqs-option muted">No models match.</div>';
+      return;
+    }
+
+    list.innerHTML = filtered.map(m => {
+      const vision = this._modelHasVision(m);
+      const ctx = m.top_provider?.context_length || m.context_length || m.endpoints?.[0]?.context_length;
+      const ctxLabel = ctx ? `${Math.round(ctx / 1024)}K ctx` : '';
+      const price = this._formatModelPrice(m);
+      const badges = [
+        vision ? '<span class="sp-model-badge vision">Vision</span>' : '',
+        ctxLabel ? `<span class="sp-model-badge ctx">${ctxLabel}</span>` : '',
+        price ? `<span class="sp-model-badge price">${this.escapeHtml(price)}</span>` : ''
+      ].filter(Boolean).join('');
+      const isSelected = m.id === selectedId;
+
+      return `<button type="button" class="sp-mqs-option${isSelected ? ' selected' : ''}" data-id="${this.escapeHtml(m.id)}">
+        <div class="sp-mqs-option-name">${this.escapeHtml(m.name || m.id)}</div>
+        <div class="sp-mqs-option-id">${this.escapeHtml(m.id)}</div>
+        <div class="sp-mqs-option-badges">${badges}</div>
+      </button>`;
+    }).join('');
+
+    // ── Click handler for each option ────────────────────────
+    list.querySelectorAll('.sp-mqs-option[data-id]').forEach(btn => {
+      btn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        const id = btn.dataset.id;
+        // Set session model override
+        this._sessionModel = id;
+        this._selectedModelInfo = this._modelsData?.[id] || null;
+        this._closeMqsPopover();
+        // Refresh display + capabilities
+        this.els.mqsCurrentModel.textContent = id.includes('/') ? id.split('/').pop() : id;
+        this.els.mqsTrigger.title = `Session model: ${id}`;
+        this._updateModelCapabilities(id);
+        this._renderMqsDropdown(models, id, this.els.mqsSearch.value.trim());
+        this.showToast(`Model: ${id.includes('/') ? id.split('/').pop() : id}`);
+        // Persist the model choice in the session data
+        this._persistSessionModel();
+      });
+    });
+  }
+
+  _toggleMqsPopover() {
+    const popover = this.els.mqsPopover;
+    const trigger = this.els.mqsTrigger;
+    if (!popover || !trigger) return;
+    const isOpen = popover.style.display === 'block';
+    if (isOpen) {
+      this._closeMqsPopover();
+    } else {
+      // Focus search input when opening
+      popover.style.display = 'block';
+      trigger.classList.add('open');
+      setTimeout(() => this.els.mqsSearch?.focus(), 50);
+    }
+  }
+
+  _openMqsPopover() {
+    if (this.els.mqsPopover) this.els.mqsPopover.style.display = 'block';
+    if (this.els.mqsTrigger) this.els.mqsTrigger.classList.add('open');
+    setTimeout(() => this.els.mqsSearch?.focus(), 50);
+  }
+
+  _closeMqsPopover() {
+    if (this.els.mqsPopover) this.els.mqsPopover.style.display = 'none';
+    if (this.els.mqsTrigger) this.els.mqsTrigger.classList.remove('open');
+  }
+
+  /**
+   * Persist the current _sessionModel into the session's storage record
+   * so it survives sidebar close/reopen. Called after model selection.
+   */
+  async _persistSessionModel() {
+    const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
+    if (!key) return;
+    const data = await chrome.storage.local.get([key]);
+    const session = data[key] || {};
+    session.sessionModel = this._sessionModel || null;
+    await chrome.storage.local.set({ [key]: session });
+  }
+
   // ── Settings ────────────────────────────────────────────────────
   async getSettings() {
     try {
@@ -1578,7 +1783,7 @@ class SNNSidePanel {
   }
 
   updateModelDisplay(settings) {
-    const model = settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+    const model = this._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
     const name = model.includes('/') ? model.split('/').pop() : model;
     this.els.modelName.textContent = name;
     // Keep selected model info for vision checks
@@ -1589,10 +1794,14 @@ class SNNSidePanel {
   _updateModelCapabilities(modelId) {
     const el = this.els.modelName;
     if (!el) return;
+
+    // ── Update the displayed model name on the welcome screen ──
     const id = modelId
       || this._selectedModelInfo?.id
       || Object.keys(this._modelsData || {}).find(k => (this.els.modelName.textContent || '') && k.endsWith(this.els.modelName.textContent))
       || '';
+    const shortName = id.includes('/') ? id.split('/').pop() : id;
+    if (shortName) el.textContent = shortName;
     // Resolve full model id from settings cache when only short name is shown
     let fullId = id;
     if (!fullId || !this._modelsData?.[fullId]) {
@@ -2653,8 +2862,11 @@ class SNNSidePanel {
       this.totalTokensUsed = 0;
       this._contextConsumedInSession = false;
       this.activeContext = null;
+      this._sessionModel = session.sessionModel || null;
+      this._modelLocked = (session.messages || []).length > 0;
       this.restoreChat();
       this.closeHistory();
+      this.renderModelQuickSwitch();
       this.showToast('Session loaded');
     }
   }
@@ -2787,9 +2999,12 @@ class SNNSidePanel {
     if (this._chatLockEnabled) {
       const data = await chrome.storage.local.get([this._chatLockKey]);
       if (data[this._chatLockKey]?.messages?.length) {
+        const session = data[this._chatLockKey];
         this._historyKey = this._chatLockKey;
         this.currentSessionId = '__locked__';
-        this.chatHistory = data[this._chatLockKey].messages;
+        this.chatHistory = session.messages;
+        this._sessionModel = session.sessionModel || null;
+        this._modelLocked = session.messages.length > 0;
         this.restoreChat();
       }
       return;
@@ -2811,6 +3026,8 @@ class SNNSidePanel {
         this._historyKey = activePtr.key;
         this.currentSessionId = this._extractSessionIdFromKey(activePtr.key);
         this.chatHistory = session.messages || [];
+        this._sessionModel = session.sessionModel || null;
+        this._modelLocked = (session.messages || []).length > 0;
         this.restoreChat();
         return;
       }
@@ -2834,6 +3051,13 @@ class SNNSidePanel {
       this._historyKey = recent.key;
       this.currentSessionId = this._extractSessionIdFromKey(recent.key);
       this.chatHistory = recent.messages;
+      // Restore per-session model if saved
+      this._sessionModel = null; this._modelLocked = false;
+      const fullSession = all[recent.key];
+      if (fullSession) {
+        this._sessionModel = fullSession.sessionModel || null;
+        this._modelLocked = (fullSession.messages || []).length > 0;
+      }
       this.restoreChat();
       // Also write the pointer so future loads pick this session
       await this._saveActiveSessionPtr();
@@ -2864,7 +3088,8 @@ class SNNSidePanel {
         domain: this.currentDomain,
         tabId: this._chatLockEnabled ? null : this.currentTabId,
         lastUpdated: Date.now(),
-        messages: this.chatHistory
+        messages: this.chatHistory,
+        sessionModel: this._sessionModel || null
       }
     });
     // Keep the active-session pointer in sync so reopen always
@@ -2880,11 +3105,14 @@ class SNNSidePanel {
       this.totalTokensUsed = 0;
       this._contextConsumedInSession = false;
       this.activeContext = null;
+      this._sessionModel = null;
+      this._modelLocked = false;
       this.els.chatMessages.innerHTML = '';
       this.els.welcomeScreen.style.display = '';
       this.els.tokenCounter.style.display = 'none';
       this.refreshActiveContext();
       await this.renderQuickActions();
+      await this.renderModelQuickSwitch();
       this.showToast('Chat cleared (🔒 session locked)');
       return;
     }
@@ -2898,6 +3126,8 @@ class SNNSidePanel {
     this.totalTokensUsed = 0;
     this._contextConsumedInSession = false;
     this.activeContext = null;
+    this._sessionModel = null;
+    this._modelLocked = false;
     // ── Persist the empty session record so the pointer resolves ──
     // If we don't write this, loadMostRecentSession() sees an empty/missing
     // session, deletes the pointer, and falls back to the OLD session.
@@ -2906,7 +3136,8 @@ class SNNSidePanel {
         domain: this.currentDomain,
         tabId: this.currentTabId,
         lastUpdated: Date.now(),
-        messages: []
+        messages: [],
+        sessionModel: null
       }
     });
     // ── Persist the pointer NOW so reopen picks up THIS session ──
@@ -2917,6 +3148,7 @@ class SNNSidePanel {
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
     await this.renderQuickActions();
+    await this.renderModelQuickSwitch();
     this.showToast('New chat started');
   }
 
@@ -2982,11 +3214,16 @@ class SNNSidePanel {
       const data = await chrome.storage.local.get([this._chatLockKey]);
       if (data[this._chatLockKey]?.messages?.length) {
         // Restore existing locked session
-        this.chatHistory = data[this._chatLockKey].messages;
+        const session = data[this._chatLockKey];
+        this.chatHistory = session.messages;
+        this._sessionModel = session.sessionModel || null;
+        this._modelLocked = session.messages.length > 0;
         this.restoreChat();
       } else {
         // Start fresh in locked mode
         this.chatHistory = [];
+        this._sessionModel = null;
+        this._modelLocked = false;
         this.els.chatMessages.innerHTML = '';
         this.els.welcomeScreen.style.display = '';
       }
@@ -2997,6 +3234,7 @@ class SNNSidePanel {
       this.totalTokensUsed = 0;
       this.els.tokenCounter.style.display = 'none';
       this._updateLockVisuals();
+      await this.renderModelQuickSwitch();
       this.showToast('🔒 Session Locked — one session across all tabs');
     } else if (!this._chatLockEnabled && wasLocked) {
       // ═══ UNLOCKING: save locked → back to per-tab ═══
@@ -3008,6 +3246,8 @@ class SNNSidePanel {
       this.els.chatMessages.innerHTML = '';
       this.els.welcomeScreen.style.display = '';
       this.els.tokenCounter.style.display = 'none';
+      this._sessionModel = null;
+      this._modelLocked = false;
 
       // Clear the active-session pointer so we fall back to
       // per-tab timestamp discovery (not the locked session).
@@ -3015,6 +3255,7 @@ class SNNSidePanel {
 
       await this.loadMostRecentSession();
       this._updateLockVisuals();
+      await this.renderModelQuickSwitch();
       this.showToast('🔓 Session Unlocked — per-tab sessions restored');
     }
 

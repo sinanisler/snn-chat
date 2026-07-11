@@ -44,6 +44,20 @@
   <footer class="sp-input-area">
     <div class="sp-input-row">
       <div class="sp-input-row-left">
+        <!-- Model Quick Switch — change model for this session (locked after 1st msg) -->
+        <div class="sp-model-quick-switch" id="model-quick-switch">
+          <button class="sp-mqs-trigger" id="mqs-trigger" title="Change model for this session">
+            <span id="mqs-current-model">Model</span>
+            <span class="sp-mqs-caret">▾</span>
+          </button>
+          <div class="sp-mqs-popover" id="mqs-popover" style="display:none">
+            <div class="sp-mqs-search-wrap">
+              <svg class="sp-mqs-search-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+              <input type="text" class="sp-mqs-search" id="mqs-search" placeholder="Search models…" autocomplete="off">
+            </div>
+            <div class="sp-mqs-list" id="mqs-list"></div>
+          </div>
+        </div>
         <div class="sp-quick-actions" id="quick-actions">
           <button class="sp-qa-trigger" id="qa-trigger" title="Quick Actions">
             <span>Quick Actions</span>
