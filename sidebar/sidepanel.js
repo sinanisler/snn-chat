@@ -1153,6 +1153,18 @@ class SNNSidePanel {
   }
 
   addMsgActions(msgDiv, content) {
+    // Check if a meta row already exists (e.g. created by addTokenInfo first)
+    let meta = msgDiv.querySelector('.sp-msg-meta');
+    if (!meta) {
+      meta = document.createElement('div');
+      meta.className = 'sp-msg-meta';
+      msgDiv.appendChild(meta);
+    }
+
+    // Remove any stale actions div
+    const oldActions = meta.querySelector('.sp-msg-actions');
+    if (oldActions) oldActions.remove();
+
     const actions = document.createElement('div');
     actions.className = 'sp-msg-actions';
     actions.innerHTML = `
@@ -1188,7 +1200,8 @@ class SNNSidePanel {
       this._ttsSpeak(cleanText, msgDiv, speakBtn);
     });
 
-    msgDiv.appendChild(actions);
+    // Insert actions at the beginning (left side)
+    meta.insertBefore(actions, meta.firstChild);
   }
 
   // ── TTS (Text-to-Speech) ──────────────────────────────────────
@@ -1346,6 +1359,18 @@ class SNNSidePanel {
   addTokenInfo(msgDiv, tokenUsage) {
     const total = (tokenUsage?.prompt_tokens || 0) + (tokenUsage?.completion_tokens || 0);
     if (total > 0) {
+      // Find or create the shared meta row
+      let meta = msgDiv.querySelector('.sp-msg-meta');
+      if (!meta) {
+        meta = document.createElement('div');
+        meta.className = 'sp-msg-meta';
+        msgDiv.appendChild(meta);
+      }
+
+      // Remove stale tokens div
+      const oldInfo = meta.querySelector('.sp-msg-tokens');
+      if (oldInfo) oldInfo.remove();
+
       const info = document.createElement('div');
       info.className = 'sp-msg-tokens';
       const cost = this._calcMessageCost(tokenUsage);
@@ -1357,7 +1382,8 @@ class SNNSidePanel {
       }
       info.textContent = text;
       info.title = title;
-      msgDiv.appendChild(info);
+      meta.appendChild(info); // goes to right (after actions)
+
       this.totalTokensUsed += total;
       if (cost !== null) this.totalCost += cost;
       this.updateTokenCounter();
