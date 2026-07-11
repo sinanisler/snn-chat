@@ -8,6 +8,15 @@
 class SNNAgentUI {
   constructor(sidePanel) {
     this.sp = sidePanel;
+
+    // ── Action Group State ───────────────────────────────────
+    // When the agent executes multiple actions, entries are grouped
+    // under a collapsible accordion to save chat space.
+    this._actionGroupEl = null;          // DOM element: .snn-action-group
+    this._actionGroupBodyEl = null;      // DOM element: .snn-action-group-body
+    this._actionGroupHeaderTextEl = null; // DOM element: header text span
+    this._actionGroupDotsEl = null;      // DOM element: animated dots span
+    this._actionGroupCount = 0;          // number of action entries in group
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -84,9 +93,113 @@ class SNNAgentUI {
     return map[state] || null;
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // ACTION GROUP — collapsible accordion for multi-step agent runs
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Start a new collapsible action group in the chat.
+   * Called automatically when the first EXECUTING state fires after PARSING.
+   */
+  _startActionGroup() {
+    if (this._actionGroupEl) return; // already active
+
+    const group = document.createElement('div');
+    group.className = 'snn-action-group';
+
+    group.innerHTML = `
+      <div class="snn-action-group-header">
+        <span class="snn-action-group-chevron">▶</span>
+        <span class="snn-action-group-header-icon"><i class="fas fa-bolt"></i></span>
+        <span class="snn-action-group-header-text">Working</span>
+        <span class="snn-action-group-dots">
+          <span class="snn-action-group-dot">.</span>
+          <span class="snn-action-group-dot">.</span>
+          <span class="snn-action-group-dot">.</span>
+        </span>
+      </div>
+      <div class="snn-action-group-body"></div>
+    `;
+
+    // Click header to toggle expand/collapse
+    const header = group.querySelector('.snn-action-group-header');
+    header.addEventListener('click', () => {
+      group.classList.toggle('expanded');
+    });
+
+    this.sp.els.chatMessages.appendChild(group);
+    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+
+    this._actionGroupEl = group;
+    this._actionGroupBodyEl = group.querySelector('.snn-action-group-body');
+    this._actionGroupHeaderTextEl = group.querySelector('.snn-action-group-header-text');
+    this._actionGroupDotsEl = group.querySelector('.snn-action-group-dots');
+    this._actionGroupCount = 0;
+  }
+
+  /**
+   * Finalize (close) the current action group.
+   * Updates the header with a summary (completed / failed / interrupted)
+   * and clears internal refs so the next run starts a fresh group.
+   * The group DOM element stays in chat so the user can expand it later.
+   */
+  _finalizeActionGroup(state) {
+    if (!this._actionGroupEl) return;
+
+    // Stop animated dots
+    if (this._actionGroupDotsEl) {
+      this._actionGroupDotsEl.style.display = 'none';
+    }
+
+    // Count completed/failed actions in the group body
+    const body = this._actionGroupBodyEl;
+    let actionCount = 0;
+    if (body) {
+      actionCount = body.querySelectorAll('.snn-action-entry.snn-action-ok, .snn-action-entry.snn-action-fail').length;
+      // Also count 'start' entries for interrupted runs
+      if (state === 'CANCELLED') {
+        actionCount = body.querySelectorAll('.snn-action-entry').length || actionCount;
+      }
+    }
+
+    const iconEl = this._actionGroupEl.querySelector('.snn-action-group-header-icon');
+    const countLabel = actionCount > 0 ? ` · ${actionCount} action${actionCount !== 1 ? 's' : ''}` : '';
+
+    if (state === 'IDLE') {
+      if (this._actionGroupHeaderTextEl) {
+        this._actionGroupHeaderTextEl.textContent = `Completed${countLabel}`;
+      }
+      if (iconEl) iconEl.innerHTML = '<i class="fas fa-circle-check"></i>';
+    } else if (state === 'FAILED') {
+      if (this._actionGroupHeaderTextEl) {
+        this._actionGroupHeaderTextEl.textContent = `Failed${countLabel}`;
+      }
+      if (iconEl) iconEl.innerHTML = '<i class="fas fa-triangle-exclamation"></i>';
+    } else if (state === 'CANCELLED') {
+      if (this._actionGroupHeaderTextEl) {
+        this._actionGroupHeaderTextEl.textContent = 'Interrupted';
+      }
+      if (iconEl) iconEl.innerHTML = '<i class="fas fa-xmark"></i>';
+    } else if (state === 'BLOCKED') {
+      if (this._actionGroupHeaderTextEl) {
+        this._actionGroupHeaderTextEl.textContent = `Blocked${countLabel}`;
+      }
+      if (iconEl) iconEl.innerHTML = '<i class="fas fa-lock"></i>';
+    }
+
+    // Clear refs so the next run can start a fresh group
+    // (the DOM element stays in chat as a collapsed summary)
+    this._actionGroupEl = null;
+    this._actionGroupBodyEl = null;
+    this._actionGroupHeaderTextEl = null;
+    this._actionGroupDotsEl = null;
+    this._actionGroupCount = 0;
+  }
+
   /**
    * Add a persistent status entry to the chat history DOM.
    * Unlike action entries, these represent agent state transitions.
+   * When an action group is active, entries are routed into the group body.
    */
   addStatusEntry(state, detail = {}) {
     const cfg = this._statusEntryConfig(state);
@@ -101,6 +214,28 @@ class SNNAgentUI {
     // Persist to chatHistory for survival across tab switches
     this._persistStatusEntry(state, label, detail);
 
+    // ── Action Group Logic ──────────────────────────────────
+    // PARSING / PLANNING always render outside; close any stale group first.
+    if (state === 'PARSING' || state === 'PLANNING') {
+      this._finalizeActionGroup('CANCELLED');
+    }
+
+    // First EXECUTING after PARSING/PLANNING → start a new action group.
+    if (state === 'EXECUTING' && !this._actionGroupEl) {
+      this._startActionGroup();
+    }
+
+    // Terminal/error states that should appear OUTSIDE the group:
+    // close the group first so the error is visible.
+    if (state === 'FAILED' || state === 'BLOCKED' || state === 'CANCELLED') {
+      this._finalizeActionGroup(state);
+    }
+
+    // Determine where to append this entry.
+    const groupableStates = ['EXECUTING', 'OBSERVING', 'RETRYING', 'REPORTING', 'WAITING', 'IDLE'];
+    const intoGroup = this._actionGroupBodyEl && groupableStates.includes(state);
+    const container = intoGroup ? this._actionGroupBodyEl : this.sp.els.chatMessages;
+
     const entry = document.createElement('div');
     entry.className = `snn-status-entry ${cfg.cls}`;
     entry.innerHTML = `
@@ -108,7 +243,13 @@ class SNNAgentUI {
       <span class="snn-status-entry-text">${this.sp.escapeHtml(label)}</span>
     `;
 
-    this.sp.els.chatMessages.appendChild(entry);
+    container.appendChild(entry);
+
+    // After appending IDLE into the group, finalize (update header, clear refs).
+    if (state === 'IDLE' && this._actionGroupEl) {
+      this._finalizeActionGroup('IDLE');
+    }
+
     this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
     return entry;
   }
@@ -187,6 +328,9 @@ class SNNAgentUI {
     // Persist to chatHistory for tab-switch survival
     this._persistActionEntry(status, description, detail);
 
+    // Route into action group if one is active
+    const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
+
     const entry = document.createElement('div');
     entry.className = `snn-action-entry snn-action-${status}`; // status: 'start', 'ok', 'fail', 'info'
 
@@ -199,7 +343,7 @@ class SNNAgentUI {
       ${detail ? `<span class="snn-action-entry-detail">${this.sp.escapeHtml(detail)}</span>` : ''}
     `;
 
-    this.sp.els.chatMessages.appendChild(entry);
+    container.appendChild(entry);
     this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
     return entry;
   }
@@ -208,7 +352,8 @@ class SNNAgentUI {
    * Update the last action history entry (e.g., change from ▶️ to ✅)
    */
   updateLastActionEntry(status, detail = '') {
-    const entries = this.sp.els.chatMessages.querySelectorAll('.snn-action-entry');
+    const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
+    const entries = container.querySelectorAll('.snn-action-entry');
     if (entries.length === 0) return;
     const last = entries[entries.length - 1];
     last.className = `snn-action-entry snn-action-${status}`;
@@ -236,7 +381,8 @@ class SNNAgentUI {
    * Attach a screenshot image to the last action entry so the user can see it.
    */
   attachScreenshotToLastEntry(dataUrl) {
-    const entries = this.sp.els.chatMessages.querySelectorAll('.snn-action-entry');
+    const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
+    const entries = container.querySelectorAll('.snn-action-entry');
     if (entries.length === 0) return;
     const last = entries[entries.length - 1];
     // Don't double-append

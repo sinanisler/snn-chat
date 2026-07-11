@@ -2901,21 +2901,81 @@ class SNNSidePanel {
     // Track if any message in this session already used context
     let hasContextMessage = false;
 
+    // ── Grouping state for action group restoration ──────────
+    // We accumulate agent-status + agent-action entries between
+    // user/assistant messages and wrap them in collapsible groups.
+    let groupState = null;        // null | 'building'
+    let groupEntries = [];        // { type: 'status'|'action', msg }
+    let groupFinalState = null;   // 'IDLE' | 'FAILED' | 'CANCELLED' | null
+
+    const flushGroup = () => {
+      if (groupEntries.length === 0) return;
+      this._buildRestoredGroup(groupState, groupFinalState, groupEntries);
+      groupState = null;
+      groupEntries = [];
+      groupFinalState = null;
+    };
+
     for (let i = 0; i < this.chatHistory.length; i++) {
       const msg = this.chatHistory[i];
+
       if (msg.role === 'user') {
+        flushGroup();
         this.addMessage('user', msg.content, null, msg.context || null, msg.attachments || null);
         if (msg.context) hasContextMessage = true;
       } else if (msg.role === 'assistant') {
+        flushGroup();
         this.addMessage('ai', msg.content, msg.tokenUsage);
       } else if (msg.role === 'agent-action') {
-        // Restore action history entry (colored status bubble)
-        this._renderPersistedActionEntry(msg);
+        groupEntries.push({ type: 'action', msg });
       } else if (msg.role === 'agent-status') {
-        // Restore agent status entry (e.g. "Analyzing your request...")
+        const s = msg.state;
+
+        // PARSING always renders outside (brief intro) — flush any prior group first
+        if (s === 'PARSING' || s === 'PLANNING') {
+          flushGroup();
+          this._renderPersistedStatusEntry(msg);
+          continue;
+        }
+
+        // EXECUTING starts a new group if not already building
+        if (s === 'EXECUTING') {
+          if (groupState !== 'building') {
+            flushGroup();
+            groupState = 'building';
+          }
+          groupEntries.push({ type: 'status', msg });
+          continue;
+        }
+
+        // Intermediate states that go inside the group
+        if (s === 'OBSERVING' || s === 'RETRYING' || s === 'REPORTING' || s === 'WAITING') {
+          groupEntries.push({ type: 'status', msg });
+          continue;
+        }
+
+        // Terminal states: IDLE closes group; FAILED/CANCELLED/BLOCKED close group
+        // and ALSO render outside so the error is visible.
+        if (s === 'IDLE') {
+          groupEntries.push({ type: 'status', msg });
+          groupFinalState = 'IDLE';
+          flushGroup();
+          continue;
+        }
+        if (s === 'FAILED' || s === 'CANCELLED' || s === 'BLOCKED') {
+          flushGroup();  // close any existing group first
+          this._renderPersistedStatusEntry(msg); // show error outside
+          continue;
+        }
+
+        // Fallback — any unknown state renders outside
+        flushGroup();
         this._renderPersistedStatusEntry(msg);
       }
     }
+
+    // Flush any remaining group at end of history
+    flushGroup();
 
     // If any message already consumed context, mark session accordingly
     this._contextConsumedInSession = hasContextMessage;
@@ -2923,9 +2983,69 @@ class SNNSidePanel {
   }
 
   /**
-   * Render a persisted agent-action entry (survives tab switches).
+   * Build a restored action group container from collected entries.
+   * @param {string|null} groupState - 'building' or null
+   * @param {string|null} finalState - 'IDLE', 'FAILED', 'CANCELLED', or null
+   * @param {Array} entries - [{ type:'status'|'action', msg }]
    */
-  _renderPersistedActionEntry(msg) {
+  _buildRestoredGroup(groupState, finalState, entries) {
+    if (!entries || entries.length === 0) return;
+
+    const group = document.createElement('div');
+    group.className = 'snn-action-group';
+
+    // Determine header appearance
+    let iconHtml, headerText;
+    const actionCount = entries.filter(e => e.type === 'action' &&
+      (e.msg.status === 'ok' || e.msg.status === 'fail')).length;
+    const countLabel = actionCount > 0 ? ` · ${actionCount} action${actionCount !== 1 ? 's' : ''}` : '';
+
+    if (finalState === 'IDLE') {
+      iconHtml = '<i class="fas fa-circle-check"></i>';
+      headerText = `Completed${countLabel}`;
+    } else if (finalState === 'FAILED') {
+      iconHtml = '<i class="fas fa-triangle-exclamation"></i>';
+      headerText = `Failed${countLabel}`;
+    } else if (finalState === 'CANCELLED' || groupState === 'building') {
+      iconHtml = '<i class="fas fa-xmark"></i>';
+      headerText = 'Interrupted';
+    } else {
+      iconHtml = '<i class="fas fa-circle-check"></i>';
+      headerText = `Completed${countLabel}`;
+    }
+
+    group.innerHTML = `
+      <div class="snn-action-group-header">
+        <span class="snn-action-group-chevron">▶</span>
+        <span class="snn-action-group-header-icon">${iconHtml}</span>
+        <span class="snn-action-group-header-text">${headerText}</span>
+      </div>
+      <div class="snn-action-group-body"></div>
+    `;
+
+    const header = group.querySelector('.snn-action-group-header');
+    header.addEventListener('click', () => group.classList.toggle('expanded'));
+
+    const body = group.querySelector('.snn-action-group-body');
+
+    for (const entry of entries) {
+      if (entry.type === 'action') {
+        this._renderPersistedActionEntry(entry.msg, body);
+      } else {
+        this._renderPersistedStatusEntry(entry.msg, body);
+      }
+    }
+
+    this.els.chatMessages.appendChild(group);
+  }
+
+  /**
+   * Render a persisted agent-action entry (survives tab switches).
+   * @param {object} msg - the persisted action entry
+   * @param {HTMLElement} [target] - optional container to append to (defaults to chatMessages)
+   */
+  _renderPersistedActionEntry(msg, target) {
+    const container = target || this.els.chatMessages;
     const entry = document.createElement('div');
     entry.className = `snn-action-entry snn-action-${msg.status || 'info'}`;
     const icons = { start: '<i class="fas fa-play"></i>', ok: '<i class="fas fa-circle-check"></i>', fail: '<i class="fas fa-circle-xmark"></i>', info: '<i class="fas fa-circle-info"></i>', cancelled: '<i class="fas fa-arrow-left"></i>' };
@@ -2935,14 +3055,17 @@ class SNNSidePanel {
       <span class="snn-action-entry-text">${this.escapeHtml(msg.description || '')}</span>
       ${msg.detail ? `<span class="snn-action-entry-detail">${this.escapeHtml(msg.detail)}</span>` : ''}
     `;
-    this.els.chatMessages.appendChild(entry);
+    container.appendChild(entry);
   }
 
   /**
    * Render a persisted agent-status entry (survives tab switches).
    * Shows state transitions like "Analyzing your request..." in chat.
+   * @param {object} msg - the persisted status entry
+   * @param {HTMLElement} [target] - optional container to append to (defaults to chatMessages)
    */
-  _renderPersistedStatusEntry(msg) {
+  _renderPersistedStatusEntry(msg, target) {
+    const container = target || this.els.chatMessages;
     // Inline status config — mirrors agent-ui.js _statusEntryConfig
     const configMap = {
       PARSING:   { icon: 'fa-magnifying-glass', cls: 'snn-status-parsing',   label: 'Analyzing your request...' },
@@ -2967,7 +3090,7 @@ class SNNSidePanel {
         <span class="snn-status-entry-icon"><i class="fas fa-circle-info"></i></span>
         <span class="snn-status-entry-text">${this.escapeHtml(msg.label || msg.state || '')}</span>
       `;
-      this.els.chatMessages.appendChild(entry);
+      container.appendChild(entry);
       return;
     }
 
@@ -2977,7 +3100,7 @@ class SNNSidePanel {
       <span class="snn-status-entry-icon"><i class="fas ${config.icon}"></i></span>
       <span class="snn-status-entry-text">${this.escapeHtml(msg.label || config.label)}</span>
     `;
-    this.els.chatMessages.appendChild(entry);
+    container.appendChild(entry);
   }
 
   // ── Session Management ─────────────────────────────────────────

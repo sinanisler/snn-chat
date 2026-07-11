@@ -1932,6 +1932,113 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   white-space: nowrap;
 }
 
+/* ── Action Group Accordion ──────────────────────────────────── */
+.snn-action-group {
+  margin: 4px 0;
+  border: 1px solid var(--sp-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--sp-ai-msg-bg);
+  animation: snn-slide-up 0.2s ease;
+}
+.snn-action-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--sp-text-secondary);
+  transition: background 0.15s;
+}
+.snn-action-group-header:hover {
+  background: var(--sp-btn-hover);
+}
+.snn-action-group-chevron {
+  flex-shrink: 0;
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+  transition: transform 0.2s ease;
+}
+.snn-action-group.expanded .snn-action-group-chevron {
+  transform: rotate(90deg);
+}
+.snn-action-group-header-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+.snn-action-group-header-text {
+  flex: 1;
+  min-width: 0;
+}
+.snn-action-group-dots {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 1px;
+  flex-shrink: 0;
+}
+.snn-action-group-dot {
+  font-weight: bold;
+  animation: snn-dot-bounce 1.4s infinite both;
+}
+.snn-action-group-dot:nth-child(1) { animation-delay: 0s; }
+.snn-action-group-dot:nth-child(2) { animation-delay: 0.2s; }
+.snn-action-group-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes snn-dot-bounce {
+  0%, 80%, 100% { opacity: 0.15; }
+  40% { opacity: 1; }
+}
+
+.snn-action-group-body {
+  display: none;
+  border-top: 1px solid var(--sp-border);
+  padding: 3px 0;
+}
+.snn-action-group.expanded .snn-action-group-body {
+  display: block;
+}
+
+/* Inside the group body, flatten entries (no border-left, no border-radius, no margin) */
+.snn-action-group-body .snn-status-entry,
+.snn-action-group-body .snn-action-entry {
+  border-radius: 0;
+  margin: 0;
+  border-left: none;
+  background: transparent;
+  padding: 2px 12px;
+  font-size: 11px;
+}
+.snn-action-group-body .snn-action-entry {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+.snn-action-group-body .snn-action-entry.snn-action-ok {
+  color: var(--sp-success);
+}
+.snn-action-group-body .snn-action-entry.snn-action-fail {
+  color: var(--sp-danger);
+}
+.snn-action-group-body .snn-action-entry.snn-action-start {
+  color: var(--sp-accent);
+}
+.snn-action-group-body .snn-status-entry-icon {
+  font-size: 10px;
+  width: 12px;
+}
+.snn-action-group-body .snn-action-entry-icon {
+  font-size: 12px;
+}
+.snn-action-group-body .snn-action-entry-detail {
+  font-size: 10px;
+  max-width: 120px;
+}
+
 /* ── Page Navigation Display ─────────────────────────────────── */
 .snn-page-nav {
   background: var(--sp-context-bg);
