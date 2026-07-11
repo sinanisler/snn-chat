@@ -2927,6 +2927,13 @@ class SNNSidePanel {
         flushGroup();
         this.addMessage('ai', msg.content, msg.tokenUsage);
       } else if (msg.role === 'agent-action') {
+        // If no group is building yet, implicitly start one.
+        // This handles edge cases where an action entry was saved
+        // before the EXECUTING status entry (e.g. from older sessions).
+        if (groupState !== 'building') {
+          flushGroup();
+          groupState = 'building';
+        }
         groupEntries.push({ type: 'action', msg });
       } else if (msg.role === 'agent-status') {
         const s = msg.state;
@@ -3978,16 +3985,10 @@ class SNNSidePanel {
     // ── Result callback ───────────────────────────────────────
     this._agentLoop.onResult = (resultData) => {
       if (resultData.type === 'action_results' && resultData.results) {
-        // Save action results as chat history
-        const summary = resultData.results.map(r =>
-          `${r.step.description || r.step.action}: ${r.result?._duration_ms ? (r.result._duration_ms + 'ms') : 'done'}`
-        ).join('\n');
-        if (summary) {
-          this.chatHistory.push(
-            { role: 'assistant', content: `[Agent Actions]\n${summary}`, tokenUsage: null }
-          );
-          this.saveChatHistory().catch(() => {});
-        }
+        // The final LLM response (saved by sendMessage) already
+        // summarizes the actions in proper Markdown.  Don't push a
+        // redundant [Agent Actions] placeholder — it fragments the
+        // collapsible group and creates duplicate content on restore.
       }
       if (resultData.type === 'capabilities') {
         this.chatHistory.push(

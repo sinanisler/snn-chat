@@ -646,12 +646,14 @@ CRITICAL RULES:
     this._plan.push(step);
     this._stepIndex = this._plan.length - 1;
 
+    // Transition to EXECUTING FIRST — this creates the action group so the
+    // action entry below renders inside it (both live UI and saved history).
+    this._transition('EXECUTING', { step: this._stepIndex + 1, total: this._plan.length, step });
+
     // Show in UI
     if (this.sp._agentUI) {
       this.sp._agentUI.addActionHistoryEntry(actionName, step.description, 'start');
     }
-
-    this._transition('EXECUTING', { step: this._stepIndex + 1, total: this._plan.length, step });
 
     // Dispatch with retry (includes ELEMENT_NOT_FOUND scan recovery)
     this._attemptCount = 0;
@@ -777,10 +779,11 @@ CRITICAL RULES:
   }
 
   async _handleCapabilityQuery() {
+    // Transition FIRST so the action entry renders inside the group
+    this._transition('EXECUTING', { step: 1, total: 1, step: { description: 'Listing capabilities' } });
     if (this.sp._agentUI) {
       this.sp._agentUI.addActionHistoryEntry('getCapabilities', 'Listing what I can do', 'start');
     }
-    this._transition('EXECUTING', { step: 1, total: 1, step: { description: 'Listing capabilities' } });
     const capResult = await this._dispatchAction({ action: 'getCapabilities', id: this._generateId(), params: {}, timeout: 5000 });
     if (capResult.success) {
       this._stepResults.push({ step: { action: 'getCapabilities', description: 'Capabilities' }, result: capResult.result, attempts: 1 });
