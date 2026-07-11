@@ -238,27 +238,6 @@ body.theme-dark #welcome-screen .sp-model-tag {
   border-color: rgba(62,128,219,0.3);
 }
 
-/* ── Selection Bar ────────────────────────────────────────────── */
-.sp-selection-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--sp-warning);
-  background: var(--sp-warning);
-  color: #fff;
-}
-.sp-selection-label { font-weight: 600; flex-shrink: 0; font-size: 13px; }
-.sp-selection-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.sp-selection-clear {
-  background: none; border: none; color: inherit; font-size: 18px; font-weight: bold;
-  cursor: pointer; padding: 2px 6px; border-radius: 4px; opacity: 0.8; flex-shrink: 0;
-}
-.sp-selection-clear:hover { opacity: 1; background: rgba(255,255,255,0.2); }
-
 /* ── Chat Messages ────────────────────────────────────────────── */
 .sp-chat {
   flex: 1;
@@ -430,37 +409,95 @@ body.theme-dark #welcome-screen .sp-model-tag {
   color: var(--sp-danger);
 }
 
-/* ── Quick Actions ────────────────────────────────────────────── */
-.sp-prompts {
-  padding: 12px 14px;
-  background: var(--sp-context-bg);
-  border-top: 1px solid var(--sp-context-border);
-  flex-shrink: 0;
-}
-.sp-prompts-header { margin-bottom: 8px; }
-.sp-prompts-title { font-size: 14px; font-weight: 600; color: var(--sp-context-text); }
-.sp-prompts-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-.sp-prompt-chip {
+/* ── Quick Actions Dropdown ──────────────────────────────────── */
+.sp-input-row-left {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 5px;
-  background: var(--sp-chip-bg);
-  border: 1px solid var(--sp-chip-border);
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-quick-actions {
+  position: relative;
+  display: inline-block;
+}
+
+.sp-qa-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  background: var(--sp-input-bg);
+  border: 1px solid var(--sp-input-border);
   border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--sp-text-secondary);
+  transition: all 0.15s;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.sp-qa-trigger:hover {
+  background: var(--sp-btn-hover);
+  border-color: var(--sp-accent);
+  color: var(--sp-text);
+}
+.sp-qa-trigger.open {
+  border-color: var(--sp-accent);
+  color: var(--sp-accent);
+}
+
+.sp-qa-caret {
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+.sp-qa-trigger.open .sp-qa-caret {
+  transform: rotate(180deg);
+}
+
+.sp-qa-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  max-width: 280px;
+  background: var(--sp-panel-bg);
+  border: 1px solid var(--sp-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.sp-qa-list {
+  padding: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.sp-qa-option {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  background: none;
+  border: none;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
   color: var(--sp-text);
-  transition: all 0.15s;
-  white-space: nowrap;
+  text-align: left;
+  transition: background 0.12s;
+  line-height: 1.4;
 }
-.sp-prompt-chip:hover {
+.sp-qa-option:hover {
+  background: var(--sp-btn-hover);
+  color: var(--sp-accent);
+}
+.sp-qa-option:active {
   background: var(--sp-accent);
   color: var(--sp-accent-text);
-  border-color: var(--sp-accent);
-  transform: translateY(-1px);
 }
-.sp-prompt-icon { font-size: 14px; flex-shrink: 0; }
 
 /* ── Input Area ───────────────────────────────────────────────── */
 .sp-input-area {
@@ -483,8 +520,6 @@ body.theme-dark #welcome-screen .sp-model-tag {
   align-items: center;
   margin-bottom: 8px;
 }
-.sp-input-actions-spacer { flex: 1; }
-
 .sp-input-row-right {
   display: flex;
   align-items: center;

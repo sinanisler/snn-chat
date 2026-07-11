@@ -89,12 +89,11 @@ class SNNSidePanel {
       sendBtn: this.el('send-btn'),
       voiceBtn: this.el('voice-btn'),
       modelName: this.el('current-model'),
-      selectionBar: this.el('selection-bar'),
-      selectionText: this.el('selection-text'),
       welcomeScreen: this.el('welcome-screen'),
       tokenCounter: this.el('token-counter'),
-      smartPrompts: this.el('smart-prompts'),
-      promptsGrid: this.el('prompts-grid'),
+      qaTrigger: this.el('qa-trigger'),
+      qaPopover: this.el('qa-popover'),
+      qaList: this.el('qa-list'),
       settingsOverlay: this.el('settings-overlay'),
       settingsBody: this.el('settings-body'),
       historyOverlay: this.el('history-overlay'),
@@ -195,11 +194,6 @@ class SNNSidePanel {
     this._setupTabTracking();
     this._initAgentLoop();
 
-    // Show welcome or quick actions
-    if (this.chatHistory.length === 0) {
-      this.els.smartPrompts.style.display = 'block';
-    }
-
     this._updateLockVisuals();
 
     // ── Pick up any pending context-menu prompt (right-click "Ask SNN about…") ──
@@ -219,7 +213,6 @@ class SNNSidePanel {
     this.el('new-chat-btn').addEventListener('click', () => this.newSession());
     this.el('history-btn').addEventListener('click', () => this.openHistory());
 
-    this.el('clear-selection').addEventListener('click', () => this.clearSelection());
     this.el('close-settings').addEventListener('click', () => this.closeSettings());
     this.el('close-history').addEventListener('click', () => this.closeHistory());
     this.els.dismissInputContext.addEventListener('click', () => this.dismissInputContext());
@@ -291,11 +284,6 @@ class SNNSidePanel {
         // Only accept selection from the currently active tab
         if (sel && sel.tabId && sel.tabId !== this.currentTabId) return;
         this.selection = sel;
-        if (this.selection) {
-          this.updateSelectionBar();
-        } else {
-          this.els.selectionBar.style.display = 'none';
-        }
         needsRefresh = true;
       }
       // ── Context-menu prompt from background (right-click "Ask SNN about…") ──
@@ -504,7 +492,6 @@ class SNNSidePanel {
       this.selection = null;
       this.activeContext = null;
       this._contextConsumedInSession = false;
-      this.els.selectionBar.style.display = 'none';
       this.els.inputContextIndicator.style.display = 'none';
 
       // Update domain indicator and request fresh page context
@@ -549,9 +536,7 @@ class SNNSidePanel {
     // Clear UI
     this.els.chatMessages.innerHTML = '';
     this.els.welcomeScreen.style.display = '';
-    this.els.smartPrompts.style.display = 'block';
     this.els.tokenCounter.style.display = 'none';
-    this.els.selectionBar.style.display = 'none';
     this.els.inputContextIndicator.style.display = 'none';
 
     // Update domain indicator immediately
@@ -572,7 +557,6 @@ class SNNSidePanel {
     // If no session was restored, ensure context can attach fresh
     if (this.chatHistory.length === 0) {
       this._contextConsumedInSession = false;
-      this.els.smartPrompts.style.display = 'block';
     }
 
     // ── Check for pending context-menu prompts targeting this tab ──
@@ -610,19 +594,8 @@ class SNNSidePanel {
     }
   }
 
-  updateSelectionBar() {
-    if (!this.selection || !this.selection.text) {
-      this.els.selectionBar.style.display = 'none';
-      return;
-    }
-    this.els.selectionBar.style.display = 'flex';
-    const text = this.selection.text;
-    this.els.selectionText.textContent = text.length > 100 ? text.substring(0, 100) + '...' : text;
-  }
-
   clearSelection() {
     this.selection = null;
-    this.els.selectionBar.style.display = 'none';
     chrome.runtime.sendMessage({ action: 'clearSelection' }).catch(() => {});
     this.refreshActiveContext();
   }
@@ -651,7 +624,6 @@ class SNNSidePanel {
     this.els.sendBtn.disabled = true;
     this.els.userInput.value = '';
     this.autoResize();
-    this.els.smartPrompts.style.display = 'none';
     this.els.welcomeScreen.style.display = 'none';
 
     // Consume attachments from the composer
@@ -717,7 +689,7 @@ class SNNSidePanel {
           if (agentResult.llmResponse) {
             await this.streamRenderMessage(agentResult.llmResponse);
             this.chatHistory.push(
-              { role: 'assistant', content: agentResult.llmResponse }
+              { role: 'assistant', content: agentResult.llmResponse, tokenUsage: this.lastTokenUsage }
             );
             await this.saveChatHistory();
           }
@@ -735,7 +707,7 @@ class SNNSidePanel {
         if (agentResult && agentResult.type === 'chat' && agentResult.content) {
           await this.streamRenderMessage(agentResult.content);
           this.chatHistory.push(
-            { role: 'assistant', content: agentResult.content }
+            { role: 'assistant', content: agentResult.content, tokenUsage: this.lastTokenUsage }
           );
           await this.saveChatHistory();
           this.isLoading = false;
@@ -1114,6 +1086,7 @@ class SNNSidePanel {
           contentDiv.innerHTML = this.parseMarkdown(content);
           this.renderMermaid(div);
           this.addMsgActions(div, content);
+          this.addTokenInfo(div, this.lastTokenUsage);
           this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
           resolve();
           return;
@@ -1446,19 +1419,57 @@ class SNNSidePanel {
   async renderQuickActions() {
     const settings = await this.getSettings();
     const actions = settings.quickActions || this.getDefaultQuickActions();
-    this.els.promptsGrid.innerHTML = actions.map((a) => `
-      <button class="sp-prompt-chip" data-prompt="${this.escapeHtml(a.prompt)}">
+
+    // Populate the dropdown list
+    this.els.qaList.innerHTML = actions.map((a) => `
+      <button class="sp-qa-option" data-prompt="${this.escapeHtml(a.prompt)}">
         ${a.text}
       </button>
     `).join('');
 
-    this.els.promptsGrid.querySelectorAll('.sp-prompt-chip').forEach(btn => {
-      btn.addEventListener('click', () => {
-        this.els.userInput.value = btn.dataset.prompt;
+    // Click handler for each option: fill input, send, close popover
+    this.els.qaList.querySelectorAll('.sp-qa-option').forEach(opt => {
+      opt.addEventListener('click', () => {
+        this.els.userInput.value = opt.dataset.prompt;
         this.els.userInput.focus();
+        this._closeQAPopover();
         this.sendMessage();
       });
     });
+
+    // Toggle popover on trigger click
+    this.els.qaTrigger.onclick = (e) => {
+      e.stopPropagation();
+      this._toggleQAPopover();
+    };
+
+    // Close popover on outside click
+    if (!this._qaOutsideBound) {
+      this._qaOutsideBound = true;
+      document.addEventListener('click', (e) => {
+        if (!this.els.qaTrigger?.contains(e.target) && !this.els.qaPopover?.contains(e.target)) {
+          this._closeQAPopover();
+        }
+      });
+    }
+  }
+
+  _toggleQAPopover() {
+    const popover = this.els.qaPopover;
+    const trigger = this.els.qaTrigger;
+    if (!popover || !trigger) return;
+    const isOpen = popover.style.display === 'block';
+    if (isOpen) {
+      this._closeQAPopover();
+    } else {
+      popover.style.display = 'block';
+      trigger.classList.add('open');
+    }
+  }
+
+  _closeQAPopover() {
+    if (this.els.qaPopover) this.els.qaPopover.style.display = 'none';
+    if (this.els.qaTrigger) this.els.qaTrigger.classList.remove('open');
   }
 
   getDefaultQuickActions() {
@@ -2671,7 +2682,6 @@ class SNNSidePanel {
     this.els.chatMessages.innerHTML = '';
     this.totalTokensUsed = 0;
     this.els.welcomeScreen.style.display = this.chatHistory.length === 0 ? '' : 'none';
-    this.els.smartPrompts.style.display = this.chatHistory.length === 0 ? 'block' : 'none';
 
     // Track if any message in this session already used context
     let hasContextMessage = false;
@@ -2846,7 +2856,6 @@ class SNNSidePanel {
       this.activeContext = null;
       this.els.chatMessages.innerHTML = '';
       this.els.welcomeScreen.style.display = '';
-      this.els.smartPrompts.style.display = 'block';
       this.els.tokenCounter.style.display = 'none';
       this.refreshActiveContext();
       await this.renderQuickActions();
@@ -2879,7 +2888,6 @@ class SNNSidePanel {
     // ── Clear UI ──────────────────────────────────────────────
     this.els.chatMessages.innerHTML = '';
     this.els.welcomeScreen.style.display = '';
-    this.els.smartPrompts.style.display = 'block';
     this.els.tokenCounter.style.display = 'none';
     this.refreshActiveContext();
     await this.renderQuickActions();
@@ -2955,7 +2963,6 @@ class SNNSidePanel {
         this.chatHistory = [];
         this.els.chatMessages.innerHTML = '';
         this.els.welcomeScreen.style.display = '';
-        this.els.smartPrompts.style.display = 'block';
       }
 
       this.currentSessionId = '__locked__';
@@ -2974,7 +2981,6 @@ class SNNSidePanel {
       this.chatHistory = [];
       this.els.chatMessages.innerHTML = '';
       this.els.welcomeScreen.style.display = '';
-      this.els.smartPrompts.style.display = 'block';
       this.els.tokenCounter.style.display = 'none';
 
       // Clear the active-session pointer so we fall back to

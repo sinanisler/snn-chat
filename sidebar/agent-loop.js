@@ -128,6 +128,8 @@ class SNNAgentLoop {
     this._sendTabId = tabId;
     this._taskId = this._generateId();
     this._cancelled = false;
+    // ── Reset token usage accumulator for this agent run ──
+    this.sp.lastTokenUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
     try {
       //  - - - - CAPABILITY FAST-PATH  - - - -
@@ -475,6 +477,22 @@ CRITICAL RULES:
     const choice = json.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;
     D.log('← LLM OK', { finishReason: choice?.finish_reason, contentLen: (choice?.message?.content || '').length, toolCallCount: toolCalls?.length || 0, toolNames: toolCalls?.map(tc => tc.function?.name).join(',') || 'none' });
+
+    // ── Accumulate token usage across agent loop iterations ──
+    if (json.usage) {
+      if (!this.sp.lastTokenUsage || !this.sp.lastTokenUsage.total_tokens) {
+        this.sp.lastTokenUsage = {
+          prompt_tokens: json.usage.prompt_tokens || 0,
+          completion_tokens: json.usage.completion_tokens || 0,
+          total_tokens: json.usage.total_tokens || 0
+        };
+      } else {
+        this.sp.lastTokenUsage.prompt_tokens += json.usage.prompt_tokens || 0;
+        this.sp.lastTokenUsage.completion_tokens += json.usage.completion_tokens || 0;
+        this.sp.lastTokenUsage.total_tokens += json.usage.total_tokens || 0;
+      }
+    }
+
     return json;
   }
 

@@ -23,13 +23,6 @@
     </div>
   </header>
 
-  <!-- Selection Preview Bar -->
-  <div class="sp-selection-bar" id="selection-bar" style="display:none">
-    <span class="sp-selection-label">Selection:</span>
-    <span class="sp-selection-text" id="selection-text"></span>
-    <button class="sp-selection-clear" id="clear-selection" title="Clear selection">&times;</button>
-  </div>
-
   <!-- Chat Messages -->
   <main class="sp-chat" id="chat-messages">
     <div class="sp-welcome" id="welcome-screen">
@@ -39,14 +32,6 @@
       <div class="sp-model-info-tags" id="model-info-tags"></div>
     </div>
   </main>
-
-  <!-- Smart Prompts / Quick Actions -->
-  <div class="sp-prompts" id="smart-prompts" style="display:none">
-    <div class="sp-prompts-header">
-      <span class="sp-prompts-title">Quick Actions</span>
-    </div>
-    <div class="sp-prompts-grid" id="prompts-grid"></div>
-  </div>
 
   <!-- Context Indicator (shows what context will be attached to next message) -->
   <div class="sp-input-context" id="input-context-indicator" style="display:none">
@@ -58,7 +43,17 @@
   <!-- Input Area -->
   <footer class="sp-input-area">
     <div class="sp-input-row">
-      <div class="sp-input-actions-spacer"></div>
+      <div class="sp-input-row-left">
+        <div class="sp-quick-actions" id="quick-actions">
+          <button class="sp-qa-trigger" id="qa-trigger" title="Quick Actions">
+            <span>Quick Actions</span>
+            <span class="sp-qa-caret">▾</span>
+          </button>
+          <div class="sp-qa-popover" id="qa-popover" style="display:none">
+            <div class="sp-qa-list" id="qa-list"></div>
+          </div>
+        </div>
+      </div>
       <div class="sp-input-row-right">
         <div id="token-counter" class="sp-token-counter" style="display:none">0 tokens</div>
       </div>
