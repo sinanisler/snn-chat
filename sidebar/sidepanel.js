@@ -213,7 +213,13 @@ class SNNSidePanel {
 
   // ── Event Listeners ─────────────────────────────────────────────
   setupListeners() {
-    this.els.sendBtn.addEventListener('click', () => this.sendMessage());
+    this.els.sendBtn.addEventListener('click', () => {
+      if (this.isLoading) {
+        this._stopGeneration();
+      } else {
+        this.sendMessage();
+      }
+    });
     this.els.userInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.sendMessage(); }
     });
@@ -245,10 +251,9 @@ class SNNSidePanel {
     // Escape key
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        // Cancel agent loop if running
-        if (this._agentLoop && this._agentLoop.isBusy) {
-          this._agentLoop.cancel();
-          this.showToast('Cancelled');
+        // Cancel in-flight generation (agent loop or plain chat)
+        if (this.isLoading) {
+          this._stopGeneration();
           return;
         }
         if (this.els.settingsOverlay.classList.contains('visible')) this.closeSettings();
@@ -654,7 +659,7 @@ class SNNSidePanel {
     const signal = this._activeAbortController.signal;
 
     this.isLoading = true;
-    this.els.sendBtn.disabled = true;
+    this._setSendBtnToStop();
     this.els.userInput.value = '';
     this.autoResize();
     this.els.welcomeScreen.style.display = 'none';
@@ -987,7 +992,7 @@ class SNNSidePanel {
           if (content) {
             fullResponse += content;
             contentDiv.innerHTML = this.parseMarkdown(fullResponse) + '<span class="sp-cursor">|</span>';
-            this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+            this.smartScrollToBottom();
           }
           if (parsed.usage) {
             this.lastTokenUsage = {
@@ -1018,7 +1023,7 @@ class SNNSidePanel {
     this.renderMermaid(contentDiv);
     this.addMsgActions(msgDiv, fullResponse);
     this.addTokenInfo(msgDiv, this.lastTokenUsage);
-    this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+    this.smartScrollToBottom();
 
     return fullResponse;
   }
@@ -1052,7 +1057,7 @@ class SNNSidePanel {
       if (tokenUsage) this.addTokenInfo(div, tokenUsage);
     }
 
-    this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+    this.smartScrollToBottom();
   }
 
   _renderMessageAttachmentsHtml(attachments) {
@@ -1102,7 +1107,7 @@ class SNNSidePanel {
           this.renderMermaid(div);
           this.addMsgActions(div, content);
           this.addTokenInfo(div, this.lastTokenUsage);
-          this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+          this.smartScrollToBottom();
           resolve();
           return;
         }
@@ -1113,7 +1118,7 @@ class SNNSidePanel {
         // Use text rendering for speed during streaming, 
         // then final markdown parse at the end
         contentDiv.innerHTML = this.escapeHtml(chunk).replace(/\n/g, '<br>') + '<span class="sp-cursor">|</span>';
-        this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+        this.smartScrollToBottom();
 
         // Adaptive speed: faster for longer content
         const delay = content.length > 2000 ? 5 : (content.length > 500 ? 10 : 20);
@@ -1160,11 +1165,25 @@ class SNNSidePanel {
     this.loadingDiv.className = 'sp-msg sp-msg-ai loading';
     this.loadingDiv.textContent = 'Thinking...';
     this.els.chatMessages.appendChild(this.loadingDiv);
-    this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+    this.smartScrollToBottom();
   }
 
   removeLoadingMsg() {
     if (this.loadingDiv) { this.loadingDiv.remove(); this.loadingDiv = null; }
+  }
+
+  /**
+   * Auto-scroll to bottom ONLY if the user is already near the bottom.
+   * If the user scrolled up to read earlier messages, don't yank them back.
+   * @param {number} threshold - px from bottom to consider "at bottom" (default 80)
+   */
+  smartScrollToBottom(threshold = 80) {
+    const el = this.els.chatMessages;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom <= threshold) {
+      el.scrollTop = el.scrollHeight;
+    }
   }
 
   addMsgActions(msgDiv, content) {
@@ -1717,19 +1736,13 @@ class SNNSidePanel {
           const s = result.settings || {};
           if (s.openrouterModel === undefined) s.openrouterModel = '';
           if (s.enableStreaming === undefined) s.enableStreaming = true;
-          if (s.enableQuickActions === undefined) s.enableQuickActions = true;
-          if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
-          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 1000;
-          if (s.autoScan === undefined) s.autoScan = true;
-          if (s.disabledActions === undefined) s.disabledActions = [];
-          if (s.agentPrompt === undefined) s.agentPrompt = this._getDefaultAgentPrompt();
           if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
           resolve(s);
         });
       });
     } catch (e) {
-      return { enableStreaming: true, enableQuickActions: true, enableVoiceInput: true, quickActions: this.getDefaultQuickActions() };
+      return { enableStreaming: true, quickActions: this.getDefaultQuickActions() };
     }
   }
 
@@ -1881,7 +1894,6 @@ class SNNSidePanel {
       <div class="sp-tabs">
         <button class="sp-tab active" data-tab="api">API</button>
         <button class="sp-tab" data-tab="chat">Chat</button>
-        <button class="sp-tab" data-tab="actions">Actions</button>
         <button class="sp-tab" data-tab="quickactions">Quick Actions</button>
         <button class="sp-tab" data-tab="appearance">Appearance</button>
       </div>
@@ -1914,7 +1926,7 @@ class SNNSidePanel {
           <h4>Response</h4>
           <div class="sp-field">
             <label>Max Tokens</label>
-            <input type="number" id="s-max-tokens" value="${s.maxTokens || 4096}" min="256" max="131072">
+            <input type="number" id="s-max-tokens" value="${s.maxTokens || 10000}" min="256" max="131072">
             <small>Max response length. Modern models support up to 128K.</small>
           </div>
           <div class="sp-field-range">
@@ -1944,8 +1956,6 @@ class SNNSidePanel {
         <div class="sp-section">
           <h4>Features</h4>
           ${this.toggleHtml('s-enable-streaming', 'Streaming Responses', 'See AI responses in real-time', s.enableStreaming !== false)}
-          ${this.toggleHtml('s-enable-quick-actions', 'Quick Actions', 'Show prompt suggestions for new chats', s.enableQuickActions !== false)}
-          ${this.toggleHtml('s-enable-voice-input', 'Voice Input', 'Click mic button or hold Space to dictate', s.enableVoiceInput !== false)}
         </div>
         <div class="sp-section">
           <h4>Text-to-Speech</h4>
@@ -1970,71 +1980,9 @@ class SNNSidePanel {
           </div>
         </div>
         <div class="sp-section">
-          <h4>Keyboard Shortcut</h4>
-          <div class="sp-shortcut-selects">
-            <select id="s-shortcut-1">
-              <option value="">-</option>
-              <option value="Ctrl">Ctrl</option>
-              <option value="Shift">Shift</option>
-              <option value="Alt">Alt</option>
-            </select>
-            <span class="sp-shortcut-plus">+</span>
-            <select id="s-shortcut-2">
-              <option value="">-</option>
-              <option value="Ctrl">Ctrl</option>
-              <option value="Shift">Shift</option>
-              <option value="Alt">Alt</option>
-            </select>
-            <span class="sp-shortcut-plus">+</span>
-            <select id="s-shortcut-3">
-              <option value="">-</option>
-              ${'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('').map(k => `<option value="${k}">${k}</option>`).join('')}
-            </select>
-            <button class="sp-btn sp-btn-secondary" id="s-reset-shortcut">Reset</button>
-          </div>
-        </div>
-        <div class="sp-section">
           <h4>Data</h4>
           <button class="sp-btn sp-btn-secondary" id="s-export-history">Export Chat History</button>
           <button class="sp-btn sp-btn-danger" id="s-clear-history" style="margin-left:8px">Clear All History</button>
-        </div>
-      </div>
-
-      <div class="sp-tab-content" data-tab-content="actions">
-        <div class="sp-section">
-          <h4>HTML Element Scanning</h4>
-          <div class="sp-field">
-            <label>Max elements to scan per page</label>
-            <input type="number" id="s-html-parse-limit" value="${s.htmlParseLimit || 1000}" min="10" max="5000" step="10">
-            <small>How many links, buttons, and inputs to discover on each page. Higher = more thorough but slower. Set to 5000 for full page scan.</small>
-          </div>
-          <div class="sp-field">
-            <label>Auto-scan on page load</label>
-            ${this.toggleHtml('s-auto-scan', 'Auto-discover page elements', 'Scan for clickable elements, links, and forms when a page loads', s.autoScan !== false)}
-          </div>
-        </div>
-        <div class="sp-section">
-          <h4>Enabled Page Actions</h4>
-          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:8px">Uncheck actions to prevent the agent from using them.</p>
-          ${this.toggleHtml('s-action-click', 'Click', 'Click buttons, links, and elements', s.disabledActions ? !s.disabledActions.includes('click') : true)}
-          ${this.toggleHtml('s-action-type', 'Type / Input', 'Type text into fields and forms', s.disabledActions ? !s.disabledActions.includes('type') : true)}
-          ${this.toggleHtml('s-action-scroll', 'Scroll', 'Scroll up, down, or to elements', s.disabledActions ? !s.disabledActions.includes('scroll') : true)}
-          ${this.toggleHtml('s-action-screenshot', 'Screenshot', 'Capture visible page area', s.disabledActions ? !s.disabledActions.includes('screenshot') : true)}
-          ${this.toggleHtml('s-action-page_script', 'Run Page Script', 'Run custom JS on the page for any operation', s.disabledActions ? !s.disabledActions.includes('page_script') : true)}
-        </div>
-        <div class="sp-section">
-          <h4>Navigation & Browser Actions</h4>
-          ${this.toggleHtml('s-action-navigate', 'Navigate', 'Go to URLs or page links', s.disabledActions ? !s.disabledActions.includes('navigate') : true)}
-          ${this.toggleHtml('s-action-openTab', 'Open Tabs', 'Open URLs in new tabs', s.disabledActions ? !s.disabledActions.includes('openTab') : true)}
-          ${this.toggleHtml('s-action-reload', 'Reload Page', 'Refresh the current page', s.disabledActions ? !s.disabledActions.includes('reload') : true)}
-        </div>
-        <div class="sp-section">
-          <h4>Custom Instruction <span style="font-weight:400;color:var(--sp-text-secondary)">(optional)</span></h4>
-          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:6px">Add a personal touch — appended to every request. Leave empty for default behavior.</p>
-          <div class="sp-field">
-            <textarea id="s-agent-prompt" rows="2" placeholder="e.g. Always respond in Spanish. or Use emojis freely." style="font-size:12px;font-family:monospace;">${this.escapeHtml(s.agentPrompt || '')}</textarea>
-          </div>
-          <button class="sp-btn sp-btn-secondary" id="s-reset-agent-prompt" style="margin-top:6px;">Clear</button>
         </div>
       </div>
 
@@ -2105,26 +2053,9 @@ class SNNSidePanel {
       this.renderQuickActionsEditor(this.getDefaultQuickActions());
     });
 
-    // Clear agent prompt (was "Reset to Default")
-    this.els.settingsBody.querySelector('#s-reset-agent-prompt')?.addEventListener('click', () => {
-      const ta = this.els.settingsBody.querySelector('#s-agent-prompt');
-      if (ta) ta.value = '';
-    });
-
     // Export / Clear
     this.els.settingsBody.querySelector('#s-export-history').addEventListener('click', () => this.exportHistory());
     this.els.settingsBody.querySelector('#s-clear-history').addEventListener('click', () => this.clearAllHistory());
-    this.els.settingsBody.querySelector('#s-reset-shortcut').addEventListener('click', () => {
-      this.els.settingsBody.querySelector('#s-shortcut-1').value = 'Ctrl';
-      this.els.settingsBody.querySelector('#s-shortcut-2').value = 'Shift';
-      this.els.settingsBody.querySelector('#s-shortcut-3').value = 'Y';
-    });
-
-    // Load shortcut from settings
-    const sc = (s.shortcut || 'Ctrl+Shift+Y').split('+');
-    if (sc[0]) this.els.settingsBody.querySelector('#s-shortcut-1').value = sc[0];
-    if (sc[1]) this.els.settingsBody.querySelector('#s-shortcut-2').value = sc[1];
-    if (sc[2]) this.els.settingsBody.querySelector('#s-shortcut-3').value = sc[2];
 
     // Model input — load models on key input
     const keyInput = this.els.settingsBody.querySelector('#s-openrouter-key');
@@ -2559,25 +2490,6 @@ class SNNSidePanel {
   }
 
   /**
-   * Collect which actions are disabled from the settings checkboxes.
-   * Returns an array of action names that are UNCHECKED.
-   */
-  _getDisabledActionsFromSettings() {
-    const s = this.els.settingsBody;
-    const allActions = [
-      'click', 'type', 'scroll',
-      'navigate', 'openTab', 'screenshot', 'reload',
-      'page_script'
-    ];
-    const disabled = [];
-    for (const action of allActions) {
-      const el = s.querySelector(`#s-action-${action}`);
-      if (el && !el.checked) disabled.push(action);
-    }
-    return disabled;
-  }
-
-  /**
    * Returns the default agent system prompt that tells the LLM what SNN can do.
    */
   _getDefaultAgentPrompt() {
@@ -2591,11 +2503,6 @@ class SNNSidePanel {
     const getVal = (id) => s.querySelector(`#${id}`)?.value || '';
     const getChecked = (id) => s.querySelector(`#${id}`)?.checked;
 
-    const sc1 = getVal('s-shortcut-1');
-    const sc2 = getVal('s-shortcut-2');
-    const sc3 = getVal('s-shortcut-3');
-    const shortcut = [sc1, sc2, sc3].filter(Boolean).join('+') || 'Ctrl+Shift+Y';
-
     const settings = {
       openrouterKey: getVal('s-openrouter-key'),
       openrouterModel: getVal('s-openrouter-model'),
@@ -2606,17 +2513,9 @@ class SNNSidePanel {
       systemPrompt: getVal('s-system-prompt'),
       theme: getVal('s-theme'),
       fontSize: parseInt(getVal('s-font-size')) || 16,
-      shortcut,
       enableStreaming: getChecked('s-enable-streaming'),
-      enableQuickActions: getChecked('s-enable-quick-actions'),
-      enableVoiceInput: getChecked('s-enable-voice-input'),
       ttsLanguage: getVal('s-tts-lang') || 'auto',
-      quickActions: this.getQuickActionsFromEditor(),
-      // Actions tab
-      htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 1000,
-      autoScan: getChecked('s-auto-scan'),
-      agentPrompt: getVal('s-agent-prompt'),
-      disabledActions: this._getDisabledActionsFromSettings()
+      quickActions: this.getQuickActionsFromEditor()
     };
 
     if (!settings.openrouterKey) {
@@ -3311,7 +3210,7 @@ class SNNSidePanel {
    */
   _resetLoadingState() {
     this.isLoading = false;
-    if (this.els.sendBtn) this.els.sendBtn.disabled = false;
+    this._setSendBtnToSend();
     this.removeLoadingMsg();
     // Abort any in-flight fetch so tokens aren't wasted
     if (this._activeAbortController) {
@@ -3428,12 +3327,59 @@ class SNNSidePanel {
     }
 
     this.isLoading = false;
-    this.els.sendBtn.disabled = false;
+    this._setSendBtnToSend();
     this.els.userInput.focus();
     this._activeAbortController = null;
 
     // Flush any context-menu prompt that arrived while we were loading
     this._checkContextMenuPrompt();
+  }
+
+  // ── Send Button Toggle (Send ↔ Stop) ──────────────────────────
+
+  /** Switch the send button to a stop button while generating. */
+  _setSendBtnToStop() {
+    const btn = this.els.sendBtn;
+    if (!btn) return;
+    btn.classList.add('sp-stop-btn');
+    btn.innerHTML = '<i class="fas fa-stop"></i> Stop';
+    btn.disabled = false;
+  }
+
+  /** Restore the send button after generation finishes. */
+  _setSendBtnToSend() {
+    const btn = this.els.sendBtn;
+    if (!btn) return;
+    btn.classList.remove('sp-stop-btn');
+    btn.innerHTML = 'Send';
+    btn.disabled = false;
+  }
+
+  /**
+   * Stop/cancel the current generation or agent run immediately.
+   * Called when the user clicks the stop button or presses Escape
+   * while the agent or plain-chat fetch is in progress.
+   */
+  _stopGeneration() {
+    D.log('STOP generation requested by user');
+
+    // 1. Abort plain-chat fetch (streamResponse / callAPI)
+    if (this._activeAbortController) {
+      this._activeAbortController.abort();
+      this._activeAbortController = null;
+    }
+
+    // 2. Cancel agent loop if running
+    if (this._agentLoop && this._agentLoop.isBusy) {
+      this._agentLoop.cancel('user');
+    }
+
+    // 3. Reset UI state
+    this.isLoading = false;
+    this._setSendBtnToSend();
+    this.removeLoadingMsg();
+
+    this.showToast('Stopped');
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -3920,7 +3866,7 @@ class SNNSidePanel {
     `;
 
     this.els.chatMessages.appendChild(div);
-    this.els.chatMessages.scrollTop = this.els.chatMessages.scrollHeight;
+    this.smartScrollToBottom();
   }
 
   _formatCapabilitiesForHistory(capData) {

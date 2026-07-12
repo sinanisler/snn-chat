@@ -7,7 +7,7 @@
 
 // ── DEBUG LOGGING ──────────────────────────────────────────────────
 var SNN_D = {
-  enabled: true,
+  enabled: false,
   module: 'BgSW',
   _ts: () => new Date().toISOString().slice(11, 23),
   _fmt(o) {

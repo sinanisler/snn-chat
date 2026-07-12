@@ -48,6 +48,7 @@ class SNNAgentLoop {
     this._cancelled = false;
     this._cancelReason = null;  // 'user' | 'tab-switch' | null
     this._pendingResolve = null; // for BLOCKED state
+    this._abortController = null; // for cancelling in-flight LLM fetch
 
     // â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     this.MAX_RETRIES = 3;
@@ -56,7 +57,7 @@ class SNNAgentLoop {
 
     // â”€â”€ Background-level actions (handled by SW, not forwarded to page) â”€â”€
     this._BG_ACTIONS = new Set([
-      'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
+      'agent:navigate', 'agent:closeTab', 'agent:goBack',
       'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
       'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
       'agent:listActions', 'agent:getCapabilities', 'agent:page_script',
@@ -105,6 +106,11 @@ class SNNAgentLoop {
     D.warn('CANCEL', { reason, currentState: this._state });
     this._cancelled = true;
     this._cancelReason = reason;
+    // Abort in-flight LLM fetch immediately
+    if (this._abortController) {
+      this._abortController.abort();
+      this._abortController = null;
+    }
     const label = reason === 'tab-switch' ? 'Tab switched â€” task interrupted' : 'User cancelled';
     this._transition('CANCELLED', { reason: label });
     // Resolve any pending BLOCKED promise
@@ -129,6 +135,7 @@ class SNNAgentLoop {
     this._sendTabId = tabId;
     this._taskId = this._generateId();
     this._cancelled = false;
+    this._abortController = new AbortController();
     // ── Reset token usage accumulator for this agent run ──
     this.sp.lastTokenUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
@@ -560,7 +567,8 @@ CRITICAL RULES:
         'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
         'X-Title': 'SNN Chat'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: this._abortController?.signal
     });
 
     if (!res.ok) {
@@ -737,7 +745,6 @@ CRITICAL RULES:
       case 'type': return { selector: args.selector || '', text: args.text || '', options: args.clearFirst ? { clearFirst: true } : {} };
       case 'scroll': return { direction: args.direction || 'down', amount: args.amount || 500 };
       case 'wait': return { ms: args.ms || 1000 };
-      case 'openTab': return { url: args.url || '' };
       case 'readPage': return {};
       case 'goBack': return {};
       case 'page_script': return { code: args.code || '' };
@@ -1139,6 +1146,7 @@ CRITICAL RULES:
     this._cancelled = false;
     this._cancelReason = null;
     this._pendingResolve = null;
+    this._abortController = null;
     this._lastScreenshot = null;
     this._selfAuditDone = false;
     this._expectNavigation = false;
@@ -1220,7 +1228,6 @@ CRITICAL RULES:
       case 'getPageInfo': return `Page: ${result.title || ''} â€” ${result.links || 0} links, ${result.forms || 0} forms`;
       case 'extractTable': return `Extracted table with ${result.rowCount || 0} rows`;
       case 'navigate': return `Navigated to ${result.url || step.params?.url || ''}`;
-      case 'openTab': return `Opened tab: ${result.url || step.params?.url || ''}`;
       case 'screenshot': return `Screenshot captured`;
       case 'fillForm': return `Filled ${result.succeeded || 0}/${result.total || 0} fields`;
       case 'selectDropdown': return `Selected "${step.params?.value || ''}" in dropdown`;
@@ -1244,7 +1251,7 @@ CRITICAL RULES:
   async _scanAllActionableElements() {
     try {
       const settings = await this.sp.getSettings();
-      const limit = settings.htmlParseLimit || 1000;
+      const limit = settings.htmlParseLimit || 10000;
 
       const result = await this._dispatchAction({
         action: 'page_script',

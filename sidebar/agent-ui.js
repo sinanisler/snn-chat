@@ -128,7 +128,7 @@ class SNNAgentUI {
     });
 
     this.sp.els.chatMessages.appendChild(group);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
 
     this._actionGroupEl = group;
     this._actionGroupBodyEl = group.querySelector('.snn-action-group-body');
@@ -250,7 +250,7 @@ class SNNAgentUI {
       this._finalizeActionGroup('IDLE');
     }
 
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
     return entry;
   }
 
@@ -344,7 +344,7 @@ class SNNAgentUI {
     `;
 
     container.appendChild(entry);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
     return entry;
   }
 
@@ -374,7 +374,7 @@ class SNNAgentUI {
     const textEl = last.querySelector('.snn-action-entry-text');
     const desc = textEl ? textEl.textContent : '';
     this._persistActionEntry(status, desc, detail);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
   }
 
   /**
@@ -401,7 +401,7 @@ class SNNAgentUI {
     });
     wrapper.appendChild(img);
     last.appendChild(wrapper);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
   }
 
   /**
@@ -454,7 +454,7 @@ class SNNAgentUI {
 
     entry.innerHTML = html;
     this.sp.els.chatMessages.appendChild(entry);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -511,7 +511,7 @@ class SNNAgentUI {
     });
 
     this.sp.els.chatMessages.appendChild(card);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -540,7 +540,7 @@ class SNNAgentUI {
     `;
 
     this.sp.els.chatMessages.appendChild(card);
-    this.sp.els.chatMessages.scrollTop = this.sp.els.chatMessages.scrollHeight;
+    this.sp.smartScrollToBottom();
   }
 
   // ═══════════════════════════════════════════════════════════════

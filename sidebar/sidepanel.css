@@ -905,6 +905,19 @@ body.theme-dark #welcome-screen .sp-model-tag {
 .sp-send-btn:hover:not(:disabled) { filter: brightness(1.12); }
 .sp-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* ── Stop Button (during generation) ─────────────────────────── */
+.sp-send-btn.sp-stop-btn {
+  background: var(--sp-danger, #c0392b);
+  animation: sp-stop-pulse 1.5s ease-in-out infinite;
+}
+.sp-send-btn.sp-stop-btn:hover {
+  filter: brightness(1.15);
+}
+@keyframes sp-stop-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.75; }
+}
+
 .sp-voice-btn {
   background: var(--sp-input-bg);
   border: 2px solid var(--sp-input-border);
