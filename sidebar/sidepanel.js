@@ -1633,7 +1633,7 @@ class SNNSidePanel {
     list.innerHTML = filtered.map(m => {
       const vision = this._modelHasVision(m);
       const ctx = m.top_provider?.context_length || m.context_length || m.endpoints?.[0]?.context_length;
-      const ctxLabel = ctx ? `${Math.round(ctx / 1024)}K ctx` : '';
+      const ctxLabel = ctx ? `${Math.round(ctx / 1024)}K context` : '';
       const price = this._formatModelPrice(m);
       const badges = [
         vision ? '<span class="sp-model-badge vision">Vision</span>' : '',
@@ -1720,7 +1720,7 @@ class SNNSidePanel {
           if (s.enableQuickActions === undefined) s.enableQuickActions = true;
           if (s.enableVoiceInput === undefined) s.enableVoiceInput = true;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
-          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 300;
+          if (s.htmlParseLimit === undefined) s.htmlParseLimit = 1000;
           if (s.autoScan === undefined) s.autoScan = true;
           if (s.disabledActions === undefined) s.disabledActions = [];
           if (s.agentPrompt === undefined) s.agentPrompt = this._getDefaultAgentPrompt();
@@ -2005,8 +2005,8 @@ class SNNSidePanel {
           <h4>HTML Element Scanning</h4>
           <div class="sp-field">
             <label>Max elements to scan per page</label>
-            <input type="number" id="s-html-parse-limit" value="${s.htmlParseLimit || 300}" min="10" max="500" step="10">
-            <small>How many links, buttons, and inputs to discover on each page. Higher = more thorough but slower. Set to 500 for full page scan.</small>
+            <input type="number" id="s-html-parse-limit" value="${s.htmlParseLimit || 1000}" min="10" max="5000" step="10">
+            <small>How many links, buttons, and inputs to discover on each page. Higher = more thorough but slower. Set to 5000 for full page scan.</small>
           </div>
           <div class="sp-field">
             <label>Auto-scan on page load</label>
@@ -2613,7 +2613,7 @@ class SNNSidePanel {
       ttsLanguage: getVal('s-tts-lang') || 'auto',
       quickActions: this.getQuickActionsFromEditor(),
       // Actions tab
-      htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 300,
+      htmlParseLimit: parseInt(getVal('s-html-parse-limit')) || 1000,
       autoScan: getChecked('s-auto-scan'),
       agentPrompt: getVal('s-agent-prompt'),
       disabledActions: this._getDisabledActionsFromSettings()

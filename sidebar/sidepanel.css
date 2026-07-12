@@ -159,9 +159,9 @@ body.theme-dark {
   gap: 12px;
 }
 
-.sp-header-left { display: flex; gap: ; align-items: center; flex: 1; min-width: 0; }
+.sp-header-left { display: flex;   align-items: center; flex: 1; min-width: 0; }
 .sp-header-center { display: flex; justify-content: center; align-items: center; flex: 0 1 auto; min-width: 0; }
-.sp-header-right { display: flex; gap: ; align-items: center; flex: 1; justify-content: flex-end; }
+.sp-header-right { display: flex;   align-items: center; flex: 1; justify-content: flex-end; }
 
 .sp-tab-domain {
   font-size: 11px;
@@ -1033,11 +1033,11 @@ body.theme-dark #welcome-screen .sp-model-tag {
   font-size: 15px;
   font-weight: 600;
   color: var(--sp-text);
-  margin-bottom: 10px;
+  margin-bottom: 6px;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--sp-border);
 }
-.sp-section small { display: block; margin-top: 4px; font-size: 13px; color: var(--sp-text-secondary); }
+.sp-section small { display: block; margin-top: 0px; font-size: 13px; color: var(--sp-text-secondary); line-height: 1; }
 .sp-section p { font-size: 14px; color: var(--sp-text-secondary); }
 .sp-section a { color: var(--sp-accent); text-decoration: none; }
 .sp-section a:hover { text-decoration: underline; }
@@ -1069,7 +1069,7 @@ body.theme-dark #welcome-screen .sp-model-tag {
 .sp-field-range span { font-size: 14px; color: var(--sp-text-secondary); min-width: 36px; text-align: right; }
 
 /* ── Toggle ───────────────────────────────────────────────────── */
-.sp-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.sp-toggle { display: flex; align-items: center; gap: 12px; margin-bottom: 2px; }
 .sp-toggle-switch { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
 .sp-toggle-switch input { opacity: 0; width: 0; height: 0; }
 .sp-toggle-slider {
@@ -1890,7 +1890,6 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   margin: 2px 0;
   border-radius: 6px;
   font-size: 13px;
-  animation: snn-slide-up 0.2s ease;
   max-width: 100%;
 }
 .snn-action-entry.snn-action-start {
@@ -1979,9 +1978,20 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   flex-shrink: 0;
 }
 .snn-action-group-dot {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 900;
-  line-height: 1;
+  line-height: 0;
+  animation: snn-dot-bounce 1.4s infinite both;
+  position:relative;
+  top:-2px;
+}
+.snn-action-group-dot:nth-child(1) { animation-delay: 0s; }
+.snn-action-group-dot:nth-child(2) { animation-delay: 0.2s; }
+.snn-action-group-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes snn-dot-bounce {
+  0%, 80%, 100% { opacity: 0.15; }
+  40% { opacity: 1; }
 }
 
 .snn-action-group-body {

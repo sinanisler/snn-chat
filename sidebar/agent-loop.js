@@ -1244,7 +1244,7 @@ CRITICAL RULES:
   async _scanAllActionableElements() {
     try {
       const settings = await this.sp.getSettings();
-      const limit = settings.htmlParseLimit || 300;
+      const limit = settings.htmlParseLimit || 1000;
 
       const result = await this._dispatchAction({
         action: 'page_script',
