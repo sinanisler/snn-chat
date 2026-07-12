@@ -396,6 +396,11 @@ Be honest. The user will see if you claim to have done something you did not.`
 
       // ── Page Sensing ─────────────────────────────────────────────
       { name: 'snn_screenshot', desc: 'Capture a screenshot of the visible page area', params: {}, required: [] },
+      { name: 'snn_mapPage', desc: 'Build a complete real-time map of the page: every interactive element on screen with its accessibility role (button, textbox, link, combobox, etc.), accessible name ("Post", "Search", "What is happening?!"), exact viewport coordinates, and whether it is contenteditable or disabled. Use this BEFORE any click/type to understand what is on screen. Call AGAIN after any action that changes the page (clicking buttons that open modals, navigating). This works on EVERY website — React, Vue, LinkedIn, X/Twitter, Gmail, Facebook — because it reads the accessibility tree and bounding boxes, not CSS classes or HTML tags.', params: {}, required: [] },
+      { name: 'snn_waitForElement', desc: 'Wait for an element to appear on the page (up to timeout). Use after clicking something that should open a modal, dialog, dropdown, or dynamic content. Returns once the element is found or timeout is reached.', params: {
+        selector: { type: 'string', desc: 'Selector for the element to wait for (e.g., :role("textbox","Post") or :role("button","Submit"))' },
+        timeout: { type: 'integer', desc: 'Maximum milliseconds to wait (default 10000)' }
+      }, required: ['selector'] },
       { name: 'snn_page_script', desc: 'Run a script in the page to read or modify content, styles, and behavior and return the result. Use for ANY page operation not covered by dedicated tools: MODIFYING page styles (CSS, colors, sizes, backgrounds, fonts, visibility, layout), adding/removing/hiding elements, changing text content, reading page data (title, URL, element text, tables), finding elements, extracting info, selecting dropdown options, toggling controls, dispatching keyboard/hover events, highlighting, scrolling, copying to clipboard, navigating history, and more. You CAN change how the page looks — use this tool to do it. Return JSON-serializable data. CRITICAL: Your code runs via eval() at the TOP LEVEL (NOT inside a function) — do NOT use a bare "return" statement. Instead, make the last expression be the value you want returned, or wrap your code in an IIFE: (function(){ /* your code */ return result; })().', params: {
         code: { type: 'string', desc: 'JavaScript code to run (TOP-LEVEL eval — no bare return!). Has access to document, window. Use document.querySelector(), etc.' }
       }, required: ['code'] },
@@ -455,7 +460,38 @@ Be honest. The user will see if you claim to have done something you did not.`
 
     let prompt = `You are SNN Chat, a browser extension agent running inside the USER'S OWN BROWSER. You help the user interact with and customize web pages they are viewing. Modifying page styles, colors, or content via JavaScript in the user's own browser is perfectly legitimate — you are not hacking or altering anyone else's website; you are customizing the user's personal browsing experience, just like a browser extension or dev tools would.
 
-You can click buttons, type into fields, scroll, navigate to pages, read page content, go back, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), and reload pages. EVERYTHING happens in one browser tab — just like a human browsing.
+You can click buttons, type into fields, scroll, navigate to pages, read page content, go back, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), and reload pages. You also have snn_mapPage which builds a real-time accessibility map of the entire page — use it to "see" what's on screen before interacting. EVERYTHING happens in one browser tab — just like a human browsing.
+
+═══════════════════════════════════════════════════════════
+PAGE INTERACTION: MAP-FIRST APPROACH (MANDATORY)
+═══════════════════════════════════════════════════════════
+
+Modern websites (X/Twitter, LinkedIn, Gmail, Facebook, etc.) use React/Vue with contenteditable divs, hashed CSS classes, and dynamic DOM. Traditional CSS selectors WILL FAIL on these sites. Always use this workflow:
+
+BEFORE ANY PAGE INTERACTION:
+1. Call snn_mapPage — get a complete accessibility map of the page.
+2. Read the returned elements list. Each element has: id, role, name, coordinates.
+   Example: {"id":"e5","role":"button","name":"Post","rect":{"x":200,"y":800,"w":60,"h":36}}
+3. Build your selector from the element's role + name from the map:
+   - For a button named "Post": :role("button","Post")
+   - For a textbox named "What is happening?!": :role("textbox","What is happening?!")
+   - For a link named "Home": :role("link","Home")
+   (:role() reads accessibility labels — it works on ALL frameworks, even React SPAs.)
+
+AFTER ANY ACTION THAT CHANGES THE PAGE:
+4. Call snn_mapPage AGAIN to get the updated state (new modals, new content).
+5. If waiting for a modal to appear: snn_waitForElement then snn_mapPage.
+
+POSTING TO SOCIAL MEDIA — FULL WORKFLOW:
+1. snn_navigate to the site (x.com, linkedin.com, etc.)
+2. snn_mapPage — find the compose/post button in the element list
+3. snn_click :role("button","Post") — opens the composer modal
+4. snn_waitForElement :role("textbox","...") — wait for composer text field
+5. snn_mapPage — re-map to see the composer's elements
+6. snn_type :role("textbox","...") with your content
+   (The type action handles contenteditable divs — just use the role from the map.)
+7. snn_mapPage — verify text was entered, find the submit button
+8. snn_click :role("button","Post") or :role("button","Tweet") to submit
 
 ═══════════════════════════════════════════════════════════
 HOW TO DECIDE: SIMPLE QUESTION vs RESEARCH TASK
@@ -748,6 +784,8 @@ CRITICAL RULES:
       case 'readPage': return {};
       case 'goBack': return {};
       case 'page_script': return { code: args.code || '' };
+      case 'mapPage': return {};
+      case 'waitForElement': return { selector: args.selector || '', timeout: args.timeout || 10000 };
       default: return args || {};
     }
   }
@@ -763,11 +801,13 @@ CRITICAL RULES:
       case 'snn_scroll': return a.direction === 'bottom' ? 'Scroll to bottom of page' : `Scroll ${a.direction || 'down'} ${a.amount || ''}`;
       case 'snn_wait': return `Wait ${a.ms || 1000}ms`;
       case 'snn_screenshot': return 'Take screenshot';
+      case 'snn_mapPage': return 'Map page (accessibility tree + coordinates)';
       case 'snn_page_script': return 'Run Page Script';
       case 'snn_navigate': return `Navigate to ${a.url || 'page'}`;
       case 'snn_readPage': return 'Read current page content';
       case 'snn_goBack': return 'Go back to previous page';
       case 'snn_reload': return 'Reload page';
+      case 'snn_waitForElement': return `Wait for "${(a.selector || '').substring(0, 40)}" to appear`;
       default: return fnName;
     }
   }

@@ -86,6 +86,7 @@ class SNNPageActor {
         case 'agent:getClipboard':     result = { text: await this.getClipboard() }; break;
         case 'agent:copyToClipboard':  await this.copyToClipboard(payload.text); result = { copied: true }; break;
         case 'agent:getViewportInfo':  result = this.getViewportInfo(); break;
+        case 'agent:mapPage':          result = this.mapPage(); break;
         case 'agent:startMonitoring':  result = this.startMonitoring(payload.selector, payload.options); break;
         case 'agent:stopMonitoring':   this.stopMonitoring(); result = { stopped: true }; break;
         case 'agent:scrollAndAct':     result = await this.scrollAndAct(payload.selector, payload.options); break;
@@ -559,19 +560,58 @@ class SNNPageActor {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ACTION: Type
+  // ACTION: Type — handles <input>, <textarea>, AND contenteditable divs
   // ═══════════════════════════════════════════════════════════════
   async type(selector, text, options = {}) {
     if (text == null) throw new Error('No text provided');
     D.log('type START', { selector, textLen: String(text).length, textPreview: String(text).substring(0, 60) });
     const el = this._resolveElement(selector, options);
-    D.log('type resolved element', { tag: el.tagName, type: el.type, placeholder: el.placeholder, name: el.name, id: el.id });
+    const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+    D.log('type resolved element', { tag: el.tagName, isContentEditable, type: el.type, placeholder: el.placeholder, name: el.name, id: el.id });
     await this._ensureInteractable(el, options);
     el.focus();
     const str = String(text);
 
+    // ── ContentEditable DIVs (X/Twitter, LinkedIn, Gmail, Notion, Slack, etc.) ──
+    if (isContentEditable) {
+      // ── Clear existing content if requested (via native editing pipeline) ──
+      if (options.clearFirst || options.replace) {
+        el.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      }
+
+      // ── Ensure cursor is inside the editable element ──
+      el.focus();
+      const sel = window.getSelection();
+      if (!sel || !el.contains(sel.anchorNode)) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        sel && sel.removeAllRanges();
+        sel && sel.addRange(range);
+      }
+
+      // ── Insert text via execCommand — the ONLY reliable way ──
+      // execCommand fires native beforeinput+input events that React/Draft.js
+      // intercept internally. Do NOT dispatch extra events here — that would
+      // cause Draft.js to double-process and duplicate the content.
+      if (options.slow) {
+        for (const ch of str) {
+          document.execCommand('insertText', false, ch);
+          await this.wait(35 + Math.random() * 40);
+        }
+      } else {
+        document.execCommand('insertText', false, str);
+      }
+
+      if (options.blurAfter) { el.blur(); }
+      await this.wait(150);
+      return { action: 'type', element: this._describeElement(el), selector, textLength: str.length, contentType: 'contenteditable' };
+    }
+
+    // ── Traditional <input> / <textarea> ──
     if (options.clearFirst || options.replace) {
-      // Use native setter for React controlled inputs
       const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (setter) setter.call(el, '');
@@ -598,7 +638,7 @@ class SNNPageActor {
 
     if (options.blurAfter) { el.blur(); el.dispatchEvent(new Event('blur', { bubbles: true })); }
     await this.wait(100);
-    return { action: 'type', element: this._describeElement(el), selector, textLength: str.length };
+    return { action: 'type', element: this._describeElement(el), selector, textLength: str.length, contentType: 'input' };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -950,6 +990,160 @@ class SNNPageActor {
       maxScrollX: Math.round(document.documentElement.scrollWidth - window.innerWidth),
       maxScrollY: Math.round(document.documentElement.scrollHeight - window.innerHeight),
       darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ACTION: Map Page — Real-Time Accessibility Tree Snapshot
+  // Builds a complete, framework-agnostic map of every interactive
+  // element on screen. Uses accessibility roles + bounding boxes —
+  // works on React, Vue, Svelte, Web Components, everything.
+  // The LLM uses this map to "see" the page before interacting.
+  // ═══════════════════════════════════════════════════════════════
+  mapPage() {
+    const interactiveRoles = new Set([
+      'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox',
+      'checkbox', 'radio', 'switch', 'menuitem', 'tab', 'option',
+      'slider', 'spinbutton', 'heading', 'img', 'separator'
+    ]);
+
+    // ── Helper: compute the most specific accessible role ──
+    const computeRole = (el) => {
+      const explicit = (el.getAttribute('role') || '').toLowerCase().trim();
+      if (explicit && interactiveRoles.has(explicit)) return explicit;
+
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute('type') || '').toLowerCase();
+
+      if (tag === 'button' || type === 'button' || type === 'submit' || type === 'reset') return 'button';
+      if (tag === 'a' && el.href) return 'link';
+      if (tag === 'a' && !el.href) return 'link'; // SPA router links
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'input') {
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (type === 'search') return 'searchbox';
+        if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'reset') return null;
+        return 'textbox';
+      }
+      if (tag === 'select') return 'combobox';
+      if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') return 'textbox';
+      if (el.hasAttribute('onclick') || el.getAttribute('ng-click') || el.getAttribute('@click')) return 'button';
+
+      // Heuristic: cursor:pointer on non-container elements suggests clickable
+      try {
+        const cs = window.getComputedStyle(el);
+        if (cs.cursor === 'pointer' && el.children.length === 0) return 'button';
+      } catch (e) { /* cross-origin iframe */ }
+
+      return null;
+    };
+
+    // ── Helper: accessible name (ARIA label, label[for], placeholder, text) ──
+    const accName = (el) => {
+      const label = (el.getAttribute('aria-label') || '').trim();
+      if (label) return label;
+
+      const labelledBy = el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const text = labelledBy.split(/\s+/)
+          .map(id => (document.getElementById(id)?.textContent || '')).join(' ').trim();
+        if (text) return text;
+      }
+
+      if (el.id) {
+        const labelEl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (labelEl) { const t = (labelEl.textContent || '').trim(); if (t) return t; }
+      }
+
+      const wrapLabel = el.closest?.('label');
+      if (wrapLabel) { const t = (wrapLabel.textContent || '').trim(); if (t && t.length < 120) return t; }
+
+      const ph = (el.getAttribute('placeholder') || '').trim();
+      if (ph) return ph;
+
+      const title = (el.getAttribute('title') || '').trim();
+      if (title) return title;
+
+      const alt = (el.getAttribute('alt') || '').trim();
+      if (alt) return alt;
+
+      // Leaf element: use its own text
+      if (!el.children || el.children.length === 0) {
+        const txt = (el.textContent || '').trim();
+        if (txt && txt.length <= 80) return txt;
+      }
+
+      const txt = (el.textContent || '').trim();
+      if (txt && txt.length <= 80) return txt;
+
+      return '';
+    };
+
+    // ── Helper: is element visible in the current viewport? ──
+    const isVisible = (el) => {
+      if (!el.isConnected) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      if (r.bottom < -50 || r.top > window.innerHeight + 50) return false;
+      if (r.right < -50 || r.left > window.innerWidth + 50) return false;
+      try {
+        const s = window.getComputedStyle(el);
+        if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+      } catch (e) { return false; }
+      return true;
+    };
+
+    // ── Walk all elements, collect interactive ones ──
+    const elements = [];
+    const seen = new Set();
+    const allElements = document.querySelectorAll('*');
+
+    for (const el of allElements) {
+      if (elements.length >= 150) break; // cap response size
+      if (!isVisible(el)) continue;
+
+      const role = computeRole(el);
+      if (!role) continue; // not an interactive element
+
+      const name = accName(el);
+      const rect = el.getBoundingClientRect();
+      const tag = el.tagName.toLowerCase();
+
+      // Dedup by role + name + position (avoid duplicate entries for nested elements)
+      const dedupKey = `${role}|${name}|${Math.round(rect.x)},${Math.round(rect.y)}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+
+      const id = `e${elements.length}`;
+
+      elements.push({
+        id,
+        role,
+        name: name.substring(0, 100),
+        tag,
+        rect: {
+          x: Math.round(rect.x + window.scrollX),
+          y: Math.round(rect.y + window.scrollY),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height)
+        },
+        isContentEditable: !!(el.isContentEditable || el.getAttribute('contenteditable') === 'true'),
+        disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+        checked: !!el.checked || undefined,
+        href: (el.href || '').substring(0, 200) || undefined,
+        type: el.getAttribute('type') || undefined
+      });
+    }
+
+    return {
+      action: 'mapPage',
+      url: location.href,
+      title: document.title,
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+      scrollY: Math.round(window.scrollY),
+      elementCount: elements.length,
+      elements
     };
   }
 
