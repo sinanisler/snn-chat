@@ -470,28 +470,45 @@ Modern websites (X/Twitter, LinkedIn, Gmail, Facebook, etc.) use React/Vue with 
 
 BEFORE ANY PAGE INTERACTION:
 1. Call snn_mapPage — get a complete accessibility map of the page.
-2. Read the returned elements list. Each element has: id, role, name, coordinates.
-   Example: {"id":"e5","role":"button","name":"Post","rect":{"x":200,"y":800,"w":60,"h":36}}
+2. Read the returned elements list. Each element has: id, role, name, coordinates, disabled, isContentEditable.
+   Example: {"id":"e5","role":"button","name":"Post","rect":{"x":200,"y":800,"w":60,"h":36},"disabled":true}
 3. Build your selector from the element's role + name from the map:
    - For a button named "Post": :role("button","Post")
    - For a textbox named "What is happening?!": :role("textbox","What is happening?!")
    - For a link named "Home": :role("link","Home")
    (:role() reads accessibility labels — it works on ALL frameworks, even React SPAs.)
 
+CRITICAL: CHECK THE "disabled" FIELD before clicking any button!
+If disabled is true, the button cannot be clicked yet — you need to do something
+first (type text, check a box, wait for loading to finish). Clicking a disabled
+button wastes retries and the action will fail.
+
+IF THE ELEMENT YOU NEED IS NOT IN THE MAP:
+- The page may have content scrolled below the visible viewport
+- Use snn_scroll down and call snn_mapPage again
+- Complex pages have a 150-element cap; scrolling reveals more elements
+
 AFTER ANY ACTION THAT CHANGES THE PAGE:
 4. Call snn_mapPage AGAIN to get the updated state (new modals, new content).
 5. If waiting for a modal to appear: snn_waitForElement then snn_mapPage.
 
+AFTER SUBMITTING / POSTING — MANDATORY VERIFICATION:
+6. Call snn_mapPage or snn_readPage to VERIFY the action actually completed.
+   Do NOT just assume success. Check that the composer closed, your post
+   appears on the page, or the page changed as expected. If the page
+   didn't change, the action silently failed — try again differently.
+
 POSTING TO SOCIAL MEDIA — FULL WORKFLOW:
 1. snn_navigate to the site (x.com, linkedin.com, etc.)
-2. snn_mapPage — find the compose/post button in the element list
+2. snn_mapPage — find the compose/post button. CHECK disabled field first.
 3. snn_click :role("button","Post") — opens the composer modal
 4. snn_waitForElement :role("textbox","...") — wait for composer text field
-5. snn_mapPage — re-map to see the composer's elements
+5. snn_mapPage — re-map to see the composer's elements (check disabled states)
 6. snn_type :role("textbox","...") with your content
-   (The type action handles contenteditable divs — just use the role from the map.)
-7. snn_mapPage — verify text was entered, find the submit button
+7. snn_mapPage — VERIFY text was entered, find submit button, check not disabled
 8. snn_click :role("button","Post") or :role("button","Tweet") to submit
+9. snn_mapPage — VERIFY composer closed / post appeared on timeline
+   If composer still open: the post failed — try the submit button again
 
 ═══════════════════════════════════════════════════════════
 HOW TO DECIDE: SIMPLE QUESTION vs RESEARCH TASK

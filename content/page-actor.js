@@ -1094,47 +1094,53 @@ class SNNPageActor {
       return true;
     };
 
-    // ── Walk all elements, collect interactive ones ──
+    // ── Walk all elements including Shadow DOM, collect interactive ones ──
     const elements = [];
     const seen = new Set();
-    const allElements = document.querySelectorAll('*');
 
-    for (const el of allElements) {
-      if (elements.length >= 150) break; // cap response size
-      if (!isVisible(el)) continue;
+    const walkDOM = (root) => {
+      if (elements.length >= 150) return;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let node;
+      while ((node = walker.nextNode()) && elements.length < 150) {
+        const el = node;
+        if (!isVisible(el)) continue;
 
-      const role = computeRole(el);
-      if (!role) continue; // not an interactive element
+        const role = computeRole(el);
+        if (!role) continue;
 
-      const name = accName(el);
-      const rect = el.getBoundingClientRect();
-      const tag = el.tagName.toLowerCase();
+        const name = accName(el);
+        const rect = el.getBoundingClientRect();
+        const tag = el.tagName.toLowerCase();
 
-      // Dedup by role + name + position (avoid duplicate entries for nested elements)
-      const dedupKey = `${role}|${name}|${Math.round(rect.x)},${Math.round(rect.y)}`;
-      if (seen.has(dedupKey)) continue;
-      seen.add(dedupKey);
+        const dedupKey = `${role}|${name}|${Math.round(rect.x)},${Math.round(rect.y)}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
 
-      const id = `e${elements.length}`;
+        elements.push({
+          id: `e${elements.length}`,
+          role,
+          name: name.substring(0, 100),
+          tag,
+          rect: {
+            x: Math.round(rect.x + window.scrollX),
+            y: Math.round(rect.y + window.scrollY),
+            w: Math.round(rect.width),
+            h: Math.round(rect.height)
+          },
+          isContentEditable: !!(el.isContentEditable || el.getAttribute('contenteditable') === 'true'),
+          disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+          checked: !!el.checked || undefined,
+          href: (el.href || '').substring(0, 200) || undefined,
+          type: el.getAttribute('type') || undefined
+        });
 
-      elements.push({
-        id,
-        role,
-        name: name.substring(0, 100),
-        tag,
-        rect: {
-          x: Math.round(rect.x + window.scrollX),
-          y: Math.round(rect.y + window.scrollY),
-          w: Math.round(rect.width),
-          h: Math.round(rect.height)
-        },
-        isContentEditable: !!(el.isContentEditable || el.getAttribute('contenteditable') === 'true'),
-        disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
-        checked: !!el.checked || undefined,
-        href: (el.href || '').substring(0, 200) || undefined,
-        type: el.getAttribute('type') || undefined
-      });
-    }
+        // Recurse into shadow roots (Web Components)
+        if (el.shadowRoot) walkDOM(el.shadowRoot);
+      }
+    };
+
+    walkDOM(document.documentElement);
 
     return {
       action: 'mapPage',
