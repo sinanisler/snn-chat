@@ -15,7 +15,7 @@ var SNN_D = {
     try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
   },
   log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ce93d8;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
-  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { if (!this.enabled) return; console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
   error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
 };
 var D = SNN_D;
@@ -351,7 +351,7 @@ class SNNSidePanel {
       // If we haven't resolved currentTabId yet, accept anyway — better to
       // answer the wrong tab than silently swallow the user's query.
       if (this.currentTabId != null && entry.tabId != null && entry.tabId !== this.currentTabId) {
-        console.warn('[SNN] Context-menu prompt for tab', entry.tabId, 'but we are on tab', this.currentTabId, '— skipping');
+        D.warn('Context-menu prompt for tab', entry.tabId, 'but we are on tab', this.currentTabId, '— skipping');
         // Clear stale prompt so it doesn't stick around forever
         await chrome.storage.session.remove('snn_context_menu_prompt');
         return;
@@ -395,7 +395,7 @@ class SNNSidePanel {
       await new Promise(r => setTimeout(r, 80));
       this.sendMessage();
     } catch (e) {
-      console.warn('[SNN] Context-menu prompt check failed:', e.message);
+      D.warn('Context-menu prompt check failed:', e.message);
     } finally {
       this._ctxMenuInProgress = false;
     }
@@ -1444,7 +1444,7 @@ class SNNSidePanel {
       // mermaid.run() finds and renders all .mermaid elements
       await mermaid.run({ nodes: Array.from(blocks) });
     } catch (e) {
-      console.warn('Mermaid render failed:', e.message);
+      D.warn('Mermaid render failed:', e.message);
     }
   }
 
@@ -1471,8 +1471,14 @@ class SNNSidePanel {
   // ── Input ──────────────────────────────────────────────────────
   autoResize() {
     const ta = this.els.userInput;
+    if (!ta) return;
+    // Reset to auto so the browser computes natural scrollHeight.
+    // Force a synchronous layout read to ensure the reflow happens.
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    const natural = ta.scrollHeight;
+    // Clamp between CSS min-height (46px) and max-height (130px).
+    // Never let it go below 46px — an empty textarea must stay usable.
+    ta.style.height = Math.max(46, Math.min(natural, 130)) + 'px';
   }
 
   // ── Quick Actions ──────────────────────────────────────────────
@@ -1491,6 +1497,7 @@ class SNNSidePanel {
     this.els.qaList.querySelectorAll('.sp-qa-option').forEach(opt => {
       opt.addEventListener('click', () => {
         this.els.userInput.value = opt.dataset.prompt;
+        this.autoResize();
         this.els.userInput.focus();
         this._closeQAPopover();
         this.sendMessage();
@@ -1736,6 +1743,7 @@ class SNNSidePanel {
           const s = result.settings || {};
           if (s.openrouterModel === undefined) s.openrouterModel = '';
           if (s.enableStreaming === undefined) s.enableStreaming = true;
+          if (s.debugLogging === undefined) s.debugLogging = false;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
           if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
           resolve(s);
@@ -1754,6 +1762,8 @@ class SNNSidePanel {
     this.updateModelDisplay(settings);
     // Cache agent prompt for chat augmentation
     this._agentPromptCache = settings.agentPrompt || this._getDefaultAgentPrompt();
+    // Apply debug logging toggle to shared SNN_D (also covers agent-loop.js)
+    SNN_D.enabled = settings.debugLogging === true;
 
     // Prefetch model catalog so vision badges / checks use real OpenRouter metadata
     if (settings.openrouterKey?.length > 10 && !Object.keys(this._modelsData || {}).length) {
@@ -1956,6 +1966,7 @@ class SNNSidePanel {
         <div class="sp-section">
           <h4>Features</h4>
           ${this.toggleHtml('s-enable-streaming', 'Streaming Responses', 'See AI responses in real-time', s.enableStreaming !== false)}
+          ${this.toggleHtml('s-debug-logging', 'Debug Logging', 'Show detailed [SNN:*] console logs for troubleshooting', s.debugLogging === true)}
         </div>
         <div class="sp-section">
           <h4>Text-to-Speech</h4>
@@ -2253,7 +2264,7 @@ class SNNSidePanel {
       if (selectedId) this.fetchModelInfo();
       this._updateHeaderVisionBadge();
     } catch (e) {
-      console.error('Failed to load models:', e);
+      D.error('Failed to load models:', e);
     }
   }
 
@@ -2514,6 +2525,7 @@ class SNNSidePanel {
       theme: getVal('s-theme'),
       fontSize: parseInt(getVal('s-font-size')) || 16,
       enableStreaming: getChecked('s-enable-streaming'),
+      debugLogging: getChecked('s-debug-logging'),
       ttsLanguage: getVal('s-tts-lang') || 'auto',
       quickActions: this.getQuickActionsFromEditor()
     };
@@ -3819,7 +3831,7 @@ class SNNSidePanel {
       }
       return null;
     } catch (e) {
-      console.warn('[SNN] PDF attachment extract failed:', e.message);
+      D.warn('PDF attachment extract failed:', e.message);
       return null;
     }
   }
@@ -4055,7 +4067,7 @@ class SNNSidePanel {
               this.showToast('Network error. Speech recognition requires an internet connection.', 'error');
               break;
             default:
-              console.warn('Voice error:', message.error);
+              D.warn('Voice error:', message.error);
               break;
           }
           break;

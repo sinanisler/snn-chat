@@ -16,7 +16,7 @@ var SNN_D = {
     try { return JSON.stringify(o).slice(0, 300); } catch(e) { return String(o).slice(0, 300); }
   },
   log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ff8a65;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
-  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { if (!this.enabled) return; console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
   error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
 };
 var D = SNN_D;
@@ -128,7 +128,7 @@ class SNNContentExtractor {
             pdfData: Array.from(new Uint8Array(arrayBuffer))
           });
         } catch (err) {
-          console.error('[SNN Content] Failed to fetch local PDF:', err.message);
+          D.error('Failed to fetch local PDF:', err.message);
           // Fallback: send URL anyway, background will try to fetch it
           safeSendMessage({
             action: 'extractPdfText',
@@ -465,3 +465,16 @@ if (chrome?.runtime?.id) {
   new SNNContentExtractor();
   new SNNVoiceRelay();
 }
+
+// ── Debug mode: read settings & listen for changes ──────────────
+(async function _initDebugMode() {
+  try {
+    const { settings } = await chrome.storage.local.get(['settings']);
+    SNN_D.enabled = settings?.debugLogging === true;
+  } catch (e) { /* ignore */ }
+})();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.settings) {
+    SNN_D.enabled = changes.settings.newValue?.debugLogging === true;
+  }
+});

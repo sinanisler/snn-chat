@@ -18,7 +18,7 @@ var SNN_D = {
     try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
   },
   log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#64b5f6;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
-  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { if (!this.enabled) return; console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
   error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
 };
 var D = SNN_D;
@@ -27,14 +27,14 @@ var D = SNN_D;
 // Open side panel when user clicks the extension icon
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((error) => console.error('Side panel setup:', error));
+  .catch((error) => D.error('Side panel setup:', error));
 
 // Also toggle via keyboard shortcut
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'toggle-sidebar') {
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
       if (!tab?.id) {
-        console.warn('toggle-sidebar: no active tab available');
+        D.warn('toggle-sidebar: no active tab available');
         return;
       }
       _openSidePanelForTab(tab);
@@ -80,9 +80,9 @@ async function _setupOffscreenDocument() {
 
   try {
     await _creatingOffscreen;
-    console.log('[SNN] Offscreen document created for PDF extraction');
+    D.log('Offscreen document created for PDF extraction');
   } catch (err) {
-    console.error('[SNN] Failed to create offscreen document:', err.message);
+    D.error('Failed to create offscreen document:', err.message);
     throw err;
   } finally {
     _creatingOffscreen = null;
@@ -177,7 +177,7 @@ chrome.runtime.onInstalled.addListener(() => {
 // focused window as a last resort.
 async function _openSidePanelForTab(tab) {
   if (!tab?.id) {
-    console.error('[SNN] _openSidePanelForTab: no tab provided');
+    D.error('_openSidePanelForTab: no tab provided');
     return;
   }
 
@@ -202,11 +202,11 @@ async function _openSidePanelForTab(tab) {
   if (candidates.length > 0) {
     try {
       const winner = await Promise.any(candidates);
-      console.log('[SNN] Side panel opened via', winner);
+      D.log('Side panel opened via', winner);
       return;
     } catch (e) {
       // All fast approaches failed — log and fall through to last resort
-      console.warn('[SNN] Fast sidePanel.open approaches failed:', e?.message || e);
+      D.warn('Fast sidePanel.open approaches failed:', e?.message || e);
     }
   }
 
@@ -216,11 +216,11 @@ async function _openSidePanelForTab(tab) {
     const currentWin = wins.find(w => w.focused) || wins[0];
     if (currentWin?.id) {
       await chrome.sidePanel.open({ windowId: currentWin.id });
-      console.log('[SNN] Side panel opened via focused-window fallback');
+      D.log('Side panel opened via focused-window fallback');
       return;
     }
   } catch (e) {
-    console.error('[SNN] All sidePanel.open attempts failed:', e?.message || e);
+    D.error('All sidePanel.open attempts failed:', e?.message || e);
   }
 
   // Ultimate fallback: try one more time with a fresh options reset.
@@ -232,9 +232,9 @@ async function _openSidePanelForTab(tab) {
     } else {
       await chrome.sidePanel.open({ tabId: tab.id });
     }
-    console.log('[SNN] Side panel opened via setOptions+open fallback');
+    D.log('Side panel opened via setOptions+open fallback');
   } catch (e) {
-    console.error('[SNN] All side-panel open attempts exhausted:', e?.message || e);
+    D.error('All side-panel open attempts exhausted:', e?.message || e);
   }
 }
 
@@ -274,7 +274,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     // for storage changes, so it will catch this regardless of timing.
     chrome.storage.session.set({
       snn_context_menu_prompt: { prompt, tabId: tab.id, timestamp: Date.now() }
-    }).catch(err => console.warn('[SNN] Failed to store context-menu prompt:', err?.message || err));
+    }).catch(err => D.warn('Failed to store context-menu prompt:', err?.message || err));
   }
 });
 
@@ -624,7 +624,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         tabId: tabId || null,
         timestamp: Date.now()
       }
-    }).catch(err => console.error('Context storage error:', err));
+    }).catch(err => D.error('Context storage error:', err));
   }
 
   if (message.action === 'updateSelection') {
@@ -634,12 +634,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         tabId: tabId || null,
         timestamp: Date.now()
       }
-    }).catch(err => console.error('Selection storage error:', err));
+    }).catch(err => D.error('Selection storage error:', err));
   }
 
   if (message.action === 'clearSelection') {
     chrome.storage.session.remove([SELECTION_KEY])
-      .catch(err => console.error('Clear selection error:', err));
+      .catch(err => D.error('Clear selection error:', err));
   }
 
   if (message.action === 'requestPageContent') {
@@ -654,7 +654,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'extractPdfText') {
     const pdfUrl = message.url;
     const senderTabId = sender.tab?.id || message.tabId || tabId;
-    console.log('[SNN] PDF extraction requested for:', pdfUrl);
+    D.log('PDF extraction requested for:', pdfUrl);
 
     // Convert pdfData back to ArrayBuffer if it came as a plain array
     let pdfDataBuffer = null;
@@ -701,7 +701,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: true, text, wordCount });
       })
       .catch((err) => {
-        console.error('[SNN] PDF extraction failed:', err.message);
+        D.error('PDF extraction failed:', err.message);
         sendResponse({ success: false, error: err.message });
       });
     return true; // async
@@ -844,4 +844,17 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
-console.log('SNN Chat background service worker ready');
+D.log('Background service worker ready');
+
+// ── Debug mode: read settings & listen for changes ──────────────
+(async function _initDebugMode() {
+  try {
+    const { settings } = await chrome.storage.local.get(['settings']);
+    SNN_D.enabled = settings?.debugLogging === true;
+  } catch (e) { /* ignore */ }
+})();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.settings) {
+    SNN_D.enabled = changes.settings.newValue?.debugLogging === true;
+  }
+});

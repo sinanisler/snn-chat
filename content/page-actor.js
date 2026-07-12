@@ -26,6 +26,7 @@ var SNN_D = {
     console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#4fc3f7;font-weight:bold', '', ...args.map(a => this._fmt(a)));
   },
   warn(...args) {
+    if (!this.enabled) return;
     console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a)));
   },
   error(...args) {
@@ -117,7 +118,7 @@ class SNNPageActor {
         ...(success ? { result: data } : { error: data }),
         pageState: this._snapshotPageState()
       });
-    } catch (e) { console.error('[SNN PageActor] sendResponse failed:', e.message); }
+    } catch (e) { D.error('sendResponse failed:', e.message); }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1246,3 +1247,16 @@ if (chrome?.runtime?.id) {
     window.__snnPageActor = new SNNPageActor();
   }
 }
+
+// ── Debug mode: read settings & listen for changes ──────────────
+(async function _initDebugMode() {
+  try {
+    const { settings } = await chrome.storage.local.get(['settings']);
+    SNN_D.enabled = settings?.debugLogging === true;
+  } catch (e) { /* ignore */ }
+})();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.settings) {
+    SNN_D.enabled = changes.settings.newValue?.debugLogging === true;
+  }
+});

@@ -28,7 +28,7 @@ var SNN_D = {
     try { return JSON.stringify(o).slice(0, 500); } catch(e) { return String(o).slice(0, 500); }
   },
   log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#81c784;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
-  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { if (!this.enabled) return; console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
   error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
 };
 var D = SNN_D;
@@ -991,7 +991,7 @@ CRITICAL RULES:
         description: `${step.description || step.action} â†’ ${match.label || match.selector}`
       };
     } catch (e) {
-      console.warn('[SNN Agent] selector recovery failed:', e.message);
+      D.warn('selector recovery failed:', e.message);
       return null;
     }
   }

@@ -18,7 +18,7 @@ var SNN_D = {
     try { return JSON.stringify(o).slice(0, 300); } catch(e) { return String(o).slice(0, 300); }
   },
   log(...args) { if (!this.enabled) return; console.log(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#aed581;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
-  warn(...args) { console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
+  warn(...args) { if (!this.enabled) return; console.warn(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ffb74d;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
   error(...args) { console.error(`%c[${this._ts()}] [SNN:${this.module}]%c`, 'color:#ef5350;font-weight:bold', '', ...args.map(a => this._fmt(a))); },
 };
 var D = SNN_D;
@@ -154,4 +154,17 @@ function _buildPageText(items) {
   }).join('\n');
 }
 
-console.log('[SNN Offscreen] PDF extractor ready');
+D.log('PDF extractor ready');
+
+// ── Debug mode: read settings & listen for changes ──────────────
+(async function _initDebugMode() {
+  try {
+    const { settings } = await chrome.storage.local.get(['settings']);
+    SNN_D.enabled = settings?.debugLogging === true;
+  } catch (e) { /* ignore */ }
+})();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.settings) {
+    SNN_D.enabled = changes.settings.newValue?.debugLogging === true;
+  }
+});
