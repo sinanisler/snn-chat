@@ -1933,6 +1933,55 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   border-left: 3px solid var(--sp-border);
 }
 .snn-action-entry-icon { flex-shrink: 0; font-size: 14px; }
+
+/* ── Agent Reasoning / Thinking Block ─────────────────────── */
+.snn-reasoning-entry {
+  margin: 2px 0;
+}
+
+.snn-reasoning-details {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--sp-border, #333);
+  border-left: 3px solid #888;
+  border-radius: 6px;
+  padding: 5px 10px;
+  transition: border-color 0.2s;
+}
+
+.snn-reasoning-details[open] {
+  border-left-color: #ce93d8;
+}
+
+.snn-reasoning-summary {
+  cursor: pointer;
+  color: #999;
+  font-style: italic;
+  font-size: 0.8em;
+  user-select: none;
+  list-style: none;
+}
+
+.snn-reasoning-summary::-webkit-details-marker {
+  display: none;
+}
+
+.snn-reasoning-icon {
+  margin-right: 5px;
+}
+
+.snn-reasoning-content {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 4px;
+  color: #bbb;
+  font-size: 0.82em;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  font-style: italic;
+  max-height: 300px;
+  overflow-y: auto;
+}
 .snn-action-entry-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .snn-action-entry-detail {
   font-size: 11px;

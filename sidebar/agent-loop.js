@@ -1,4 +1,4 @@
-﻿//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // SNN Agent Loop â€” State Machine, Retry Engine, Action Orchestrator
 //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Runs in the side panel. Orchestrates the full agent lifecycle:
@@ -69,7 +69,8 @@ class SNNAgentLoop {
     this.onProgress = null;      // (step, total, description)
     this.onError = null;         // (errorCardData)
     this.onResult = null;        // (reportData)
-    this.onBlocked = null;       // (question) â†’ returns Promise<'approved'|'denied'>
+    this.onBlocked = null;       // (question) -> returns Promise
+    this.onReasoning = null;     // (text, iteration) - interleaved thinking/reasoning between tools
   }
 
   /**
@@ -182,9 +183,13 @@ class SNNAgentLoop {
         const detail = context.detail.length > limit
           ? context.detail.substring(0, limit) + '\n\n[... truncated to ' + limit + ' chars ...]'
           : context.detail;
+        const isYT = !!context.isYoutubeVideo;
+        const prefix = isYT
+          ? '[🎬 YOUTUBE VIDEO TRANSCRIPT — THIS *IS* THE FULL SUBTITLE/CAPTION TEXT. You already have every spoken word. Do NOT call mapPage, readPage, screenshot, or any other tool to "find captions" — you are reading the transcript RIGHT NOW. Answer questions about the video directly from this transcript.]'
+          : '[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]';
         messages.splice(1, 0, {
           role: 'system',
-          content: `[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
+          content: `${prefix}\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
         });
       }
 
@@ -221,6 +226,19 @@ class SNNAgentLoop {
           // Add assistant message (with tool_calls) to history
           messages.push(msg);
 
+          // Capture interleaved thinking/reasoning if model provided text
+          if (msg.content && msg.content.trim()) {
+            D.log('REASONING', { iteration, preview: msg.content.substring(0, 120), charLen: msg.content.length });
+            if (this.onReasoning) {
+              this.onReasoning(msg.content, iteration);
+            }
+          }
+
+          // Collect screenshot image for deferred injection AFTER all tool results.
+          // Injecting a user message between tool results breaks tool-result contiguity
+          // and causes Google Gemini "Corrupted thought signature" errors.
+          let deferredScreenshotImage = null;
+
           // Execute each tool call
           for (const tc of msg.tool_calls) {
             if (this._cancelled) break;
@@ -240,10 +258,8 @@ class SNNAgentLoop {
             // Clear navigation expectation after action completes
             this._expectNavigation = false;
 
-            // â”€â”€ If screenshot was taken and model supports vision, inject the image â”€â”€
-            // Text-only models (DeepSeek, etc.) get a text summary instead â€” no 404.
+            // If screenshot was taken and model supports vision, defer the image
             if (fnName === 'snn_screenshot' && this._lastScreenshot) {
-              // Use per-session model for vision check (not the global settings default)
               const effectiveModel = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
               if (this._modelSupportsVision(effectiveModel)) {
                 messages.push({
@@ -251,19 +267,12 @@ class SNNAgentLoop {
                   tool_call_id: tc.id,
                   content: JSON.stringify({
                     success: true,
-                    screenshot: '[Image captured â€” visible in the next message]',
+                    screenshot: '[Image captured - visible in the next message]',
                     message: 'A screenshot of the page was captured. The image will be provided for your analysis.'
                   })
                 });
-                messages.push({
-                  role: 'user',
-                  content: [
-                    { type: 'text', text: 'Here is the screenshot you just captured. Analyze it and continue with the task.' },
-                    { type: 'image_url', image_url: { url: this._lastScreenshot } }
-                  ]
-                });
+                deferredScreenshotImage = this._lastScreenshot;
               } else {
-                // Text-only model: tell the LLM the screenshot was captured, skip image
                 messages.push({
                   role: 'tool',
                   tool_call_id: tc.id,
@@ -274,18 +283,27 @@ class SNNAgentLoop {
                   })
                 });
               }
-              this._lastScreenshot = null; // consume it
-              this.sp._lastScreenshot = null; // sync with sidepanel
+              this._lastScreenshot = null;
+              this.sp._lastScreenshot = null;
             } else {
-              // â”€â”€ Sanitize tool result before sending to LLM â”€â”€
               const sanitizedResult = this._sanitizeToolResultForLLM(fnName, actionResult);
-              // Add tool result to messages
               messages.push({
                 role: 'tool',
                 tool_call_id: tc.id,
                 content: typeof sanitizedResult === 'string' ? sanitizedResult : JSON.stringify(sanitizedResult)
               });
             }
+          }
+
+          // Inject deferred screenshot image AFTER all tool results (keeps contiguity)
+          if (deferredScreenshotImage) {
+            messages.push({
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Here is the screenshot you just captured. Analyze it and continue with the task.' },
+                { type: 'image_url', image_url: { url: deferredScreenshotImage } }
+              ]
+            });
           }
 
           // Guard: don't transition if agent was cancelled during tool execution
@@ -468,8 +486,12 @@ PAGE INTERACTION: MAP-FIRST APPROACH (MANDATORY)
 
 Modern websites (X/Twitter, LinkedIn, Gmail, Facebook, etc.) use React/Vue with contenteditable divs, hashed CSS classes, and dynamic DOM. Traditional CSS selectors WILL FAIL on these sites. Always use this workflow:
 
-BEFORE ANY PAGE INTERACTION:
+BEFORE ANY CLICK / TYPE / SCROLL INTERACTION (NOT needed for screenshot or readPage):
 1. Call snn_mapPage — get a complete accessibility map of the page.
+   NOTE: snn_screenshot captures everything visible on screen — you do NOT need
+   snn_mapPage before or after taking a screenshot. Just take the screenshot
+   and analyze it. Likewise, snn_readPage returns the full text content without
+   needing a map. mapPage is ONLY needed to find selectors for click/type/scroll.
 2. Read the returned elements list. Each element has: id, role, name, coordinates, disabled, isContentEditable.
    Example: {"id":"e5","role":"button","name":"Post","rect":{"x":200,"y":800,"w":60,"h":36},"disabled":true}
 3. Build your selector from the element's role + name from the map:
@@ -521,6 +543,15 @@ SIMPLE QUESTION — ANSWER DIRECTLY FROM EXISTING CONTEXT (NO TOOLS):
 - "what color is the button?"
 - The page content is ALREADY provided in the system messages. Answer from it.
 - DO NOT use tools just to re-read content you already have.
+
+🎬 YOUTUBE VIDEO QUESTIONS — ANSWER DIRECTLY FROM TRANSCRIPT (NO TOOLS):
+- When the page context header says "[🎬 YOUTUBE VIDEO TRANSCRIPT]", the full
+  subtitles/captions are ALREADY provided. Do NOT call mapPage, readPage,
+  screenshot, or any tool to "find captions" or "check the CC button."
+- You already have every spoken word. Just read the transcript and answer.
+- Questions like "what did they say about X?", "summarize the video",
+  "are there captions available?" — answer directly. The answer is YES,
+  the captions are right here.
 
 RESEARCH TASK — YOU MUST VISIT MULTIPLE PAGES (USE TOOLS):
 - "research X" / "find all information about Y"
@@ -604,6 +635,7 @@ CRITICAL RULES:
       messages,
       tools,
       tool_choice: 'auto',
+      parallel_tool_calls: false,  // one tool per response — prevents tool-result interleaving issues
       max_tokens: settings.maxTokens || 4096,
       temperature: settings.temperature ?? 0.7
     };
@@ -626,6 +658,21 @@ CRITICAL RULES:
 
     if (!res.ok) {
       const errText = await res.text().catch(() => 'Unknown error');
+
+      // ── Google Gemini "Corrupted thought signature" — retry once with stripped payload ──
+      if (res.status === 400 && errText.includes('Corrupted thought signature') && !this._retriedCorrupted) {
+        D.warn('← LLM CORRUPTED SIG — retrying with text-only payload');
+        this._retriedCorrupted = true;
+        // Strip any image content from messages before retrying
+        const stripped = messages.map(m => {
+          if (m.role === 'user' && Array.isArray(m.content)) {
+            return { role: 'user', content: m.content.filter(p => p.type === 'text') };
+          }
+          return m;
+        });
+        return this._callLLMWithTools(stripped, tools, settings);
+      }
+
       D.error('← LLM ERROR', { status: res.status, errText: errText.substring(0, 300) });
       throw new Error(`API error ${res.status}: ${errText.substring(0, 200)}`);
     }
@@ -1207,6 +1254,7 @@ CRITICAL RULES:
     this._lastScreenshot = null;
     this._selfAuditDone = false;
     this._expectNavigation = false;
+    this._retriedCorrupted = false;
   }
 
   // ── Utilities ───────────────────────────────────────────────────
@@ -1261,6 +1309,16 @@ CRITICAL RULES:
       if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:image')) {
         const sizeKB = Math.round((sanitized[key].length * 3) / 4 / 1024);
         sanitized[key] = `[Image: ${sizeKB}KB â€” stripped for LLM]`;
+      }
+    }
+
+    // Truncate oversized mapPage results to keep payloads manageable
+    if (fnName === 'snn_mapPage' && sanitized.elements && Array.isArray(sanitized.elements)) {
+      if (sanitized.elements.length > 75) {
+        const originalCount = sanitized.elements.length;
+        sanitized.elements = sanitized.elements.slice(0, 75);
+        sanitized._truncated = true;
+        sanitized._truncatedMessage = `Result trimmed from ${originalCount} to 75 elements. Use snn_scroll + snn_mapPage to see more of the page.`;
       }
     }
 

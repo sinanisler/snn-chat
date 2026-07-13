@@ -3956,6 +3956,13 @@ class SNNSidePanel {
       }
     };
 
+    // ── Reasoning callback ─────────────────────────────────────
+    this._agentLoop.onReasoning = (text, iteration) => {
+      if (this._agentUI) {
+        this._agentUI.addReasoningEntry(text, iteration);
+      }
+    };
+
     // ── Blocked callback ───────────────────────────────────────
     this._agentLoop.onBlocked = (question) => {
       if (this._agentUI) {

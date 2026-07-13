@@ -378,6 +378,40 @@ class SNNAgentUI {
   }
 
   /**
+   * Render a collapsible "Thinking..." block showing the model's internal
+   * reasoning between tool calls. Default: collapsed to avoid clutter.
+   */
+  addReasoningEntry(text, iteration) {
+    const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
+
+    const entry = document.createElement('div');
+    entry.className = 'snn-reasoning-entry';
+    entry.innerHTML = `
+      <details class="snn-reasoning-details">
+        <summary class="snn-reasoning-summary">
+          <span class="snn-reasoning-icon">🤔</span>
+          <span class="snn-reasoning-label">Thinking (step ${iteration})...</span>
+        </summary>
+        <div class="snn-reasoning-content">${this.sp.escapeHtml(text)}</div>
+      </details>
+    `;
+
+    container.appendChild(entry);
+    this.sp.smartScrollToBottom();
+
+    // Persist to chatHistory for session survival
+    this.sp.chatHistory.push({
+      role: 'agent-reasoning',
+      text,
+      iteration,
+      timestamp: Date.now()
+    });
+    this.sp.saveChatHistory().catch(() => {});
+
+    return entry;
+  }
+
+  /**
    * Attach a screenshot image to the last action entry so the user can see it.
    */
   attachScreenshotToLastEntry(dataUrl) {
