@@ -826,6 +826,66 @@ class SNNSidePanel {
     this._finishSendMessage();
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // SHARED OPENROUTER REQUEST PLUMBING
+  // Used by callAPI(), streamResponse(), and SNNAgentLoop._callLLMWithTools()
+  // so headers, error parsing, and the Gemini "corrupted thought
+  // signature" retry only need to be maintained in one place.
+  // ═══════════════════════════════════════════════════════════════
+  _openRouterHeaders(apiKey) {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
+      'X-Title': 'SNN Chat'
+    };
+  }
+
+  /**
+   * POST to OpenRouter's chat/completions endpoint. Returns the raw
+   * Response on success — callers decide how to consume the body
+   * (parsed JSON for normal calls, a stream reader for streaming calls).
+   * On a 400 "Corrupted thought signature" error (a known Gemini quirk
+   * triggered by image content), retries once with images stripped.
+   */
+  async _fetchOpenRouter(apiKey, body, signal, _retriedCorrupted = false) {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: this._openRouterHeaders(apiKey),
+      body: JSON.stringify(body),
+      signal
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+
+      if (res.status === 400 && errText.includes('Corrupted thought signature') && !_retriedCorrupted && Array.isArray(body.messages)) {
+        D.warn('_fetchOpenRouter CORRUPTED SIG — retrying with text-only payload');
+        const stripped = body.messages.map(m => {
+          if (m.role === 'user' && Array.isArray(m.content)) {
+            return { role: 'user', content: m.content.filter(p => p.type === 'text') };
+          }
+          return m;
+        });
+        return this._fetchOpenRouter(apiKey, { ...body, messages: stripped }, signal, true);
+      }
+
+      let message = `API error ${res.status}`;
+      try {
+        const d = JSON.parse(errText);
+        if (d.error?.message) message = d.error.message;
+      } catch (e) {
+        if (errText) message = errText.substring(0, 200);
+      }
+      D.error('_fetchOpenRouter FAILED', { status: res.status, message });
+      const err = new Error(message);
+      err.status = res.status;
+      throw err;
+    }
+
+    return res;
+  }
+
   async callAPI(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
@@ -864,24 +924,7 @@ class SNNSidePanel {
     };
     if (settings.topP !== undefined) body.top_p = settings.topP;
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
-        'X-Title': 'SNN Chat'
-      },
-      body: JSON.stringify(body),
-      signal
-    });
-
-    if (!res.ok) {
-      let err = `API error ${res.status}`;
-      try { const d = await res.json(); if (d.error?.message) err = d.error.message; } catch (e) {}
-      D.error('callAPI FAILED', { status: res.status, error: err });
-      throw new Error(err);
-    }
+    const res = await this._fetchOpenRouter(apiKey, body, signal);
 
     const data = await res.json();
     this.lastTokenUsage = {
@@ -935,22 +978,12 @@ class SNNSidePanel {
     msgDiv.appendChild(contentDiv);
     this.els.chatMessages.appendChild(msgDiv);
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
-        'X-Title': 'SNN Chat'
-      },
-      body: JSON.stringify(body),
-      signal
-    });
-
-    if (!res.ok) {
+    let res;
+    try {
+      res = await this._fetchOpenRouter(apiKey, body, signal);
+    } catch (err) {
       msgDiv.remove();
-      D.error('streamResponse FAILED', { status: res.status });
-      throw new Error(`API error ${res.status}`);
+      throw err;
     }
 
     D.log('streamResponse streaming...');

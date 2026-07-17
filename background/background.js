@@ -46,7 +46,6 @@ chrome.commands.onCommand.addListener((command) => {
 const CONTEXT_KEY = 'snn_page_context';
 const SELECTION_KEY = 'snn_selection';
 const TAB_SWITCH_PREFIX = 'snn_active_tab';
-const ACTION_QUEUE_KEY = 'snn_action_queue'; // pending agent actions
 const OFFSCREEN_DOC_PATH = 'offscreen/offscreen.html';
 
 // ── Offscreen Document Management (for PDF.js text extraction) ────

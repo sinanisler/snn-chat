@@ -113,12 +113,7 @@ class SNNPageActor {
     };
     D.log(success ? '→ RESPOND OK' : '→ RESPOND ERROR', { stepId, data_keys: Object.keys(data).join(','), pageState: response.pageState.url });
     try {
-      sendResponse({
-        action: success ? 'agent:result' : 'agent:error',
-        stepId, success,
-        ...(success ? { result: data } : { error: data }),
-        pageState: this._snapshotPageState()
-      });
+      sendResponse(response);
     } catch (e) { D.error('sendResponse failed:', e.message); }
   }
 
@@ -464,8 +459,6 @@ class SNNPageActor {
     }
     return a;
   }
-
-  _didPageChange() { return false; } // placeholder for mutation-based detection
 
   _snapshotPageState() {
     return {

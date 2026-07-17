@@ -1,12 +1,12 @@
 //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-// SNN Agent Loop â€” State Machine, Retry Engine, Action Orchestrator
+// SNN Agent Loop — State Machine, Retry Engine, Action Orchestrator
 //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Runs in the side panel. Orchestrates the full agent lifecycle:
-// IDLE â†’ PARSING â†’ PLANNING â†’ EXECUTING â†’ WAITING â†’ OBSERVING
-//   â†’ REPORTING (or RETRYING â†’ FAILED / BLOCKED â†’ CANCELLED)
+// IDLE → PARSING → PLANNING → EXECUTING → WAITING → OBSERVING
+//   → REPORTING (or RETRYING → FAILED / BLOCKED → CANCELLED)
 //
 // DESIGN PRINCIPLES:
-// 1. Every error is surfaced to the user â€” NEVER silent.
+// 1. Every error is surfaced to the user — NEVER silent.
 // 2. Retries use exponential backoff + jitter, per-error strategies.
 // 3. Stale-state detection (tab switch, SW termination).
 // 4. User can cancel at ANY time.
@@ -37,7 +37,7 @@ class SNNAgentLoop {
   constructor(sidePanel) {
     this.sp = sidePanel; // reference to SNNSidePanel instance
 
-    // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── State ──────────────────────────────────────────────────
     this._state = 'IDLE';
     this._taskId = null;
     this._plan = [];
@@ -50,12 +50,12 @@ class SNNAgentLoop {
     this._pendingResolve = null; // for BLOCKED state
     this._abortController = null; // for cancelling in-flight LLM fetch
 
-    // â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Config ─────────────────────────────────────────────────
     this.MAX_RETRIES = 3;
     this.RETRY_DELAYS = [1000, 3000, 8000]; // ms base (jitter added)
     this.DEFAULT_TIMEOUT = 15000; // ms per action
 
-    // â”€â”€ Background-level actions (handled by SW, not forwarded to page) â”€â”€
+    // ── Background-level actions (handled by SW, not forwarded to page) ──
     this._BG_ACTIONS = new Set([
       'agent:navigate', 'agent:closeTab', 'agent:goBack',
       'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
@@ -64,7 +64,7 @@ class SNNAgentLoop {
       'agent:readPage', 'agent:goBack'
     ]);
 
-    // â”€â”€ Callbacks (set by sidepanel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Callbacks (set by sidepanel) ───────────────────────────
     this.onStateChange = null;   // (state, detail)
     this.onProgress = null;      // (step, total, description)
     this.onError = null;         // (errorCardData)
@@ -94,7 +94,7 @@ class SNNAgentLoop {
     return /gemini|gpt-4o|gpt-4\.1|gpt-4-vision|gpt-4-turbo|claude-3|claude-4|claude-sonnet|claude-opus|llava|pixtral|vision|multimodal|qwen.*vl|grok-2-vision/i.test(m);
   }
 
-  // â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Public API ──────────────────────────────────────────────────
   get state() { return this._state; }
   get isBusy() { return this._state !== 'IDLE' && this._state !== 'FAILED'; }
 
@@ -112,7 +112,7 @@ class SNNAgentLoop {
       this._abortController.abort();
       this._abortController = null;
     }
-    const label = reason === 'tab-switch' ? 'Tab switched â€” task interrupted' : 'User cancelled';
+    const label = reason === 'tab-switch' ? 'Tab switched — task interrupted' : 'User cancelled';
     this._transition('CANCELLED', { reason: label });
     // Resolve any pending BLOCKED promise
     if (this._pendingResolve) {
@@ -152,7 +152,7 @@ class SNNAgentLoop {
       const apiKey = settings.openrouterKey;
       if (!apiKey) { this._transition('IDLE'); return { type: 'chat' }; }
 
-      const tools = this._getToolDefinitions(settings);
+      const tools = this._getToolDefinitions();
       const systemPrompt = this._buildToolSystemPrompt(settings);
 
       // Build messages with system prompt + conversation history so the
@@ -221,7 +221,7 @@ class SNNAgentLoop {
 
         const msg = choice.message;
 
-        // â”€â”€ Tool calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Tool calls ──────────────────────────────────────
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           // Add assistant message (with tool_calls) to history
           messages.push(msg);
@@ -340,7 +340,7 @@ Be honest. The user will see if you claim to have done something you did not.`
           break;
         }
 
-        // â”€â”€ Empty response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Empty response ──────────────────────────────────
         break;
       }
 
@@ -383,17 +383,13 @@ Be honest. The user will see if you claim to have done something you did not.`
   }
 
   //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-  // TOOL DEFINITIONS â€” All SNN actions as OpenRouter tool schemas
+  // TOOL DEFINITIONS — All SNN actions as OpenRouter tool schemas
   //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
   /**
    * Build the tools array for OpenRouter native tool calling.
-   * Only includes actions that are NOT disabled in settings.
    */
-  _getToolDefinitions(settings) {
-    const disabled = settings.disabledActions || [];
-    const enabled = (name) => !disabled.includes(name);
-
+  _getToolDefinitions() {
     const allTools = [
       // ── Core Interaction ────────────────────────────────────────
       { name: 'snn_click', desc: 'Click a button, link, or element on the page. Uses multi-strategy click (synthetic events + native click + ancestor click + keyboard) for SPA compatibility. Also use for checkboxes, radio buttons, and to open dropdowns before selecting options.', params: {
@@ -435,9 +431,6 @@ Be honest. The user will see if you claim to have done something you did not.`
 // Build OpenRouter tool format
     const tools = [];
     for (const t of allTools) {
-      const actionName = t.name.replace('snn_', '');
-      if (!enabled(actionName)) continue;
-
       // Build properties schema
       const properties = {};
       const required = [];
@@ -644,39 +637,9 @@ CRITICAL RULES:
     const lastMsg = messages[msgCount - 1];
     D.log('→ LLM CALL', { model, msgCount, toolCount: tools.length, lastRole: lastMsg?.role, lastContentLen: typeof lastMsg?.content === 'string' ? lastMsg.content.length : 'multipart' });
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-        'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
-        'X-Title': 'SNN Chat'
-      },
-      body: JSON.stringify(body),
-      signal: this._abortController?.signal
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => 'Unknown error');
-
-      // ── Google Gemini "Corrupted thought signature" — retry once with stripped payload ──
-      if (res.status === 400 && errText.includes('Corrupted thought signature') && !this._retriedCorrupted) {
-        D.warn('← LLM CORRUPTED SIG — retrying with text-only payload');
-        this._retriedCorrupted = true;
-        // Strip any image content from messages before retrying
-        const stripped = messages.map(m => {
-          if (m.role === 'user' && Array.isArray(m.content)) {
-            return { role: 'user', content: m.content.filter(p => p.type === 'text') };
-          }
-          return m;
-        });
-        return this._callLLMWithTools(stripped, tools, settings);
-      }
-
-      D.error('← LLM ERROR', { status: res.status, errText: errText.substring(0, 300) });
-      throw new Error(`API error ${res.status}: ${errText.substring(0, 200)}`);
-    }
-
+    // Headers, error parsing, and the Gemini "corrupted thought signature"
+    // retry are shared with the plain-chat paths — see SNNSidePanel._fetchOpenRouter.
+    const res = await this.sp._fetchOpenRouter(apiKey, body, this._abortController?.signal);
     const json = await res.json();
     const choice = json.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;
@@ -702,7 +665,7 @@ CRITICAL RULES:
 
   /**
    * Execute a single tool call from the LLM.
-   * Maps OpenRouter tool names â†’ SNN action names â†’ dispatch.
+   * Maps OpenRouter tool names → SNN action names → dispatch.
    */
   async _executeToolCall(fnName, fnArgs, iteration) {
     // Map tool name to action name (remove snn_ prefix)
@@ -719,7 +682,7 @@ CRITICAL RULES:
     let params = this._mapToolArgsToParams(actionName, fnArgs);
     let description = this._describeToolCall(fnName, fnArgs);
 
-    // â”€â”€ Navigate URL resolution: if URL is a text description (not a real URL), scan page links â”€â”€
+    // ── Navigate URL resolution: if URL is a text description (not a real URL), scan page links ──
     if (actionName === 'navigate' && params.url && !this._looksLikeURL(params.url)) {
       const scan = await this._scanAllActionableElements();
       if (scan?.elements?.links?.length) {
@@ -733,13 +696,13 @@ CRITICAL RULES:
         }
         if (best?.href) {
           params.url = best.href;
-          description = `${description} â†’ ${best.text || best.href}`;
+          description = `${description} → ${best.text || best.href}`;
         }
       }
-      // â”€â”€ Fallback: if page scan didn't resolve, construct absolute URL from tab origin â”€â”€
+      // ── Fallback: if page scan didn't resolve, construct absolute URL from tab origin ──
       if (!this._looksLikeURL(params.url)) {
         params.url = await this._buildNavigateFallbackUrl(params.url);
-        if (params.url) description = `${description} â†’ ${params.url}`;
+        if (params.url) description = `${description} → ${params.url}`;
       }
     }
 
@@ -796,7 +759,7 @@ CRITICAL RULES:
           if (this.sp._agentUI) {
             this.sp._agentUI.updateLastActionEntry('start', `Retry with better selector: ${step.params.selector || ''}`);
           }
-          this.sp.showToast(`Retrying with better selectorâ€¦`, 'warning');
+          this.sp.showToast(`Retrying with better selector…`, 'warning');
         } else {
           const baseDelay = this.RETRY_DELAYS[this._attemptCount - 1] || 8000;
           await this._sleep(baseDelay + Math.random() * 400);
@@ -818,10 +781,10 @@ CRITICAL RULES:
       this._stepResults.push({ step, result: result.result, attempts: this._attemptCount + 1 });
       if (this.sp._agentUI) {
         this.sp._agentUI.updateLastActionEntry('ok', this._formatActionResult(step, result.result));
-        // â”€â”€ Render screenshot image in the action entry â”€â”€
+        // ── Render screenshot image in the action entry ──
         if (actionName === 'screenshot' && result.result?.screenshot) {
           this.sp._agentUI.attachScreenshotToLastEntry(result.result.screenshot);
-          // â”€â”€ Store screenshot for vision: next LLM call will include it â”€â”€
+          // ── Store screenshot for vision: next LLM call will include it ──
           this._lastScreenshot = result.result.screenshot;
           this.sp._lastScreenshot = result.result.screenshot; // also expose to sidepanel
         }
@@ -922,7 +885,7 @@ CRITICAL RULES:
   // DISPATCH ACTION TO CONTENT SCRIPT (via background)
   //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   async _dispatchAction(step) {
-    // scrollAndAct needs a long timeout â€” it's an autonomous scroll loop
+    // scrollAndAct needs a long timeout — it's an autonomous scroll loop
     const isLongRunning = step.action === 'scrollAndAct';
     const defaultTimeout = isLongRunning ? 180000 : this.DEFAULT_TIMEOUT; // 3 min vs 15s
     const timeout = step.timeout || defaultTimeout;
@@ -941,7 +904,7 @@ CRITICAL RULES:
       }
     };
 
-    // â”€â”€ Inject tabId for background actions that need a target tab â”€â”€
+    // ── Inject tabId for background actions that need a target tab ──
     const TAB_DEPENDENT_ACTIONS = new Set([
       'agent:navigate', 'agent:goBack', 'agent:goForward',
       'agent:reload', 'agent:screenshot', 'agent:page_script', 'agent:readPage'
@@ -1092,7 +1055,7 @@ CRITICAL RULES:
       // fillForm fields recovery is handled per-field only when top-level selector exists
       return {
         params,
-        description: `${step.description || step.action} â†’ ${match.label || match.selector}`
+        description: `${step.description || step.action} → ${match.label || match.selector}`
       };
     } catch (e) {
       D.warn('selector recovery failed:', e.message);
@@ -1118,7 +1081,7 @@ CRITICAL RULES:
       }
     }
     const raw = sources.join(' ').toLowerCase();
-    // Drop common action verbs so "click login button" â†’ "login button"
+    // Drop common action verbs so "click login button" → "login button"
     const cleaned = raw
       .replace(/\b(click|type|hover|highlight|select|check|uncheck|fill|press|get|find|scroll|into|the|a|an|button|link|field|input|element)\b/g, ' ')
       .replace(/\s+/g, ' ')
@@ -1254,7 +1217,6 @@ CRITICAL RULES:
     this._lastScreenshot = null;
     this._selfAuditDone = false;
     this._expectNavigation = false;
-    this._retriedCorrupted = false;
   }
 
   // ── Utilities ───────────────────────────────────────────────────
@@ -1289,7 +1251,7 @@ CRITICAL RULES:
 
   /**
    * Strip large payloads (base64 images, etc.) from tool results before
-   * sending them to the LLM. The LLM can't process raw image data â€”
+   * sending them to the LLM. The LLM can't process raw image data —
    * it just wastes tokens and causes timeouts.
    */
   _sanitizeToolResultForLLM(fnName, result) {
@@ -1300,7 +1262,7 @@ CRITICAL RULES:
     // Strip base64 screenshot data
     if (sanitized.screenshot && typeof sanitized.screenshot === 'string' && sanitized.screenshot.startsWith('data:')) {
       const sizeKB = Math.round((sanitized.screenshot.length * 3) / 4 / 1024);
-      sanitized.screenshot = `[Screenshot captured: ${sizeKB}KB â€” visible to user, not to LLM]`;
+      sanitized.screenshot = `[Screenshot captured: ${sizeKB}KB — visible to user, not to LLM]`;
       sanitized._screenshotStripped = true;
     }
 
@@ -1308,7 +1270,7 @@ CRITICAL RULES:
     for (const key of Object.keys(sanitized)) {
       if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:image')) {
         const sizeKB = Math.round((sanitized[key].length * 3) / 4 / 1024);
-        sanitized[key] = `[Image: ${sizeKB}KB â€” stripped for LLM]`;
+        sanitized[key] = `[Image: ${sizeKB}KB — stripped for LLM]`;
       }
     }
 
@@ -1340,7 +1302,7 @@ CRITICAL RULES:
       case 'scrollToElement': return `Scrolled to ${result.element || step.params?.selector || 'element'}`;
       case 'highlight': return `Highlighted ${result.element || step.params?.selector || 'element'}`;
       case 'findElements': return `Found ${result.total || 0} elements matching "${step.params?.selector || ''}"`;
-      case 'getPageInfo': return `Page: ${result.title || ''} â€” ${result.links || 0} links, ${result.forms || 0} forms`;
+      case 'getPageInfo': return `Page: ${result.title || ''} — ${result.links || 0} links, ${result.forms || 0} forms`;
       case 'extractTable': return `Extracted table with ${result.rowCount || 0} rows`;
       case 'navigate': return `Navigated to ${result.url || step.params?.url || ''}`;
       case 'screenshot': return `Screenshot captured`;
