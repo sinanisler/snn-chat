@@ -240,41 +240,45 @@ async function _openSidePanelForTab(tab) {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!tab?.id) return;
 
-  let prompt = '';
+  // Build an INTENT (not a ready-to-send prompt). The side panel opens the
+  // chat and attaches the relevant context (or prefills a suggestion) but
+  // waits for the user to type/confirm their question instead of auto-sending.
+  let intent = null;
   switch (info.menuItemId) {
     case 'snn-ask-selection':
-      prompt = info.selectionText || '';
+      // Attach the highlighted text as context; user asks what they want.
+      intent = { type: 'selection', selectionText: info.selectionText || '' };
       break;
     case 'snn-ask-page':
-      prompt = 'Summarize this page.';
+      // Attach the page as context; user asks what they want about it.
+      intent = { type: 'page' };
       break;
     case 'snn-explain-image':
-      prompt = `Describe this image: ${info.srcUrl}`;
+      // Prefill an editable suggestion; user confirms or edits before sending.
+      intent = { type: 'image', srcUrl: info.srcUrl, suggestedPrompt: 'Describe this image.' };
       break;
     case 'snn-explain-link':
-      prompt = `Summarize the content at this link: ${info.linkUrl}`;
+      intent = { type: 'link', linkUrl: info.linkUrl, suggestedPrompt: `Summarize the content at this link: ${info.linkUrl}` };
       break;
     default:
       return;
   }
 
-  if (prompt) {
-    // ═══════════════════════════════════════════════════════════
-    // CRITICAL: chrome.sidePanel.open() MUST be called
-    // SYNCHRONOUSLY within the user-gesture event handler.
-    // Calling it inside a .then() callback loses the gesture
-    // context and the call silently fails.  We open the panel
-    // FIRST, then fire-and-forget the prompt into storage.
-    // ═══════════════════════════════════════════════════════════
-    _openSidePanelForTab(tab);
+  // ═══════════════════════════════════════════════════════════
+  // CRITICAL: chrome.sidePanel.open() MUST be called
+  // SYNCHRONOUSLY within the user-gesture event handler.
+  // Calling it inside a .then() callback loses the gesture
+  // context and the call silently fails.  We open the panel
+  // FIRST, then fire-and-forget the intent into storage.
+  // ═══════════════════════════════════════════════════════════
+  _openSidePanelForTab(tab);
 
-    // Fire-and-forget: store the prompt so the side panel picks it up.
-    // The side panel calls _checkContextMenuPrompt() on init AND listens
-    // for storage changes, so it will catch this regardless of timing.
-    chrome.storage.session.set({
-      snn_context_menu_prompt: { prompt, tabId: tab.id, timestamp: Date.now() }
-    }).catch(err => D.warn('Failed to store context-menu prompt:', err?.message || err));
-  }
+  // Fire-and-forget: store the intent so the side panel picks it up.
+  // The side panel calls _checkContextMenuIntent() on init AND listens
+  // for storage changes, so it will catch this regardless of timing.
+  chrome.storage.session.set({
+    snn_context_menu_intent: { ...intent, tabId: tab.id, timestamp: Date.now() }
+  }).catch(err => D.warn('Failed to store context-menu intent:', err?.message || err));
 });
 
 // ═══════════════════════════════════════════════════════════════════

@@ -388,7 +388,7 @@ body.theme-dark #welcome-screen .sp-model-tag {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.sp-input-context-icon { flex-shrink: 0; font-size: 14px; }
+.sp-input-context-icon { flex-shrink: 0; font-size: 13px; font-weight: 600; color: var(--sp-context-text); opacity: 0.75; }
 .sp-input-context-text {
   flex: 1;
   overflow: hidden;

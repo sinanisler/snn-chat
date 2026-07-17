@@ -207,8 +207,8 @@ class SNNSidePanel {
 
     this._updateLockVisuals();
 
-    // ── Pick up any pending context-menu prompt (right-click "Ask SNN about…") ──
-    this._checkContextMenuPrompt();
+    // ── Pick up any pending context-menu intent (right-click "Ask SNN about…") ──
+    this._checkContextMenuIntent();
   }
 
   // ── Event Listeners ─────────────────────────────────────────────
@@ -302,10 +302,10 @@ class SNNSidePanel {
         this.selection = sel;
         needsRefresh = true;
       }
-      // ── Context-menu prompt from background (right-click "Ask SNN about…") ──
-      if (changes.snn_context_menu_prompt && changes.snn_context_menu_prompt.newValue) {
+      // ── Context-menu intent from background (right-click "Ask SNN about…") ──
+      if (changes.snn_context_menu_intent && changes.snn_context_menu_intent.newValue) {
         // Process immediately — no debounce (user explicitly invoked)
-        this._checkContextMenuPrompt();
+        this._checkContextMenuIntent();
       }
 
       // Debounce: rapid storage changes (e.g. page+selection together,
@@ -319,83 +319,113 @@ class SNNSidePanel {
     this.refreshActiveContext();
   }
 
-  // ── Context-Menu Prompt Handler ────────────────────────────────
-  // Picks up right-click "Ask SNN about…" prompts stored by the
-  // background service worker and auto-sends them in the chat.
-  async _checkContextMenuPrompt() {
+  // ── Context-Menu Intent Handler ────────────────────────────────
+  // Picks up right-click "Ask SNN about…" intents stored by the
+  // background service worker. Rather than auto-sending a canned prompt,
+  // it opens the chat with the relevant context ATTACHED (page/selection)
+  // or a suggestion PREFILLED (image/link) and leaves the cursor in the
+  // input so the user types/confirms their actual question before sending.
+  async _checkContextMenuIntent() {
     // Re-entry guard: prevent concurrent processing (e.g. storage
     // listener fires while we're still waiting for page context).
     if (this._ctxMenuInProgress) return;
 
     try {
-      // Don't interrupt an in-flight message — the prompt stays in
+      // Don't interrupt an in-flight message — the intent stays in
       // storage and will be picked up at the end of sendMessage().
       if (this.isLoading) return;
 
-      // ── Retry loop: the background stores the prompt right after
+      // ── Retry loop: the background stores the intent right after
       //     calling sidePanel.open(), so there's a tiny race window
       //     where storage hasn't landed yet.  Poll a few times.
-      let data = await chrome.storage.session.get('snn_context_menu_prompt');
-      let entry = data.snn_context_menu_prompt;
+      let data = await chrome.storage.session.get('snn_context_menu_intent');
+      let entry = data.snn_context_menu_intent;
       let retries = 0;
-      while ((!entry || !entry.prompt) && retries < 5) {
+      while ((!entry || !entry.type) && retries < 5) {
         await new Promise(r => setTimeout(r, 100));
-        data = await chrome.storage.session.get('snn_context_menu_prompt');
-        entry = data.snn_context_menu_prompt;
+        data = await chrome.storage.session.get('snn_context_menu_intent');
+        entry = data.snn_context_menu_intent;
         retries++;
       }
 
-      if (!entry || !entry.prompt) return; // nothing to do
+      if (!entry || !entry.type) return; // nothing to do
 
-      // Only process prompts for the current tab (guard cross-tab leakage).
-      // If we haven't resolved currentTabId yet, accept anyway — better to
-      // answer the wrong tab than silently swallow the user's query.
+      // Only process intents for the current tab (guard cross-tab leakage).
+      // If we haven't resolved currentTabId yet, accept anyway.
       if (this.currentTabId != null && entry.tabId != null && entry.tabId !== this.currentTabId) {
-        D.warn('Context-menu prompt for tab', entry.tabId, 'but we are on tab', this.currentTabId, '— skipping');
-        // Clear stale prompt so it doesn't stick around forever
-        await chrome.storage.session.remove('snn_context_menu_prompt');
+        D.warn('Context-menu intent for tab', entry.tabId, 'but we are on tab', this.currentTabId, '— skipping');
+        // Clear stale intent so it doesn't stick around forever
+        await chrome.storage.session.remove('snn_context_menu_intent');
         return;
       }
 
       // Consume immediately so it never fires twice
-      await chrome.storage.session.remove('snn_context_menu_prompt');
+      await chrome.storage.session.remove('snn_context_menu_intent');
 
       this._ctxMenuInProgress = true;
 
       // ── UX: Flash the input area to draw user attention ────────
       this._flashInputArea();
 
-      // ── Wait for page context if we don't have it yet ──────────
-      // The content script may still be extracting; give it up to 2 s.
-      if (!this.pageContext?.content) {
-        let waited = 0;
-        while (waited < 2000 && !this.pageContext?.content) {
-          await new Promise(r => setTimeout(r, 200));
-          waited += 200;
+      let toastMsg = '';
+
+      switch (entry.type) {
+        case 'selection': {
+          // Attach the highlighted text as the active context. Use the text
+          // carried in the intent (most reliable) and fall back to any
+          // selection already synced from the content script.
+          const text = (entry.selectionText || this.selection?.text || '').trim();
+          if (text) {
+            this.selection = { text, tabId: entry.tabId, timestamp: entry.timestamp || Date.now() };
+            // Persist so a debounced storage refresh doesn't clobber it.
+            chrome.storage.session.set({ snn_selection: this.selection }).catch(() => {});
+          }
+          this.refreshActiveContext();
+          toastMsg = 'Selection attached — ask your question';
+          break;
         }
+
+        case 'page': {
+          // Attach the page as the active context. Force re-attach even if a
+          // previous context was already consumed this session — the user
+          // explicitly asked about the page.
+          if (!this.pageContext?.content) {
+            let waited = 0;
+            while (waited < 2000 && !this.pageContext?.content) {
+              await new Promise(r => setTimeout(r, 200));
+              waited += 200;
+            }
+          }
+          this._contextConsumedInSession = false;
+          this.refreshActiveContext();
+          toastMsg = 'Page attached — ask your question';
+          break;
+        }
+
+        case 'image':
+        case 'link': {
+          // Prefill an editable suggestion; the user confirms or edits it.
+          if (entry.suggestedPrompt) {
+            this.els.userInput.value = entry.suggestedPrompt;
+            this.autoResize();
+          }
+          toastMsg = 'Edit or confirm, then send';
+          break;
+        }
+
+        default:
+          return;
       }
 
-      // Ensure page context is ready to attach for page-level prompts
-      if (this.pageContext && !this._contextConsumedInSession) {
-        this.refreshActiveContext();
-      }
-
-      // ── Show brief toast that a query was received ────────────
-      const preview = entry.prompt.length > 50
-        ? entry.prompt.substring(0, 47) + '…'
-        : entry.prompt;
-      this.showToast(`→ "${preview}"`, '');
-
-      // ── Inject prompt, focus input briefly, then auto-send ────
-      this.els.userInput.value = entry.prompt;
-      this.autoResize();
+      // Focus the input so the user can start typing immediately.
+      // Place the cursor at the end of any prefilled text.
       this.els.userInput.focus();
-      // Brief pause so the user can see the query flash in the input
-      // before it sends — improves perceived responsiveness.
-      await new Promise(r => setTimeout(r, 80));
-      this.sendMessage();
+      const val = this.els.userInput.value;
+      if (val) this.els.userInput.setSelectionRange(val.length, val.length);
+
+      if (toastMsg) this.showToast(toastMsg, '');
     } catch (e) {
-      D.warn('Context-menu prompt check failed:', e.message);
+      D.warn('Context-menu intent check failed:', e.message);
     } finally {
       this._ctxMenuInProgress = false;
     }
@@ -446,8 +476,8 @@ class SNNSidePanel {
   updateInputContextIndicator() {
     if (this.activeContext) {
       this.els.inputContextIndicator.style.display = 'flex';
-      const icon = this.activeContext.type === 'selection' ? '📝' : '📄';
-      this.els.inputContextIndicator.querySelector('.sp-input-context-icon').textContent = icon;
+      const label = this.activeContext.type === 'selection' ? 'Selected:' : 'Page:';
+      this.els.inputContextIndicator.querySelector('.sp-input-context-icon').textContent = label;
       this.els.inputContextText.textContent = this.activeContext.summary;
       this.els.inputContextText.title = this.activeContext.type === 'selection'
         ? this.activeContext.detail
@@ -515,8 +545,8 @@ class SNNSidePanel {
       chrome.runtime.sendMessage({ action: 'requestPageContent' }).catch(() => {});
       this.refreshActiveContext();
 
-      // ── Check for pending context-menu prompts targeting this tab ──
-      this._checkContextMenuPrompt();
+      // ── Check for pending context-menu intents targeting this tab ──
+      this._checkContextMenuIntent();
 
       this.showToast(`Tab: ${this.escapeHtml(this.currentDomain || 'new tab')} <i class="fas fa-lock"></i> session locked`);
       return;
@@ -588,8 +618,8 @@ class SNNSidePanel {
       this._contextConsumedInSession = false;
     }
 
-    // ── Check for pending context-menu prompts targeting this tab ──
-    this._checkContextMenuPrompt();
+    // ── Check for pending context-menu intents targeting this tab ──
+    this._checkContextMenuIntent();
 
     // Show a subtle toast
     this.showToast(`Switched to ${this.currentDomain || 'new tab'}`);
@@ -3262,8 +3292,8 @@ class SNNSidePanel {
       this._activeAbortController.abort();
       this._activeAbortController = null;
     }
-    // Flush any context-menu prompt that arrived while we were busy
-    this._checkContextMenuPrompt();
+    // Flush any context-menu intent that arrived while we were busy
+    this._checkContextMenuIntent();
   }
 
   // ── Session Lock ──────────────────────────────────────────────
@@ -3376,8 +3406,8 @@ class SNNSidePanel {
     this.els.userInput.focus();
     this._activeAbortController = null;
 
-    // Flush any context-menu prompt that arrived while we were loading
-    this._checkContextMenuPrompt();
+    // Flush any context-menu intent that arrived while we were loading
+    this._checkContextMenuIntent();
   }
 
   // ── Send Button Toggle (Send ↔ Stop) ──────────────────────────
