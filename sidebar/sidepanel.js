@@ -2913,6 +2913,13 @@ class SNNSidePanel {
           groupState = 'building';
         }
         groupEntries.push({ type: 'action', msg });
+      } else if (msg.role === 'agent-reasoning') {
+        // Same implicit-group handling as agent-action entries above.
+        if (groupState !== 'building') {
+          flushGroup();
+          groupState = 'building';
+        }
+        groupEntries.push({ type: 'reasoning', msg });
       } else if (msg.role === 'agent-status') {
         const s = msg.state;
 
@@ -3016,6 +3023,8 @@ class SNNSidePanel {
     for (const entry of entries) {
       if (entry.type === 'action') {
         this._renderPersistedActionEntry(entry.msg, body);
+      } else if (entry.type === 'reasoning') {
+        this._renderPersistedReasoningEntry(entry.msg, body);
       } else {
         this._renderPersistedStatusEntry(entry.msg, body);
       }
@@ -3039,6 +3048,27 @@ class SNNSidePanel {
       <span class="snn-action-entry-icon">${icon}</span>
       <span class="snn-action-entry-text">${this.escapeHtml(msg.description || '')}</span>
       ${msg.detail ? `<span class="snn-action-entry-detail">${this.escapeHtml(msg.detail)}</span>` : ''}
+    `;
+    container.appendChild(entry);
+  }
+
+  /**
+   * Render a persisted agent-reasoning entry (survives tab switches).
+   * Mirrors the collapsible "Thinking..." block from agent-ui.js addReasoningEntry.
+   * @param {object} msg - the persisted reasoning entry
+   * @param {HTMLElement} [target] - optional container to append to (defaults to chatMessages)
+   */
+  _renderPersistedReasoningEntry(msg, target) {
+    const container = target || this.els.chatMessages;
+    const entry = document.createElement('div');
+    entry.className = 'snn-reasoning-entry';
+    entry.innerHTML = `
+      <details class="snn-reasoning-details" open>
+        <summary class="snn-reasoning-summary">
+          <span class="snn-reasoning-label">Thinking...</span>
+        </summary>
+        <div class="snn-reasoning-content">${this.escapeHtml(msg.text || '')}</div>
+      </details>
     `;
     container.appendChild(entry);
   }

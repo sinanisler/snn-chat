@@ -57,7 +57,7 @@ class SNNAgentUI {
       <div class="snn-agent-progress-bar">
         <div class="snn-agent-progress-fill" style="width:${pct}%"></div>
       </div>
-      <span class="snn-agent-progress-label">${description || `Step ${step} of ${total}`}</span>
+      <span class="snn-agent-progress-label">${description || 'Step'}</span>
       <span class="snn-agent-progress-pct">${pct}%</span>
     `;
     prog.style.display = 'flex';
@@ -263,11 +263,14 @@ class SNNAgentUI {
     if (state === 'PARSING') {
       for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
         const m = this.sp.chatHistory[i];
-        if (m.role === 'agent-status' && !['IDLE','FAILED','CANCELLED'].includes(m.state)) {
-          m.state = 'CANCELLED';
-          m.label = 'Interrupted';
-          break; // Only cancel the most recent run
-        }
+        if (m.role !== 'agent-status') continue;
+        // A terminal entry marks the end of the previous run — stop here.
+        // Otherwise we'd walk past a completed run and corrupt an inner
+        // status entry from an earlier, already-finished run.
+        if (['IDLE','FAILED','CANCELLED'].includes(m.state)) break;
+        m.state = 'CANCELLED';
+        m.label = 'Interrupted';
+        break; // Only cancel the most recent run
       }
     }
 
@@ -387,10 +390,9 @@ class SNNAgentUI {
     const entry = document.createElement('div');
     entry.className = 'snn-reasoning-entry';
     entry.innerHTML = `
-      <details class="snn-reasoning-details">
+      <details class="snn-reasoning-details" open>
         <summary class="snn-reasoning-summary">
-          <span class="snn-reasoning-icon">🤔</span>
-          <span class="snn-reasoning-label">Thinking (step ${iteration})...</span>
+          <span class="snn-reasoning-label">Thinking...</span>
         </summary>
         <div class="snn-reasoning-content">${this.sp.escapeHtml(text)}</div>
       </details>
@@ -558,7 +560,7 @@ class SNNAgentUI {
     const stepsHtml = results.map((r, i) => {
       const ok = r.result && !r.result.error;
       const icon = ok ? '<i class="fas fa-circle-check"></i>' : '<i class="fas fa-circle-xmark"></i>';
-      const desc = r.step.description || r.step.action || `Step ${i + 1}`;
+      const desc = r.step.description || r.step.action || 'Step';
       return `<div class="snn-result-step"><span class="snn-result-step-icon">${icon}</span> ${this.sp.escapeHtml(desc)} <span class="snn-result-step-attempts">(${r.attempts} attempt${r.attempts !== 1 ? 's' : ''})</span></div>`;
     }).join('');
 
