@@ -183,10 +183,7 @@ class SNNAgentLoop {
         const detail = context.detail.length > limit
           ? context.detail.substring(0, limit) + '\n\n[... truncated to ' + limit + ' chars ...]'
           : context.detail;
-        const isYT = !!context.isYoutubeVideo;
-        const prefix = isYT
-          ? '[🎬 YOUTUBE VIDEO TRANSCRIPT — THIS *IS* THE FULL SUBTITLE/CAPTION TEXT. You already have every spoken word. Do NOT call mapPage, readPage, screenshot, or any other tool to "find captions" — you are reading the transcript RIGHT NOW. Answer questions about the video directly from this transcript.]'
-          : '[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]';
+        const prefix = '[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]';
         messages.splice(1, 0, {
           role: 'system',
           content: `${prefix}\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
@@ -536,15 +533,6 @@ SIMPLE QUESTION — ANSWER DIRECTLY FROM EXISTING CONTEXT (NO TOOLS):
 - "what color is the button?"
 - The page content is ALREADY provided in the system messages. Answer from it.
 - DO NOT use tools just to re-read content you already have.
-
-🎬 YOUTUBE VIDEO QUESTIONS — ANSWER DIRECTLY FROM TRANSCRIPT (NO TOOLS):
-- When the page context header says "[🎬 YOUTUBE VIDEO TRANSCRIPT]", the full
-  subtitles/captions are ALREADY provided. Do NOT call mapPage, readPage,
-  screenshot, or any tool to "find captions" or "check the CC button."
-- You already have every spoken word. Just read the transcript and answer.
-- Questions like "what did they say about X?", "summarize the video",
-  "are there captions available?" — answer directly. The answer is YES,
-  the captions are right here.
 
 RESEARCH TASK — YOU MUST VISIT MULTIPLE PAGES (USE TOOLS):
 - "research X" / "find all information about Y"

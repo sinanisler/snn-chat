@@ -1551,7 +1551,7 @@ class SNNSidePanel {
 
     // Populate the dropdown list
     this.els.qaList.innerHTML = actions.map((a) => `
-      <button class="sp-qa-option" data-prompt="${this.escapeHtml(a.prompt)}">
+      <button class="sp-qa-option" data-prompt="${this.escapeHtml(a.prompt)}" title="${this.escapeHtml(a.prompt)}">
         ${a.text}
       </button>
     `).join('');
@@ -1604,10 +1604,14 @@ class SNNSidePanel {
 
   getDefaultQuickActions() {
     return [
-      { text: 'Summarize', prompt: 'Summarize this content concisely.' },
-      { text: 'Key points', prompt: 'Extract the key points from this page.' },
-      { text: 'Explain simply', prompt: 'Explain this page in simple terms.' },
-      { text: 'What is this?', prompt: 'What is this page about? Give a brief overview.' }
+      { text: 'Summarize', prompt: 'Summarize this concisely.' },
+      { text: 'Key points', prompt: 'Extract the key points as a short bulleted list.' },
+      { text: 'Explain simply', prompt: 'Explain this in simple terms, as if to someone new to the topic.' },
+      { text: 'Translate', prompt: 'Translate this into English (or, if it is already in English, ask me which language to translate to).' },
+      { text: 'Improve writing', prompt: 'Rewrite this to be clearer and more polished, keeping the original meaning and tone.' },
+      { text: 'Draft a reply', prompt: 'Draft a reply to this, in a professional and concise tone.' },
+      { text: 'Fact-check', prompt: 'Check this for factual accuracy and flag anything questionable or unsupported.' },
+      { text: 'Pros & cons', prompt: "List the pros and cons of what's described here." }
     ];
   }
 
