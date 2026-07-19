@@ -176,7 +176,7 @@ class SNNAgentLoop {
     this._cancelled = false;
     this._abortController = new AbortController();
     // ── Reset token usage accumulator for this agent run ──
-    this.sp.lastTokenUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    this.sp.lastTokenUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, cache_write_tokens: 0 };
 
     try {
       //  - - - - CAPABILITY FAST-PATH  - - - -
@@ -195,50 +195,71 @@ class SNNAgentLoop {
 
       // Build messages with system prompt + conversation history so the
       // agent REMEMBERS previous turns (critical — without this it has amnesia)
-      const messages = [
-        { role: 'system', content: systemPrompt }
-      ];
+      //
+      // ORDER IS LOAD-BEARING FOR PROMPT CACHING: stable first, volatile last.
+      // The system prompt never changes; history changes only in whole blocks;
+      // page content is re-extracted and differs on EVERY turn. Page content
+      // therefore goes last, merged into the trailing user turn. It used to be
+      // spliced in at index 1 — ahead of history — which left the system
+      // prompt as the only cacheable prefix and re-billed everything else on
+      // every single call.
+      const modelId = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
+      const messages = [];
 
-      // ── Inject conversation history (user + assistant messages only) ──
-      const historyMessages = this.sp.chatHistory
-        .filter(m => m.role === 'user' || m.role === 'assistant')
-        .slice(-12)  // last 12 turns to stay within context window
-        .map(m => ({ role: m.role, content: m.content }));
+      // ── 1. System prompt — the most stable block there is. Breakpoint here.
+      messages.push(this.sp._withCacheBreakpoint(
+        { role: 'system', content: systemPrompt }, modelId, systemPrompt.length
+      ));
+
+      // ── 2. Conversation history (user + assistant messages only) ──
+      const historyMessages = this.sp._stableHistoryWindow(
+        this.sp.chatHistory.filter(m => m.role === 'user' || m.role === 'assistant')
+      ).map(m => ({ role: m.role, content: m.content }));
+
+      // The current turn is re-added last, after the page context — drop it
+      // here if history already ends with it.
+      const lastHistMsg = historyMessages[historyMessages.length - 1];
+      if (lastHistMsg && lastHistMsg.role === 'user' && lastHistMsg.content === userMessage) {
+        historyMessages.pop();
+      }
 
       for (const hm of historyMessages) {
         messages.push(hm);
       }
 
-      // Add current user message (skip if already the last history entry)
-      const lastHistMsg = historyMessages[historyMessages.length - 1];
-      if (!lastHistMsg || lastHistMsg.role !== 'user' || lastHistMsg.content !== userMessage) {
-        messages.push({ role: 'user', content: userMessage });
+      // Second breakpoint at the end of settled history: on a follow-up turn
+      // in the same conversation, everything above this is a cache hit.
+      if (messages.length > 1) {
+        const prefixChars = messages.reduce((n, m) => n + this._msgChars(m), 0);
+        messages[messages.length - 1] = this.sp._withCacheBreakpoint(
+          messages[messages.length - 1], modelId, prefixChars
+        );
       }
 
-      // Add page context if available
+      // ── 3. Volatile context, merged into the single trailing user turn ──
+      // Merged rather than pushed as separate system messages so the array
+      // stays [system, …history, user] — a shape every provider accepts, with
+      // all per-turn-volatile bytes confined to the very end.
+      let finalUserContent = userMessage;
+
       if (context?.type === 'page' && context?.detail) {
         const limit = settings.contentLimit || 200000;
         const detail = context.detail.length > limit
           ? context.detail.substring(0, limit) + '\n\n[... truncated to ' + limit + ' chars ...]'
           : context.detail;
         const prefix = '[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]';
-        messages.splice(1, 0, {
-          role: 'system',
-          content: `${prefix}\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}`
-        });
+        finalUserContent = `${prefix}\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}\n\n─────────\n\n${userMessage}`;
       }
 
-      // Add user-selected text if available (e.g., highlighted table rows, paragraphs, etc.)
       if (context?.type === 'selection' && context?.detail) {
         const limit = settings.contentLimit || 200000;
         const detail = context.detail.length > limit
           ? context.detail.substring(0, limit) + '\n\n[... selection truncated to ' + limit + ' chars ...]'
           : context.detail;
-        messages.splice(1, 0, {
-          role: 'system',
-          content: `[USER-SELECTED TEXT — ALREADY PROVIDED. The user has highlighted this content. Use it directly; do NOT call snn_screenshot or snn_page_script just to re-read it — you already have the selection. The user's instruction relates to THIS selected content.]\n\n${detail}`
-        });
+        finalUserContent = `[USER-SELECTED TEXT — ALREADY PROVIDED. The user has highlighted this content. Use it directly; do NOT call snn_screenshot or snn_page_script just to re-read it — you already have the selection. The user's instruction relates to THIS selected content.]\n\n${detail}\n\n─────────\n\n${userMessage}`;
       }
+
+      messages.push({ role: 'user', content: finalUserContent });
 
       const MAX_ITERATIONS = this.MAX_ITERATIONS;
       let iteration = 0;
@@ -591,7 +612,7 @@ SIMPLE QUESTION — ANSWER DIRECTLY FROM EXISTING CONTEXT (NO TOOLS):
 - "what does this article say?"
 - "explain this concept to me"
 - "what color is the button?"
-- The page content is ALREADY provided in the system messages. Answer from it.
+- The page content is ALREADY provided in the conversation. Answer from it.
 - DO NOT use tools just to re-read content you already have.
 
 RESEARCH TASK — YOU MUST VISIT MULTIPLE PAGES (USE TOOLS):
@@ -677,6 +698,7 @@ CRITICAL RULES:
       tools,
       tool_choice: 'auto',
       parallel_tool_calls: false,  // one tool per response — prevents tool-result interleaving issues
+      usage: { include: true },    // needed for prompt_tokens_details.cached_tokens
       max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
@@ -695,16 +717,32 @@ CRITICAL RULES:
 
     // ── Accumulate token usage across agent loop iterations ──
     if (json.usage) {
+      const cache = this.sp._readCacheUsage(json.usage);
+      const prompt = json.usage.prompt_tokens || 0;
+      // Per-call, not accumulated: a run whose first iteration misses and
+      // whose remaining 20 hit is healthy, and only the per-call number shows
+      // that. Without this line the cache is invisible from inside the app.
+      D.log('CACHE', {
+        prompt,
+        cached: cache.cached,
+        written: cache.written,
+        hitRate: prompt ? Math.round((100 * cache.cached) / prompt) + '%' : 'n/a'
+      });
+
       if (!this.sp.lastTokenUsage || !this.sp.lastTokenUsage.total_tokens) {
         this.sp.lastTokenUsage = {
-          prompt_tokens: json.usage.prompt_tokens || 0,
+          prompt_tokens: prompt,
           completion_tokens: json.usage.completion_tokens || 0,
-          total_tokens: json.usage.total_tokens || 0
+          total_tokens: json.usage.total_tokens || 0,
+          cached_tokens: cache.cached,
+          cache_write_tokens: cache.written
         };
       } else {
-        this.sp.lastTokenUsage.prompt_tokens += json.usage.prompt_tokens || 0;
+        this.sp.lastTokenUsage.prompt_tokens += prompt;
         this.sp.lastTokenUsage.completion_tokens += json.usage.completion_tokens || 0;
         this.sp.lastTokenUsage.total_tokens += json.usage.total_tokens || 0;
+        this.sp.lastTokenUsage.cached_tokens = (this.sp.lastTokenUsage.cached_tokens || 0) + cache.cached;
+        this.sp.lastTokenUsage.cache_write_tokens = (this.sp.lastTokenUsage.cache_write_tokens || 0) + cache.written;
       }
     }
 
@@ -1349,9 +1387,20 @@ CRITICAL RULES:
    */
   /** Rough size of the whole conversation, in characters. */
   _estimateContextChars(messages) {
-    return messages.reduce(
-      (n, m) => n + (typeof m.content === 'string' ? m.content.length : 500), 0
-    );
+    return messages.reduce((n, m) => n + this._msgChars(m), 0);
+  }
+
+  /**
+   * Character weight of one message. Content may be a plain string, or an
+   * array of blocks once a cache breakpoint or an image has been attached —
+   * scoring the array as a flat constant would under-count a 200k-char page
+   * block by three orders of magnitude and defeat the budget check entirely.
+   */
+  _msgChars(m) {
+    const c = m?.content;
+    if (typeof c === 'string') return c.length;
+    if (!Array.isArray(c)) return 500;
+    return c.reduce((n, b) => n + (typeof b?.text === 'string' ? b.text.length : 500), 0);
   }
 
   /**

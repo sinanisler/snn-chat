@@ -1030,22 +1030,8 @@ class SNNSidePanel {
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant. Be concise and accurate.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
 
-    let userMessage = message;
-    if (context && contextType === 'selection') {
-      userMessage = `[Selected text: "${context}"]\n\n${message}`;
-      systemPrompt += '\nFocus on the user\'s selected text.';
-    } else if (context && (contextType === 'page' || contextType === 'files')) {
-      systemPrompt += `\n\nPage content for reference:\n\n${context}`;
-    }
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...this.chatHistory.slice(-8).map(m => ({
-        role: m.role,
-        content: m.content
-      })),
-      { role: 'user', content: userMessage }
-    ];
+    const { messages, userMessage } =
+      this._buildChatMessages(systemPrompt, context, contextType, message, model);
 
     // ── Inject multimodal content (images, audio, video) if model supports it ──
     this._injectMultimodalContent(messages, userMessage, model);
@@ -1061,12 +1047,15 @@ class SNNSidePanel {
     const res = await this._fetchOpenRouter(apiKey, body, signal);
 
     const data = await res.json();
+    const cache = this._readCacheUsage(data.usage);
     this.lastTokenUsage = {
       prompt_tokens: data.usage?.prompt_tokens || 0,
       completion_tokens: data.usage?.completion_tokens || 0,
-      total_tokens: data.usage?.total_tokens || 0
+      total_tokens: data.usage?.total_tokens || 0,
+      cached_tokens: cache.cached,
+      cache_write_tokens: cache.written
     };
-    D.log('callAPI OK', { tokens: this.lastTokenUsage, contentLen: (data.choices?.[0]?.message?.content || '').length });
+    D.log('callAPI OK', { tokens: this.lastTokenUsage, cacheHit: this._cacheHitRate(this.lastTokenUsage), contentLen: (data.choices?.[0]?.message?.content || '').length });
     return data.choices[0]?.message?.content || '';
   }
 
@@ -1079,26 +1068,17 @@ class SNNSidePanel {
     D.log('streamResponse', { model, msgLen: message.length, contextLen: (context || '').length, contextType });
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
-    let userMessage = message;
-
-    if (context && contextType === 'selection') {
-      userMessage = `[Selected text: "${context}"]\n\n${message}`;
-      systemPrompt += '\nFocus on the user\'s selected text.';
-    } else if (context && (contextType === 'page' || contextType === 'files')) {
-      systemPrompt += `\n\nPage content:\n\n${context}`;
-    }
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...this.chatHistory.slice(-8).map(m => ({ role: m.role, content: m.content })),
-      { role: 'user', content: userMessage }
-    ];
+    const { messages, userMessage } =
+      this._buildChatMessages(systemPrompt, context, contextType, message, model);
 
     // ── Inject multimodal content (images, audio, video) if model supports it ──
     this._injectMultimodalContent(messages, userMessage, model);
 
     const body = {
       model, messages, stream: true,
+      // Without this OpenRouter emits no usage chunk on a stream at all, so
+      // cache hit rates would be invisible on the most-used code path.
+      usage: { include: true },
       max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
@@ -1165,11 +1145,15 @@ class SNNSidePanel {
             this.smartScrollToBottom();
           }
           if (parsed.usage) {
+            const cache = this._readCacheUsage(parsed.usage);
             this.lastTokenUsage = {
               prompt_tokens: parsed.usage.prompt_tokens || 0,
               completion_tokens: parsed.usage.completion_tokens || 0,
-              total_tokens: parsed.usage.total_tokens || 0
+              total_tokens: parsed.usage.total_tokens || 0,
+              cached_tokens: cache.cached,
+              cache_write_tokens: cache.written
             };
+            D.log('stream usage', { tokens: this.lastTokenUsage, cacheHit: this._cacheHitRate(this.lastTokenUsage) });
           }
         } catch (e) { /* skip malformed JSON lines */ }
       }
@@ -1580,6 +1564,13 @@ class SNNSidePanel {
       const cost = this._calcMessageCost(tokenUsage);
       let text = `${total.toLocaleString()} tokens`;
       let title = `Prompt: ${tokenUsage.prompt_tokens || 0}, Completion: ${tokenUsage.completion_tokens || 0}`;
+      const hitRate = this._cacheHitRate(tokenUsage);
+      if (hitRate !== null) {
+        title += `\nCached: ${(tokenUsage.cached_tokens || 0).toLocaleString()} (${hitRate} of prompt)`;
+        if (tokenUsage.cache_write_tokens) {
+          title += `\nCache writes: ${tokenUsage.cache_write_tokens.toLocaleString()}`;
+        }
+      }
       if (cost !== null) {
         text += ` · ${this._formatCost(cost)}`;
         title += `\nCost: ${this._formatCost(cost)}`;
@@ -3720,6 +3711,160 @@ class SNNSidePanel {
     const base = basePrompt || 'You are a helpful AI assistant. Be concise and accurate.';
     if (base !== identity) parts.push(base);
     return parts.join('\n\n');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // PROMPT CACHING
+  // ═══════════════════════════════════════════════════════════════
+  // Providers cache a prompt PREFIX and only re-read what changed after it.
+  // That makes message ORDER load-bearing: anything that changes per turn
+  // (page content, the user's question) must sit AFTER anything that doesn't
+  // (system prompt, settled history). Get it backwards and the cacheable
+  // prefix collapses to nothing and every call is billed in full.
+
+  /**
+   * Does this model require explicit cache_control breakpoints?
+   *
+   * OpenRouter splits providers into two camps. OpenAI, DeepSeek, Grok and
+   * Groq cache automatically and ignore cache_control entirely. Anthropic,
+   * Qwen and Gemini cache ONLY where a breakpoint is placed — with no
+   * breakpoint they re-read the whole prompt at full price on every call.
+   */
+  _modelNeedsCacheBreakpoints(modelId) {
+    return /anthropic|claude|gemini|qwen|alibaba/i.test(modelId || '');
+  }
+
+  /**
+   * Smallest prefix worth spending a breakpoint on, in characters.
+   *
+   * Below the provider's minimum the breakpoint is silently ignored — no
+   * error, just no cache — while still counting against Anthropic's cap of
+   * four. So gate on it rather than marking every block hopefully.
+   */
+  _cacheMinChars(modelId) {
+    const id = (modelId || '').toLowerCase();
+    let minTokens = 1024;
+    if (/opus/.test(id)) minTokens = 4096;
+    else if (/haiku-3/.test(id)) minTokens = 2048;
+    else if (/gemini/.test(id) && !/flash/.test(id)) minTokens = 4096;
+    return minTokens * 3.5; // rough chars-per-token
+  }
+
+  /**
+   * Mark a message as the end of a cacheable prefix.
+   *
+   * `prefixChars` is the size of EVERYTHING up to and including this message,
+   * not of the message itself — what the provider's minimum applies to is the
+   * whole prefix, so a short trailing history message can still be a perfectly
+   * good breakpoint. No-op for auto-caching providers, which ignore the field.
+   */
+  _withCacheBreakpoint(msg, modelId, prefixChars) {
+    if (!this._modelNeedsCacheBreakpoints(modelId)) return msg;
+    if (typeof msg.content !== 'string') return msg;
+    if ((prefixChars ?? msg.content.length) < this._cacheMinChars(modelId)) return msg;
+    return {
+      ...msg,
+      content: [{ type: 'text', text: msg.content, cache_control: { type: 'ephemeral' } }]
+    };
+  }
+
+  /**
+   * The slice of history to send, chosen so the prefix stays byte-identical
+   * across consecutive turns.
+   *
+   * A plain slice(-N) shifts by one message every turn once history passes N,
+   * which invalidates the cached prefix on EVERY call — exactly the long
+   * conversations where caching would pay the most. Here the cut point only
+   * advances in whole blocks: it holds still for several turns, then jumps.
+   * The window breathes between keepMin and keepMax instead of sitting at a
+   * fixed N, which is the price of a stable prefix and a cheap one.
+   */
+  _stableHistoryWindow(history, keepMax = 16, keepMin = 8) {
+    if (history.length <= keepMax) return history;
+    const step = keepMax - keepMin;
+    const start = Math.ceil((history.length - keepMax) / step) * step;
+    return history.slice(start);
+  }
+
+  /**
+   * Build the message array for a plain (non-agent) chat turn.
+   *
+   * Shared by callAPI and streamResponse, which had drifted into two near
+   * copies of the same logic. Page content used to be concatenated onto the
+   * system prompt itself — which made the system prompt volatile and left
+   * nothing at all cacheable.
+   */
+  _buildChatMessages(systemPrompt, context, contextType, message, model) {
+    let userMessage = message;
+    if (context && contextType === 'selection') {
+      systemPrompt += '\nFocus on the user\'s selected text.';
+    }
+
+    const messages = [
+      this._withCacheBreakpoint({ role: 'system', content: systemPrompt }, model, systemPrompt.length)
+    ];
+
+    const history = this._stableHistoryWindow(
+      this.chatHistory.filter(m => m.role === 'user' || m.role === 'assistant')
+    ).map(m => ({ role: m.role, content: m.content }));
+
+    // sendMessage pushes the current turn to chatHistory BEFORE calling us, so
+    // the trailing entry is this same message — it gets re-added below with the
+    // context attached. Dropping it here avoids sending the user's question
+    // twice, which the old slice(-8) + append did on every context-free turn.
+    const lastHist = history[history.length - 1];
+    if (lastHist && lastHist.role === 'user' && lastHist.content === message) history.pop();
+
+    for (const hm of history) messages.push(hm);
+
+    if (messages.length > 1) {
+      const prefixChars = messages.reduce((n, m) => n + this._msgChars(m), 0);
+      messages[messages.length - 1] =
+        this._withCacheBreakpoint(messages[messages.length - 1], model, prefixChars);
+    }
+
+    // Volatile context rides on the trailing user turn — last position, where
+    // it cannot invalidate anything above it.
+    if (context && contextType === 'selection') {
+      userMessage = `[Selected text: "${context}"]\n\n${message}`;
+    } else if (context && (contextType === 'page' || contextType === 'files')) {
+      userMessage = `[Page content for reference]\n\n${context}\n\n─────────\n\n${message}`;
+    }
+
+    messages.push({ role: 'user', content: userMessage });
+    return { messages, userMessage };
+  }
+
+  /**
+   * Character weight of one message. Content may be a plain string, or an
+   * array of blocks once a cache breakpoint or an image is attached.
+   */
+  _msgChars(m) {
+    const c = m?.content;
+    if (typeof c === 'string') return c.length;
+    if (!Array.isArray(c)) return 500;
+    return c.reduce((n, b) => n + (typeof b?.text === 'string' ? b.text.length : 500), 0);
+  }
+
+  /**
+   * Share of the prompt served from cache, as a display string.
+   * Returns null when there is nothing meaningful to show.
+   */
+  _cacheHitRate(usage) {
+    const prompt = usage?.prompt_tokens || 0;
+    if (!prompt) return null;
+    const cached = usage?.cached_tokens || 0;
+    return Math.round((100 * cached) / prompt) + '%';
+  }
+
+  /** Normalize the cache fields OpenRouter reports across provider shapes. */
+  _readCacheUsage(usage) {
+    if (!usage) return { cached: 0, written: 0 };
+    return {
+      cached: usage.prompt_tokens_details?.cached_tokens || usage.cached_tokens || 0,
+      written: usage.cache_creation_input_tokens
+        || usage.prompt_tokens_details?.cache_write_tokens || 0
+    };
   }
 
   /**
