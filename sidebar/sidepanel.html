@@ -109,8 +109,10 @@
     </div>
   </div>
 
+  <!-- marked stays eager: every rendered message needs it.
+       mermaid (3.5MB) is loaded on demand by _loadMermaid() in sidepanel.js —
+       only the first message that actually contains a diagram pays for it. -->
   <script src="../assets/lib/marked.umd.js"></script>
-  <script src="../assets/lib/mermaid.min.js"></script>
   <script src="agent-loop.js"></script>
   <script src="agent-ui.js"></script>
   <script src="sidepanel.js"></script>

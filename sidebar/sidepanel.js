@@ -20,6 +20,33 @@ var SNN_D = {
 };
 var D = SNN_D;
 
+// ── DIAGRAM CAPABILITY ─────────────────────────────────────────────
+// Appended to every plain-chat system prompt. Without it the model has no way
+// to know the panel renders mermaid (see renderMermaid) and falls back to
+// ASCII art or a markdown table when asked for a diagram.
+// The agent path has its own, longer variant in agent-loop.js — that one also
+// has to forbid drawing via snn_page_script, a tool chat mode doesn't have.
+var MERMAID_PROMPT = `DIAGRAMS: Your replies render as markdown, and a \`\`\`mermaid fenced block renders as a real diagram in this panel.
+
+When asked for a diagram, flowchart, chart, graph, tree, timeline, mind map, architecture view, sequence, or any "show me the structure/flow/relationship of X", you MUST answer with a \`\`\`mermaid block. Never substitute a markdown table or ASCII art, and never say you are unable to draw a diagram — you can.
+
+\`\`\`mermaid
+graph TD
+  A["Claim"] --> B["Counter-argument"]
+  A --> C["Supporting evidence"]
+\`\`\`
+
+Available types — pick the one that fits, don't force everything into a flowchart:
+graph TD / graph LR (flows, trees, argument maps), sequenceDiagram (interactions over time), stateDiagram-v2 (lifecycles), erDiagram (data models), classDiagram, mindmap (topic breakdown), timeline, gantt (schedules), journey, quadrantChart (2x2 positioning), pie, xychart-beta (bar/line charts), sankey-beta (flow volumes), radar-beta (multi-axis comparison), treemap-beta (nested proportions), block-beta, kanban.
+
+CRITICAL: the "-beta" suffix is REQUIRED where shown — writing "xychart" or "sankey" without it fails to parse and renders nothing.
+
+Syntax rules (violating these renders a broken diagram):
+- Wrap EVERY node label in double quotes: A["Label here"]. Unquoted labels break on parentheses, colons, commas, and quotes.
+- Keep node ids short and alphanumeric (A, B, C1) — never spaces or punctuation.
+- One statement per line.
+- No markdown (**bold**, links) inside node labels.`;
+
 class SNNSidePanel {
   constructor() {
     this.chatHistory = [];
@@ -187,19 +214,8 @@ class SNNSidePanel {
       });
     }
 
-    // ── Configure Mermaid ──
-    if (typeof mermaid !== 'undefined') {
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: 'base',
-        securityLevel: 'strict',
-        themeVariables: {
-          primaryColor: '#0556c7',
-          primaryTextColor: '#fff',
-          lineColor: '#0556c7',
-        }
-      });
-    }
+    // Mermaid is NOT configured here — it is loaded and initialized on first
+    // use by _loadMermaid(). See renderMermaid().
 
     await this.loadContext();
     await this.loadMostRecentSession();
@@ -1597,16 +1613,280 @@ class SNNSidePanel {
   }
 
   // ── Mermaid Diagram Rendering ──────────────────────────────────
+
+  /**
+   * Load + initialize mermaid on first use, and only then.
+   *
+   * The bundle is 3.5MB — 68% of assets/lib — and used by a small minority of
+   * messages, so it used to be a blocking parse on every panel open. It is a
+   * classic script that assigns globalThis.mermaid (NOT an ES module), so
+   * dynamic import() cannot load it; a script tag is the supported path. The
+   * src is extension-local, so this satisfies MV3's script-src 'self'.
+   *
+   * The promise is cached, so concurrent callers share one in-flight load and
+   * later callers resolve immediately. On failure the cache is cleared so a
+   * subsequent diagram can retry rather than being permanently poisoned.
+   */
+  _loadMermaid() {
+    if (this._mermaidPromise) return this._mermaidPromise;
+
+    this._mermaidPromise = new Promise((resolve, reject) => {
+      const t0 = performance.now();
+      const script = document.createElement('script');
+      script.src = '../assets/lib/mermaid.min.js';
+      script.onload = () => {
+        if (typeof mermaid === 'undefined') {
+          reject(new Error('mermaid.min.js loaded but global is undefined'));
+          return;
+        }
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: 'base',
+          securityLevel: 'strict',
+          themeVariables: {
+            primaryColor: '#0556c7',
+            primaryTextColor: '#fff',
+            lineColor: '#0556c7',
+          }
+        });
+        D.log('Mermaid loaded on demand', { ms: Math.round(performance.now() - t0) });
+        resolve(mermaid);
+      };
+      script.onerror = () => reject(new Error('Failed to load mermaid.min.js'));
+      document.head.appendChild(script);
+    });
+
+    this._mermaidPromise.catch(() => { this._mermaidPromise = null; });
+    return this._mermaidPromise;
+  }
+
   async renderMermaid(container) {
-    if (typeof mermaid === 'undefined') return;
+    // Check for blocks BEFORE loading — this is the whole point of the lazy
+    // path. A message with no diagram must not trigger the 3.5MB fetch.
     const blocks = container.querySelectorAll('pre.mermaid');
     if (blocks.length === 0) return;
     try {
+      await this._loadMermaid();
       // mermaid.run() finds and renders all .mermaid elements
       await mermaid.run({ nodes: Array.from(blocks) });
+      for (const pre of blocks) this._makeDiagramInteractive(pre);
     } catch (e) {
       D.warn('Mermaid render failed:', e.message);
     }
+  }
+
+  // ── Diagram pan / zoom ─────────────────────────────────────────
+  // Mermaid v11 ships no pan/zoom of its own, and its SVG carries an intrinsic
+  // width (typically 700-800px) that CSS then squashed into a ~330px panel —
+  // legible on a desktop page, ~5px text here. So we drop the intrinsic size,
+  // put the SVG in a fixed-height viewport, and drive it with a transform.
+
+  _MERMAID_MIN_SCALE = 0.2;
+  _MERMAID_MAX_SCALE = 8;
+  // Below this, node text stops being readable in the panel. We would rather
+  // open a wide diagram cropped-but-legible (the user can drag or hit Fit)
+  // than shrink-to-fit into something nobody can read.
+  _MERMAID_MIN_LEGIBLE = 0.85;
+
+  _makeDiagramInteractive(pre) {
+    if (pre.dataset.snnZoom) return;          // already enhanced
+    const svg = pre.querySelector('svg');
+    if (!svg) return;
+    pre.dataset.snnZoom = '1';
+
+    // Natural size: prefer the viewBox, which mermaid always emits and which
+    // survives us stripping the width/height attributes below.
+    const vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    const natW = vb.length === 4 && vb[2] > 0 ? vb[2] : svg.clientWidth || 800;
+    const natH = vb.length === 4 && vb[3] > 0 ? vb[3] : svg.clientHeight || 600;
+
+    // Hand sizing to us, not to mermaid's inline attributes / max-width rule.
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.style.width = natW + 'px';
+    svg.style.height = natH + 'px';
+    svg.style.maxWidth = 'none';
+    svg.style.transformOrigin = '0 0';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'sp-diagram';
+    const viewport = document.createElement('div');
+    viewport.className = 'sp-diagram-viewport';
+    pre.parentNode.insertBefore(wrap, pre);
+    viewport.appendChild(svg);
+    wrap.appendChild(viewport);
+    wrap.appendChild(this._buildDiagramControls());
+    pre.remove();                              // the <pre> was only a mount point
+
+    this._installDiagramPanZoom(wrap, viewport, svg, natW, natH);
+  }
+
+  _buildDiagramControls() {
+    const bar = document.createElement('div');
+    bar.className = 'sp-diagram-ctrls';
+    const btns = [
+      ['zoomout', '−', 'Zoom out'],
+      ['zoomin',  '+',      'Zoom in'],
+      ['fit',     '⤢', 'Fit to width'],
+      ['full',    '⛶', 'Expand'],
+    ];
+    for (const [act, glyph, title] of btns) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sp-diagram-btn';
+      b.dataset.act = act;
+      b.title = title;
+      b.textContent = glyph;
+      bar.appendChild(b);
+    }
+    return bar;
+  }
+
+  /**
+   * Wire pan/zoom onto one diagram. Returns nothing; all state lives in the
+   * closure so a fullscreen clone can run an independent instance.
+   */
+  _installDiagramPanZoom(wrap, viewport, svg, natW, natH) {
+    const state = { k: 1, x: 0, y: 0 };
+    const clamp = (v) => Math.min(this._MERMAID_MAX_SCALE, Math.max(this._MERMAID_MIN_SCALE, v));
+
+    const apply = () => {
+      svg.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.k})`;
+      // Only advertise dragging when there is actually something off-screen.
+      const pannable = natW * state.k > viewport.clientWidth + 1 ||
+                       natH * state.k > viewport.clientHeight + 1;
+      viewport.classList.toggle('is-pannable', pannable);
+    };
+
+    const fit = () => {
+      const vw = viewport.clientWidth || natW;
+      const vh = viewport.clientHeight || natH;
+      state.k = clamp(Math.min(vw / natW, vh / natH, 1));
+      // Centre horizontally; pin to the top so a tall diagram starts at its root.
+      state.x = Math.max(0, (vw - natW * state.k) / 2);
+      state.y = Math.max(0, (vh - natH * state.k) / 2);
+      apply();
+    };
+
+    // Opening view: fit, unless fitting would make the text unreadable — then
+    // stay at the legibility floor, anchored top-left, and let the user pan.
+    const initial = () => {
+      const vw = viewport.clientWidth || natW;
+      const fitK = Math.min(vw / natW, 1);
+      if (fitK >= this._MERMAID_MIN_LEGIBLE) { fit(); return; }
+      state.k = this._MERMAID_MIN_LEGIBLE;
+      state.x = 0;
+      state.y = 0;
+      apply();
+    };
+
+    // Zoom about the viewport centre so button-zoom keeps your place.
+    const zoomBy = (factor) => {
+      const cx = viewport.clientWidth / 2, cy = viewport.clientHeight / 2;
+      const k2 = clamp(state.k * factor);
+      const r = k2 / state.k;
+      state.x = cx - (cx - state.x) * r;
+      state.y = cy - (cy - state.y) * r;
+      state.k = k2;
+      apply();
+    };
+
+    wrap.querySelector('.sp-diagram-ctrls').addEventListener('click', (e) => {
+      const act = e.target.closest('.sp-diagram-btn')?.dataset.act;
+      if (!act) return;
+      e.preventDefault();
+      if (act === 'zoomin')  zoomBy(1.25);
+      if (act === 'zoomout') zoomBy(1 / 1.25);
+      if (act === 'fit')     fit();
+      if (act === 'full')    this._openDiagramFullscreen(svg, natW, natH);
+    });
+
+    // ── Wheel: ctrl/⌘ + wheel zooms, plain wheel scrolls the chat ──
+    // Hijacking plain wheel would trap the page scroll every time the pointer
+    // crossed a diagram, which is worse than making zoom explicit.
+    viewport.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      const px = e.clientX - rect.left, py = e.clientY - rect.top;
+      const k2 = clamp(state.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
+      const r = k2 / state.k;
+      state.x = px - (px - state.x) * r;   // zoom toward the cursor
+      state.y = py - (py - state.y) * r;
+      state.k = k2;
+      apply();
+    }, { passive: false });
+
+    // ── Drag to pan ──
+    let drag = null;
+    viewport.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      drag = { px: e.clientX, py: e.clientY, ox: state.x, oy: state.y };
+      viewport.setPointerCapture(e.pointerId);
+      viewport.classList.add('is-dragging');
+    });
+    viewport.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      state.x = drag.ox + (e.clientX - drag.px);
+      state.y = drag.oy + (e.clientY - drag.py);
+      apply();
+    });
+    const endDrag = (e) => {
+      if (!drag) return;
+      drag = null;
+      try { viewport.releasePointerCapture(e.pointerId); } catch (_) {}
+      viewport.classList.remove('is-dragging');
+    };
+    viewport.addEventListener('pointerup', endDrag);
+    viewport.addEventListener('pointercancel', endDrag);
+    viewport.addEventListener('dblclick', () => fit());
+
+    // clientWidth is 0 until layout runs, so defer the first measurement.
+    requestAnimationFrame(initial);
+  }
+
+  /**
+   * Expand a diagram to a full-panel overlay. In a ~330px side panel this is
+   * the only way some diagrams are genuinely readable, so it is the primary
+   * affordance rather than a nicety. Works on a clone so the inline diagram
+   * keeps its own independent pan/zoom state.
+   */
+  _openDiagramFullscreen(svg, natW, natH) {
+    const overlay = document.createElement('div');
+    overlay.className = 'sp-diagram-full';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'sp-diagram sp-diagram-full-inner';
+    const viewport = document.createElement('div');
+    viewport.className = 'sp-diagram-viewport';
+
+    const clone = svg.cloneNode(true);
+    clone.style.transform = '';
+    viewport.appendChild(clone);
+    wrap.appendChild(viewport);
+
+    const ctrls = this._buildDiagramControls();
+    ctrls.querySelector('[data-act="full"]')?.remove();   // already expanded
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'sp-diagram-btn';
+    close.title = 'Close';
+    close.textContent = '✕';
+    ctrls.appendChild(close);
+    wrap.appendChild(ctrls);
+    overlay.appendChild(wrap);
+    document.body.appendChild(overlay);
+
+    const dismiss = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') dismiss(); };
+    document.addEventListener('keydown', onKey);
+    close.addEventListener('click', dismiss);
+    overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) dismiss(); });
+
+    this._installDiagramPanZoom(wrap, viewport, clone, natW, natH);
   }
 
   escapeHtml(s) {
@@ -3710,6 +3990,11 @@ class SNNSidePanel {
     // Only add base prompt if it's meaningfully different from identity
     const base = basePrompt || 'You are a helpful AI assistant. Be concise and accurate.';
     if (base !== identity) parts.push(base);
+    // Appended unconditionally, NOT folded into the identity stamp: a user who
+    // sets a custom instruction replaces `identity` wholesale, and the chat
+    // path renders mermaid just like the agent path does — so this has to
+    // survive that replacement.
+    parts.push(MERMAID_PROMPT);
     return parts.join('\n\n');
   }
 

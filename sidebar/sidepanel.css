@@ -1536,34 +1536,129 @@ body.theme-dark .sp-model-tag-param {
 .sp-msg-ai del { opacity: 0.7; }
 
 /* ── Mermaid Diagrams ─────────────────────────────────────────── */
+/* pre.mermaid is only a mount point — _makeDiagramInteractive() replaces it
+   with .sp-diagram once rendered. It is still styled here because it is what
+   the user sees if mermaid fails to load. */
 .sp-msg-ai pre.mermaid {
   background: transparent;
   padding: 0;
   overflow: visible;
 }
-.sp-msg-ai pre.mermaid svg {
-  max-width: 100%;
-  height: auto;
+.sp-msg-ai pre.mermaid svg { max-width: 100%; height: auto; }
+
+/* ── Interactive diagram viewport ──────────────────────────────── */
+.sp-diagram {
+  position: relative;
+  margin: 10px 0;
+  border: 1px solid var(--sp-border);
+  border-radius: 8px;
+  background: var(--sp-bg);
+  overflow: hidden;
 }
-/* Light mode: mermaid uses base theme which is light */
+.sp-diagram-viewport {
+  height: 320px;
+  overflow: hidden;
+  /* Native drag-handle: the cheapest way to let a user give a dense diagram
+     more room without us inventing a resize interaction. */
+  resize: vertical;
+  touch-action: none;          /* we handle panning via pointer events */
+  cursor: default;
+}
+.sp-diagram-viewport.is-pannable { cursor: grab; }
+.sp-diagram-viewport.is-dragging { cursor: grabbing; }
+.sp-diagram-viewport svg {
+  display: block;
+  max-width: none;             /* overrides the fit-to-panel rule above */
+  transform-origin: 0 0;
+  user-select: none;
+}
+
+.sp-diagram-ctrls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.sp-diagram:hover .sp-diagram-ctrls,
+.sp-diagram-ctrls:focus-within { opacity: 1; }
+.sp-diagram-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--sp-text);
+  background: var(--sp-bg);
+  border: 1px solid var(--sp-border);
+  border-radius: 5px;
+  cursor: pointer;
+  padding: 0;
+}
+.sp-diagram-btn:hover {
+  background: var(--sp-accent);
+  color: var(--sp-accent-text);
+  border-color: var(--sp-accent);
+}
+
+/* ── Fullscreen diagram overlay ────────────────────────────────── */
+.sp-diagram-full {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--sp-overlay-bg);
+  display: flex;
+  padding: 12px;
+}
+.sp-diagram-full-inner {
+  flex: 1;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sp-bg);
+}
+.sp-diagram-full-inner .sp-diagram-viewport {
+  flex: 1;
+  height: auto;
+  resize: none;
+}
+.sp-diagram-full .sp-diagram-ctrls { opacity: 1; }
+
+/* Dark mode: mermaid renders with its light "base" theme, so labels need
+   forcing. Targets .sp-diagram (post-enhancement) AND pre.mermaid (the
+   pre-enhancement / load-failure fallback). */
+body.theme-dark .sp-diagram svg .label,
+body.theme-dark .sp-diagram svg .nodeLabel,
+body.theme-dark .sp-diagram svg .edgeLabel,
 body.theme-dark .sp-msg-ai pre.mermaid svg .label,
 body.theme-dark .sp-msg-ai pre.mermaid svg .nodeLabel,
 body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel {
   fill: #d4d4d4 !important;
   color: #d4d4d4 !important;
 }
+body.theme-dark .sp-diagram svg .edgeLabel rect,
+body.theme-dark .sp-diagram svg .edgeLabel span,
 body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel rect,
 body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   background: #2a2a2a !important;
   fill: #2a2a2a !important;
 }
 @media (prefers-color-scheme: dark) {
+  body.theme-auto .sp-diagram svg .label,
+  body.theme-auto .sp-diagram svg .nodeLabel,
+  body.theme-auto .sp-diagram svg .edgeLabel,
   body.theme-auto .sp-msg-ai pre.mermaid svg .label,
   body.theme-auto .sp-msg-ai pre.mermaid svg .nodeLabel,
   body.theme-auto .sp-msg-ai pre.mermaid svg .edgeLabel {
     fill: #d4d4d4 !important;
     color: #d4d4d4 !important;
   }
+  body.theme-auto .sp-diagram svg .edgeLabel rect,
+  body.theme-auto .sp-diagram svg .edgeLabel span,
   body.theme-auto .sp-msg-ai pre.mermaid svg .edgeLabel rect,
   body.theme-auto .sp-msg-ai pre.mermaid svg .edgeLabel span {
     background: #2a2a2a !important;
