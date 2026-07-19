@@ -673,6 +673,17 @@ class SNNSidePanel {
     const attachments = [...(this._pendingAttachments || [])];
     if ((!message && attachments.length === 0) || this.isLoading) return;
 
+    // A busy agent must not fall through to the plain-chat path unannounced —
+    // that path has no tools, so the model answers as if it had acted and the
+    // user is given no reason why. Checked HERE, before the input is consumed
+    // and the turn is pushed to history, so nothing is left orphaned.
+    // (isLoading normally covers this; the gap is the brief window where a
+    // cancelled run is still unwinding after _resetLoadingState.)
+    if (this._agentLoop?.isBusy) {
+      this.showToast('Agent is still working — press Escape to cancel it first', 'warning');
+      return;
+    }
+
     // ── Lock model choice for this session (first message wins) ──
     if (!this._modelLocked) {
       this._modelLocked = true;
@@ -758,6 +769,24 @@ class SNNSidePanel {
     if (this._agentLoop && !this._agentLoop.isBusy && !hasMultimodalAttachments) {
       try {
         const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId);
+
+        // ── Cancelled: stop here. Do NOT fall through. ───────────
+        // Falling through to the plain-chat path fired a brand-new LLM
+        // request for the exact message the user had just stopped — so Stop
+        // cost money and produced the answer anyway. The history marker
+        // matters just as much: without it the next turn sees an instruction
+        // that looks unfinished and the model re-runs the whole thing.
+        if (agentResult?.type === 'cancelled') {
+          D.log('agent run cancelled — not falling through to plain chat', { reason: agentResult.reason });
+          sendRef.messages.push({
+            role: 'assistant',
+            content: '[Task stopped by the user before completion.]',
+            cancelled: true
+          });
+          await this.saveChatHistory(sendRef);
+          this._resetLoadingState();
+          return;
+        }
 
         // Tab-switch guard. Stale means "don't draw this into the tab the
         // user is looking at now" — NOT "throw the answer away". The reply
@@ -1024,7 +1053,7 @@ class SNNSidePanel {
     const body = {
       model,
       messages,
-      max_tokens: settings.maxTokens || 4096,
+      max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
     if (settings.topP !== undefined) body.top_p = settings.topP;
@@ -1070,7 +1099,7 @@ class SNNSidePanel {
 
     const body = {
       model, messages, stream: true,
-      max_tokens: settings.maxTokens || 4096,
+      max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
     if (settings.topP !== undefined) body.top_p = settings.topP;
@@ -2081,7 +2110,7 @@ class SNNSidePanel {
           <h4>Response</h4>
           <div class="sp-field">
             <label>Max Tokens</label>
-            <input type="number" id="s-max-tokens" value="${s.maxTokens || 10000}" min="256" max="131072">
+            <input type="number" id="s-max-tokens" value="${s.maxTokens || 16000}" min="256" max="131072">
             <small>Max response length. Modern models support up to 128K.</small>
           </div>
           <div class="sp-field-range">
@@ -2103,9 +2132,10 @@ class SNNSidePanel {
           </div>
         </div>
         <div class="sp-section">
-          <h4>Page Content Limit (words)</h4>
+          <h4>Page Content Limit (characters)</h4>
           <div class="sp-field">
-            <input type="number" id="s-content-limit" value="${s.contentLimit || 15000}" min="500" max="100000">
+            <input type="number" id="s-content-limit" value="${s.contentLimit || 200000}" min="500" max="2000000">
+            <small>How much page text to hand the model. Large context windows are cheap — raise it freely. Pages the agent reads with its own tools are never cut by this.</small>
           </div>
         </div>
         <div class="sp-section">
@@ -2662,10 +2692,10 @@ class SNNSidePanel {
     const settings = {
       openrouterKey: getVal('s-openrouter-key'),
       openrouterModel: getVal('s-openrouter-model'),
-      maxTokens: parseInt(getVal('s-max-tokens')) || 4096,
+      maxTokens: parseInt(getVal('s-max-tokens')) || 16000,
       temperature: parseFloat(getVal('s-temperature')) || 0.7,
       topP: parseFloat(getVal('s-top-p')) || 0.9,
-      contentLimit: parseInt(getVal('s-content-limit')) || 15000,
+      contentLimit: parseInt(getVal('s-content-limit')) || 200000,
       systemPrompt: getVal('s-system-prompt'),
       theme: getVal('s-theme'),
       fontSize: parseInt(getVal('s-font-size')) || 16,
@@ -2981,6 +3011,11 @@ class SNNSidePanel {
         if (msg.context) hasContextMessage = true;
       } else if (msg.role === 'assistant') {
         flushGroup();
+        // Cancellation markers exist purely so the NEXT turn's LLM history
+        // shows the instruction was deliberately abandoned (otherwise the
+        // model re-runs the whole task). The user already sees the
+        // "Interrupted" status chip — don't render a second bubble saying so.
+        if (msg.cancelled) continue;
         this.addMessage('ai', msg.content, msg.tokenUsage);
       } else if (msg.role === 'agent-action') {
         // If no group is building yet, implicitly start one.

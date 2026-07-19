@@ -342,20 +342,32 @@ async function _handleBgAgentAction(message, sendResponse) {
         if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No target tab for navigation.', retryable: false } }); return; }
         const url = await _makeAbsoluteUrl(p.url, tabId);
         await chrome.tabs.update(tabId, { url });
-        
+
+        // Derive our wait budget from the caller's own timeout (meta.timeout,
+        // set by SNNAgentLoop._timeoutForAction) minus room for the settle
+        // delay and message round-trip. Hardcoding it here let the two drift:
+        // the loop used to give up at 15s while this waited 25s + 2s, so the
+        // retry engine duplicated navigations on every slow page.
+        const SETTLE_MS = 2000;
+        const callerBudget = message.meta?.timeout || 0;
+        const waitBudget = callerBudget
+          ? Math.max(5000, callerBudget - SETTLE_MS - 6000)
+          : 25000;
+        D.log('agent:navigate wait budget', { callerBudget, waitBudget, url });
+
         // Wait for the page to finish loading (with timeout)
         await new Promise((resolve) => {
           const timeout = setTimeout(() => {
             chrome.tabs.onUpdated.removeListener(listener);
             resolve();
-          }, 25000);
-          
+          }, waitBudget);
+
           const listener = (updatedTabId, changeInfo) => {
             if (updatedTabId === tabId && changeInfo.status === 'complete') {
               clearTimeout(timeout);
               chrome.tabs.onUpdated.removeListener(listener);
               // Give JS-rendered content a moment to settle
-              setTimeout(resolve, 2000);
+              setTimeout(resolve, SETTLE_MS);
             }
           };
           chrome.tabs.onUpdated.addListener(listener);
@@ -754,14 +766,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // ═══════════════════════════════════════════════════════════════
   if (message.action && message.action.startsWith('agent:')) {
     D.log('→ ROUTE PAGE', message.action);
-    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+    // Prefer the tab the caller explicitly targeted. Falling back to the
+    // active tab means a click/type can execute on whatever page the user
+    // switched to mid-run — which is exactly what the side panel's
+    // direct-to-tab routing exists to prevent.
+    const explicitTabId = message.targetTabId || message.payload?.tabId;
+    const resolveTab = explicitTabId
+      ? chrome.tabs.get(explicitTabId).catch(() => null)
+      : chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => t || null);
+
+    resolveTab.then((tab) => {
       if (!tab?.id) {
-        D.warn('→ ROUTE PAGE: no active tab');
+        D.warn('→ ROUTE PAGE: no target tab', { explicitTabId });
         sendResponse({
           success: false,
           error: {
             code: 'NO_ACTIVE_TAB',
-            message: 'No active tab to perform the action on.',
+            message: explicitTabId
+              ? 'The target tab is no longer available.'
+              : 'No active tab to perform the action on.',
             retryable: false,
             suggestion: 'Open a web page and try again.'
           }

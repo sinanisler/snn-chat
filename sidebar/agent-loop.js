@@ -50,10 +50,33 @@ class SNNAgentLoop {
     this._pendingResolve = null; // for BLOCKED state
     this._abortController = null; // for cancelling in-flight LLM fetch
 
+    // Owned SOLELY by run()'s try/finally. Deliberately NOT derived from
+    // _state: cancellation paths leave _state at 'CANCELLED' while run() is
+    // still unwinding, and _onTabSwitched cancels then awaits — a state-derived
+    // busy check would let a second run() enter that window and _reset() the
+    // first one mid-flight. Never reset this in _reset().
+    this._running = false;
+
     // ── Config ─────────────────────────────────────────────────
     this.MAX_RETRIES = 3;
     this.RETRY_DELAYS = [1000, 3000, 8000]; // ms base (jitter added)
     this.DEFAULT_TIMEOUT = 15000; // ms per action
+    this.MAX_RETRY_TIMEOUT = 60000; // ceiling for backoff-inflated timeouts
+    // Must exceed the background navigate handler's own wait budget
+    // (see background.js agent:navigate) or the loop times out on a
+    // navigation that is still in flight and the retry engine duplicates it.
+    this.NAV_SETTLE_MS = 27000;
+    // ── Context budget ─────────────────────────────────────────
+    // The real limit comes from the selected model's own context_length
+    // (see _contextBudgetChars). Nothing is trimmed until that is actually
+    // exceeded — big-context models get to use their whole window.
+    // A ceiling, not a target — the loop exits as soon as the model stops
+    // calling tools. Deep research (navigate + readPage per page, plus
+    // mapPage/scroll) burns two or more per source, so 20 bound real tasks.
+    this.MAX_ITERATIONS = 40;
+    this.CHARS_PER_TOKEN = 4;        // standard rough ratio
+    this.CONTEXT_SAFETY = 0.9;       // headroom for estimate error
+    this.FALLBACK_CONTEXT_TOKENS = 200000; // used only when metadata is missing
 
     // ── Background-level actions (handled by SW, not forwarded to page) ──
     this._BG_ACTIONS = new Set([
@@ -96,7 +119,19 @@ class SNNAgentLoop {
 
   // ── Public API ──────────────────────────────────────────────────
   get state() { return this._state; }
-  get isBusy() { return this._state !== 'IDLE' && this._state !== 'FAILED'; }
+  get isBusy() { return this._running; }
+
+  /**
+   * The value every cancellation path returns.
+   *
+   * A bare `return` yields undefined, which sendMessage cannot tell apart
+   * from "agent unavailable / no API key" — so it fell through to the
+   * plain-chat fallback and fired a FRESH LLM request for the very message
+   * the user just stopped. Cancellation has to be a value, not an absence.
+   */
+  _cancelledResult() {
+    return { type: 'cancelled', reason: this._cancelReason || 'user' };
+  }
 
   /**
    * Cancel the current task. Safe to call from any state.
@@ -126,10 +161,13 @@ class SNNAgentLoop {
    * The LLM receives all SNN actions as tool definitions and decides what to do.
    */
   async run(userMessage, context, tabId) {
-    if (this.isBusy) {
+    if (this._running) {
       this.sp.showToast('Agent is already working. Wait or press Escape to cancel.', 'warning');
       return;
     }
+    // Set synchronously — nothing below awaits before the try, so no other
+    // turn can slip in between the check and the claim.
+    this._running = true;
 
     D.log('▶ run START', { msgPreview: userMessage.substring(0, 100), contextType: context?.type, tabId, model: this.sp._selectedModelInfo?.id || 'unknown' });
     this._reset();
@@ -179,7 +217,7 @@ class SNNAgentLoop {
 
       // Add page context if available
       if (context?.type === 'page' && context?.detail) {
-        const limit = settings.contentLimit || 15000;
+        const limit = settings.contentLimit || 200000;
         const detail = context.detail.length > limit
           ? context.detail.substring(0, limit) + '\n\n[... truncated to ' + limit + ' chars ...]'
           : context.detail;
@@ -192,7 +230,7 @@ class SNNAgentLoop {
 
       // Add user-selected text if available (e.g., highlighted table rows, paragraphs, etc.)
       if (context?.type === 'selection' && context?.detail) {
-        const limit = settings.contentLimit || 15000;
+        const limit = settings.contentLimit || 200000;
         const detail = context.detail.length > limit
           ? context.detail.substring(0, limit) + '\n\n[... selection truncated to ' + limit + ' chars ...]'
           : context.detail;
@@ -202,16 +240,19 @@ class SNNAgentLoop {
         });
       }
 
-      const MAX_ITERATIONS = 20;
+      const MAX_ITERATIONS = this.MAX_ITERATIONS;
       let iteration = 0;
       let finalContent = null;
 
       while (iteration < MAX_ITERATIONS && !this._cancelled) {
         iteration++;
-        if (!this._checkTabStillValid()) return;
+        if (!this._checkTabStillValid()) return this._cancelledResult();
+
+        // No-op unless the conversation genuinely exceeds this model's window.
+        this._fitContextToBudget(messages, settings, iteration);
 
         const response = await this._callLLMWithTools(messages, tools, settings);
-        if (this._cancelled) return;
+        if (this._cancelled) return this._cancelledResult();
 
         const choice = response.choices?.[0];
         if (!choice) break;
@@ -239,7 +280,7 @@ class SNNAgentLoop {
           // Execute each tool call
           for (const tc of msg.tool_calls) {
             if (this._cancelled) break;
-            if (!this._checkTabStillValid()) return;
+            if (!this._checkTabStillValid()) return this._cancelledResult();
 
             const fnName = tc.function?.name || '';
             const fnArgs = this._safeParseJSON(tc.function?.arguments || '{}');
@@ -341,7 +382,7 @@ Be honest. The user will see if you claim to have done something you did not.`
         break;
       }
 
-      if (this._cancelled) return;
+      if (this._cancelled) return this._cancelledResult();
 
       //  - - - - REPORT  - - - -
       if (this._stepResults.length > 0) {
@@ -367,17 +408,33 @@ Be honest. The user will see if you claim to have done something you did not.`
 
     } catch (err) {
       D.error('▶ run CRASHED', { error: err.message, stack: err.stack?.split('\n').slice(0,3).join(' | ') });
-      if (!this._cancelled) {
-        // A crash here is most often the LLM call failing (bad key, no
-        // credit, rate limit). Route it through the shared categorizer so
-        // the user is told whose fault it is instead of getting "UNHANDLED".
-        const failData = {
-          phase: 'AGENTIC_LOOP',
-          totalAttempts: 1,
-          error: this.sp.categorizeApiError(err)
-        };
-        if (this.onError) this.onError(failData);
-        this._transition('FAILED', failData);
+      // A cancel aborts the in-flight fetch, which surfaces here as an
+      // AbortError. That is not a crash — report it as a cancellation so the
+      // caller doesn't treat it as "agent unavailable" and retry the message.
+      if (this._cancelled) return this._cancelledResult();
+
+      // A crash here is most often the LLM call failing (bad key, no
+      // credit, rate limit). Route it through the shared categorizer so
+      // the user is told whose fault it is instead of getting "UNHANDLED".
+      const failData = {
+        phase: 'AGENTIC_LOOP',
+        totalAttempts: 1,
+        error: this.sp.categorizeApiError(err)
+      };
+      if (this.onError) this.onError(failData);
+      this._transition('FAILED', failData);
+    } finally {
+      // Runs on EVERY exit — success, crash, and every cancellation return.
+      // Without this the agent stays busy forever after a single Escape and
+      // silently degrades to tool-less chat.
+      this._running = false;
+      this._abortController = null;
+      // Normalize only non-terminal states. FAILED and CANCELLED are
+      // meaningful end states the UI has already rendered and whose action
+      // group is already finalized — forcing IDLE on top appends a stray
+      // "Completed" entry outside the group.
+      if (this._state !== 'IDLE' && this._state !== 'FAILED' && this._state !== 'CANCELLED') {
+        this._transition('IDLE');
       }
     }
   }
@@ -574,7 +631,7 @@ Step Final: Only after visiting multiple pages: synthesize a REPORT.
 
 WHEN YOU DO USE TOOLS:
 1. Say something brief like "On it!" or "Let me check that" then call the tool.
-2. You have PLENTY of iterations (20) — don't rush. Deep research takes time.
+2. You have PLENTY of iterations (40) — don't rush. Deep research takes time.
 3. After tools return results, analyze what you learned. Decide what to visit next.
 4. SELECTOR PRIORITY (most robust first):
    a) :role("button","Submit") / :role("link","Home") / :role("textbox","Search")
@@ -620,7 +677,7 @@ CRITICAL RULES:
       tools,
       tool_choice: 'auto',
       parallel_tool_calls: false,  // one tool per response — prevents tool-result interleaving issues
-      max_tokens: settings.maxTokens || 4096,
+      max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
 
@@ -702,7 +759,7 @@ CRITICAL RULES:
       action: actionName,
       description,
       params,
-      timeout: actionName === 'scrollAndAct' ? 180000 : this.DEFAULT_TIMEOUT
+      timeout: this._timeoutForAction(actionName, params)
     };
 
     this._plan.push(step);
@@ -786,6 +843,26 @@ CRITICAL RULES:
         this.sp._agentUI.updateLastActionEntry('fail', result.error?.message || 'Failed');
       }
       return { error: result.error?.message || 'Action failed', code: result.error?.code || 'UNKNOWN' };
+    }
+  }
+
+  /**
+   * Per-action timeout budget.
+   *
+   * A flat DEFAULT_TIMEOUT is wrong for anything that legitimately takes
+   * longer than 15s: the loop declares a timeout while the operation is still
+   * in flight, then the retry engine fires a DUPLICATE of it. navigate hit
+   * this against the background's own 25s+2s wait; wait and waitForElement
+   * hit it whenever the model passes an argument above 15000.
+   */
+  _timeoutForAction(actionName, params = {}) {
+    switch (actionName) {
+      case 'navigate':       return this.NAV_SETTLE_MS + 8000;
+      case 'reload':         return this.NAV_SETTLE_MS;
+      case 'scrollAndAct':   return 180000;
+      case 'wait':           return (params.ms || 1000) + 5000;
+      case 'waitForElement': return (params.timeout || 10000) + 5000;
+      default:               return this.DEFAULT_TIMEOUT;
     }
   }
 
@@ -946,7 +1023,15 @@ CRITICAL RULES:
     D.log('_sendWithTimeout', { action: message.action, isBgAction, sendTabId: this._sendTabId, timeout });
     return new Promise((resolve) => {
       let settled = false;
-      const timer = setTimeout(() => { if (!settled) { settled = true; D.warn('_sendWithTimeout TIMEOUT', { action: message.action, timeout }); resolve(null); } }, timeout);
+      const done = (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } };
+      // ONE timer covering the primary send AND the fallback. Clearing it
+      // before issuing the fallback (as this used to) left the fallback
+      // completely unraced — a hung one froze the agent with no timeout,
+      // no error card, and no path to FAILED.
+      const timer = setTimeout(() => {
+        D.warn('_sendWithTimeout TIMEOUT', { action: message.action, timeout });
+        done(null);
+      }, timeout);
 
       // Route page actions to the specific tab (not broadcast) to prevent cross-tab interference
       const sendPromise = isBgAction
@@ -955,21 +1040,22 @@ CRITICAL RULES:
             ? chrome.tabs.sendMessage(this._sendTabId, message)
             : Promise.reject(new Error('No target tab')));
 
-      sendPromise.then((response) => {
-        if (!settled) { settled = true; clearTimeout(timer); resolve(response); }
-      }).catch((err) => {
-        if (!settled) {
-          settled = true; clearTimeout(timer);
-          D.warn('_sendWithTimeout SEND FAILED', { action: message.action, isBgAction, error: err.message, willRetry: !isBgAction && !!this._sendTabId });
-          if (!isBgAction && this._sendTabId) {
-            chrome.runtime.sendMessage(message).then((r) => { D.log('_sendWithTimeout fallback OK', { action: message.action }); resolve(r); }).catch(() => {
-              D.error('_sendWithTimeout fallback FAILED', { action: message.action });
-              resolve({ success: false, error: { code: 'NETWORK_ERROR', message: 'Could not reach the page. The tab may have closed.', retryable: false, suggestion: 'Reopen the page and try again.' } });
-            });
-          } else {
-            resolve({ success: false, error: { code: 'NETWORK_ERROR', message: err.message, retryable: true, suggestion: 'Check the connection and try again.' } });
-          }
+      sendPromise.then(done).catch((err) => {
+        if (settled) return;
+        D.warn('_sendWithTimeout SEND FAILED', { action: message.action, isBgAction, error: err.message, willRetry: !isBgAction && !!this._sendTabId });
+        if (isBgAction || !this._sendTabId) {
+          done({ success: false, error: { code: 'NETWORK_ERROR', message: err.message, retryable: true, suggestion: 'Check the connection and try again.' } });
+          return;
         }
+        // Fallback via the service worker (covers SW cold start). targetTabId
+        // pins it to the ORIGINAL tab — without it the background forwards to
+        // whatever tab is active now, so a click can land on the wrong page.
+        chrome.runtime.sendMessage({ ...message, targetTabId: this._sendTabId })
+          .then((r) => { D.log('_sendWithTimeout fallback OK', { action: message.action }); done(r); })
+          .catch(() => {
+            D.error('_sendWithTimeout fallback FAILED', { action: message.action });
+            done({ success: false, error: { code: 'NETWORK_ERROR', message: 'Could not reach the page. The tab may have closed.', retryable: false, suggestion: 'Reopen the page and try again.' } });
+          });
       });
     });
   }
@@ -985,12 +1071,18 @@ CRITICAL RULES:
 
   _applyRetryStrategy(step, error, attemptNum) {
     const modified = { ...step, params: { ...step.params, options: { ...(step.params?.options || {}) } } };
+    // Backoff inflates the timeout on every attempt. Uncapped, three retries
+    // on a 35s navigate would reach 280s of dead waiting.
+    const grow = (factor) => Math.min(
+      (step.timeout || this.DEFAULT_TIMEOUT) * factor,
+      this.MAX_RETRY_TIMEOUT
+    );
 
     switch (error.code) {
       case 'ELEMENT_NOT_FOUND':
         // Try harder to find the element; scan recovery may already have rewritten selector
         modified.params.options.allowHidden = true;
-        modified.timeout = (step.timeout || this.DEFAULT_TIMEOUT) * 1.5;
+        modified.timeout = grow(1.5);
         // Fallback text selector if we still only have a brittle CSS selector
         if (attemptNum >= 2 && step.elementDescription && modified.params.selector && !String(modified.params.selector).startsWith(':')) {
           const safe = String(step.elementDescription).replace(/"/g, '\\"').substring(0, 60);
@@ -1000,11 +1092,11 @@ CRITICAL RULES:
 
       case 'ELEMENT_NOT_INTERACTABLE':
         modified.params.options.skipScroll = false;
-        modified.timeout = (step.timeout || this.DEFAULT_TIMEOUT) * 1.5;
+        modified.timeout = grow(1.5);
         break;
 
       case 'TIMEOUT':
-        modified.timeout = (step.timeout || this.DEFAULT_TIMEOUT) * 2;
+        modified.timeout = grow(2);
         break;
 
       case 'NETWORK_ERROR':
@@ -1017,7 +1109,7 @@ CRITICAL RULES:
 
       default:
         // Generic: increase timeout, be more lenient
-        modified.timeout = (step.timeout || this.DEFAULT_TIMEOUT) * 1.3;
+        modified.timeout = grow(1.3);
         modified.params.options.allowHidden = true;
     }
 
@@ -1210,6 +1302,10 @@ CRITICAL RULES:
     this._lastScreenshot = null;
     this._selfAuditDone = false;
     this._expectNavigation = false;
+    this._budgetWarned = false;
+    this._compactedMsgs = new WeakSet();
+    // NOTE: _running is deliberately NOT reset here — it is owned by run()'s
+    // try/finally, and _reset() is called from inside a live run.
   }
 
   // ── Utilities ───────────────────────────────────────────────────
@@ -1243,6 +1339,106 @@ CRITICAL RULES:
   }
 
   /**
+   * Collapse older tool results so a multi-page research run doesn't carry
+   * every article it ever read into iteration 20. The model already extracted
+   * what it needed from them on the turn they arrived.
+   *
+   * CRITICAL: the messages stay in place. A `role:'tool'` message removed from
+   * the array orphans its tool_call_id and providers reject the request — so
+   * only the CONTENT is replaced, never the message itself.
+   */
+  /** Rough size of the whole conversation, in characters. */
+  _estimateContextChars(messages) {
+    return messages.reduce(
+      (n, m) => n + (typeof m.content === 'string' ? m.content.length : 500), 0
+    );
+  }
+
+  /**
+   * The real usable context of the CURRENTLY SELECTED model, in characters.
+   *
+   * Taken from OpenRouter's own metadata rather than a hardcoded guess, so a
+   * million-token model is allowed to actually use its million tokens. For
+   * such models this effectively never binds — which is the point. The budget
+   * exists only so an 8k-context model degrades gracefully instead of dying
+   * on an opaque provider error mid-run.
+   */
+  _contextBudgetChars(settings) {
+    const modelId = this.sp._sessionModel || settings?.openrouterModel;
+    const meta = this.sp._modelsData?.[modelId] || this.sp._selectedModelInfo || null;
+    const ctxTokens = meta?.top_provider?.context_length
+      || meta?.context_length
+      || meta?.endpoints?.[0]?.context_length
+      || 0;
+
+    // Unknown model: assume something generous rather than trimming blindly.
+    if (!ctxTokens) return this.FALLBACK_CONTEXT_TOKENS * this.CHARS_PER_TOKEN;
+
+    // Reserve room for the completion plus headroom for token-estimate error.
+    const reserved = (settings?.maxTokens || 16000) + 2000;
+    const usable = Math.max(2000, ctxTokens - reserved);
+    return Math.floor(usable * this.CHARS_PER_TOKEN * this.CONTEXT_SAFETY);
+  }
+
+  /**
+   * Keep the conversation inside the model's window — and do NOTHING if it
+   * already fits.
+   *
+   * Deliberately not proactive. Trimming page text the user explicitly asked
+   * the agent to read is a loss, so it happens only when the alternative is
+   * the request failing outright. Oldest tool results go first; each is
+   * replaced with a stub until the total fits.
+   *
+   * CRITICAL: messages stay in place. A `role:'tool'` message removed from
+   * the array orphans its tool_call_id and providers reject the request — so
+   * only the CONTENT is replaced, never the message itself.
+   */
+  _fitContextToBudget(messages, settings, iteration) {
+    const budget = this._contextBudgetChars(settings);
+    let size = this._estimateContextChars(messages);
+    if (size <= budget) return; // The common case — nothing is touched.
+
+    if (!this._compactedMsgs) this._compactedMsgs = new WeakSet();
+    D.warn('CONTEXT OVER BUDGET — trimming oldest tool results', { size, budget, iteration });
+
+    const toolIdx = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role === 'tool') toolIdx.push(i);
+    }
+
+    // Never touch the two most recent results — those are what the model is
+    // actively reasoning about right now.
+    const cutoff = Math.max(0, toolIdx.length - 2);
+    let compacted = 0;
+    for (let n = 0; n < cutoff && size > budget; n++) {
+      const m = messages[toolIdx[n]];
+      if (this._compactedMsgs.has(m)) continue;
+      if (typeof m.content !== 'string' || m.content.length < 2000) continue;
+      const originalLen = m.content.length;
+      m.content = JSON.stringify({
+        compacted: true,
+        note: `Earlier tool result (${originalLen} chars) trimmed — the conversation exceeded this model's context window. Re-run the tool if you need this again.`,
+        preview: m.content.slice(0, 400)
+      });
+      this._compactedMsgs.add(m);
+      size -= (originalLen - m.content.length);
+      compacted++;
+    }
+    if (compacted) D.log('COMPACTED tool history', { messages: compacted, newSize: size, budget });
+
+    // Still over even with everything trimmed — ask the model to wrap up
+    // rather than letting the provider reject the request outright.
+    if (size > budget && !this._budgetWarned) {
+      this._budgetWarned = true;
+      D.warn('CONTEXT STILL OVER BUDGET after trimming', { size, budget, iteration });
+      messages.push({
+        role: 'user',
+        content: "[SYSTEM: This conversation has reached the model's context limit. Synthesize your final answer now from what you have already gathered — do not call any more tools.]"
+      });
+    }
+  }
+
+  /**
    * Strip large payloads (base64 images, etc.) from tool results before
    * sending them to the LLM. The LLM can't process raw image data —
    * it just wastes tokens and causes timeouts.
@@ -1266,6 +1462,12 @@ CRITICAL RULES:
         sanitized[key] = `[Image: ${sizeKB}KB — stripped for LLM]`;
       }
     }
+
+    // NOTE: page text from readPage/page_script is deliberately NOT truncated.
+    // Context windows are large and tokens are cheap; silently dropping half
+    // an article the user asked the agent to read is worse than the tokens it
+    // saves. Oversized conversations are handled by _fitContextToBudget(),
+    // which only trims when the SELECTED MODEL's real window demands it.
 
     // Truncate oversized mapPage results to keep payloads manageable
     if (fnName === 'snn_mapPage' && sanitized.elements && Array.isArray(sanitized.elements)) {
