@@ -53,6 +53,14 @@ class SNNSidePanel {
     this.isLoading = false;
     this.totalTokensUsed = 0;
     this.totalCost = 0;
+    // Context-window occupancy: prompt + completion of the *most recent* LLM
+    // call, i.e. roughly what the next request has to carry. Deliberately not
+    // accumulated — an agent run makes many calls over the same context.
+    this._contextTokens = 0;
+    // Tokens/cost already folded into the running totals by live updates
+    // during the current turn, so addTokenInfo doesn't count them twice.
+    this._liveCountedTokens = 0;
+    this._liveCountedCost = 0;
     this.currentDomain = '';
     this.currentTabId = null;        // ← per-tab session tracking
     this.currentSessionId = this.generateId();
@@ -62,6 +70,10 @@ class SNNSidePanel {
     // ── Session Lock: single session across all tabs ────────────
     this._chatLockEnabled = false;
     this._chatLockKey = 'snn_chat_history___locked___';
+
+    // ── Tab-switch serialization ───────────────────────────────
+    // Switches run one at a time. See _onTabSwitched for why.
+    this._tabSwitchChain = Promise.resolve();
 
     // ── In-flight request cancellation ─────────────────────────
     this._activeAbortController = null;
@@ -128,6 +140,10 @@ class SNNSidePanel {
       modelName: this.el('current-model'),
       welcomeScreen: this.el('welcome-screen'),
       tokenCounter: this.el('token-counter'),
+      tokenCounterText: this.el('token-counter-text'),
+      contextRing: this.el('context-ring'),
+      contextRingFill: this.el('context-ring-fill'),
+      contextRingTip: this.el('context-ring-tip'),
       qaTrigger: this.el('qa-trigger'),
       qaPopover: this.el('qa-popover'),
       qaList: this.el('qa-list'),
@@ -539,8 +555,34 @@ class SNNSidePanel {
     });
   }
 
-  async _onTabSwitched(tabId, url, domain) {
-    if (tabId === this.currentTabId) return; // Same tab, nothing to do
+  /**
+   * Tab switches must never overlap.
+   *
+   * _doTabSwitch reassigns currentTabId only after two awaits (the agent
+   * cancellation pause and the save of the outgoing session), so its own
+   * "same tab, nothing to do" guard cannot catch a second message that
+   * arrives inside that window — and second messages are routine: the
+   * background re-broadcasts tabSwitched for every window's active tab on
+   * each service-worker startup (background.js), and MV3 restarts the worker
+   * constantly. Two overlapping runs interleave across their awaits and can
+   * leave chatHistory empty while _historyKey still points at a real
+   * session; the next save then writes that empty array over a real
+   * conversation, which both blanks the chat and drops it out of the history
+   * list (loadAllHistories skips records with no messages).
+   *
+   * Queueing them makes each switch observe the finished state of the last.
+   */
+  _onTabSwitched(tabId, url, domain) {
+    if (tabId === this.currentTabId) return this._tabSwitchChain; // fast path
+    this._tabSwitchChain = this._tabSwitchChain
+      .then(() => this._doTabSwitch(tabId, url, domain))
+      .catch((err) => D.error('_onTabSwitched failed', err?.message || String(err)));
+    return this._tabSwitchChain;
+  }
+
+  async _doTabSwitch(tabId, url, domain) {
+    // Re-check: an earlier queued switch may have already landed on this tab.
+    if (tabId === this.currentTabId) return;
     D.log('_onTabSwitched', { fromTabId: this.currentTabId, toTabId: tabId, domain, chatLock: this._chatLockEnabled });
 
     // ═══════════════════════════════════════════════════════════
@@ -703,12 +745,24 @@ class SNNSidePanel {
     // ── Lock model choice for this session (first message wins) ──
     if (!this._modelLocked) {
       this._modelLocked = true;
-      this._persistSessionModel();
+      // No _persistSessionModel() here: the saveChatHistory() a few lines
+      // below already writes sessionModel, and this call actively destroyed
+      // the session. It ran unawaited, its get() found no record yet (brand
+      // new session), and because nothing between here and that save yields,
+      // its set() was queued behind the save and landed last — replacing the
+      // freshly written record with a bare {sessionModel} that has no
+      // messages. That record is invisible in history and restores as an
+      // empty chat.
       this.renderModelQuickSwitch(); // update button to locked state
     }
 
     // Stop any active TTS when user sends a new message
     this._stopTTS();
+
+    // Fresh turn: nothing has been folded into the totals live yet. Reset here
+    // as well as in the agent loop so a turn that ended early (cancelled, error)
+    // can't leave a stale credit behind for the next one.
+    this._resetLiveUsage();
 
     // Remembered so the error card's Retry button can re-send it.
     this._lastSentUserText = message;
@@ -1071,6 +1125,7 @@ class SNNSidePanel {
       cached_tokens: cache.cached,
       cache_write_tokens: cache.written
     };
+    this._recordLiveUsage(data.usage);
     D.log('callAPI OK', { tokens: this.lastTokenUsage, cacheHit: this._cacheHitRate(this.lastTokenUsage), contentLen: (data.choices?.[0]?.message?.content || '').length });
     return data.choices[0]?.message?.content || '';
   }
@@ -1169,6 +1224,7 @@ class SNNSidePanel {
               cached_tokens: cache.cached,
               cache_write_tokens: cache.written
             };
+            this._recordLiveUsage(parsed.usage);
             D.log('stream usage', { tokens: this.lastTokenUsage, cacheHit: this._cacheHitRate(this.lastTokenUsage) });
           }
         } catch (e) { /* skip malformed JSON lines */ }
@@ -1595,8 +1651,16 @@ class SNNSidePanel {
       info.title = title;
       meta.appendChild(info); // goes to right (after actions)
 
-      this.totalTokensUsed += total;
-      if (cost !== null) this.totalCost += cost;
+      // Live updates during the turn already added part (or all) of this to
+      // the totals — add only the remainder so the counter doesn't double up.
+      this.totalTokensUsed += Math.max(0, total - this._liveCountedTokens);
+      if (cost !== null) this.totalCost += Math.max(0, cost - this._liveCountedCost);
+      if (this._liveCountedTokens === 0) {
+        // No live tracking ran (e.g. restoring a saved session) — this message
+        // is the best available reading of current context occupancy.
+        this._contextTokens = total;
+      }
+      this._resetLiveUsage();
       this.updateTokenCounter();
     }
   }
@@ -1898,15 +1962,94 @@ class SNNSidePanel {
   // ── Token Counter ──────────────────────────────────────────────
   updateTokenCounter() {
     if (this.totalTokensUsed > 0) {
-      this.els.tokenCounter.style.display = 'block';
+      this.els.tokenCounter.style.display = 'flex';
       let text = `${this.totalTokensUsed.toLocaleString()} tokens`;
       if (this.totalCost > 0) {
         text += ` · ${this._formatCost(this.totalCost)}`;
       }
-      this.els.tokenCounter.textContent = text;
+      if (this.els.tokenCounterText) this.els.tokenCounterText.textContent = text;
     } else {
       this.els.tokenCounter.style.display = 'none';
+      this._contextTokens = 0;   // counter cleared → session reset
     }
+    this.updateContextRing();
+  }
+
+  /** Context window size of the selected model, or null when unknown. */
+  _modelContextLimit() {
+    const m = this._selectedModelInfo;
+    if (!m) return null;
+    const ctx = m.top_provider?.context_length || m.context_length || m.endpoints?.[0]?.context_length;
+    return ctx > 0 ? ctx : null;
+  }
+
+  /**
+   * Paint the little ring next to the token counter: how much of the model's
+   * context window this conversation currently occupies.
+   */
+  updateContextRing() {
+    const ring = this.els.contextRing;
+    const fill = this.els.contextRingFill;
+    if (!ring || !fill) return;
+
+    const limit = this._modelContextLimit();
+    const used = this._contextTokens || 0;
+    if (!limit || used <= 0) {
+      ring.classList.remove('is-active');
+      return;
+    }
+
+    const pct = Math.min(1, used / limit);
+    const CIRCUMFERENCE = 2 * Math.PI * 9;
+    fill.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - pct));
+
+    ring.classList.add('is-active');
+    ring.classList.toggle('is-warn', pct >= 0.7 && pct < 0.9);
+    ring.classList.toggle('is-danger', pct >= 0.9);
+
+    const pctText = pct >= 0.995 ? '100' : (pct * 100).toFixed(pct < 0.1 ? 1 : 0);
+    const remaining = Math.max(0, limit - used);
+    if (this.els.contextRingTip) {
+      this.els.contextRingTip.textContent =
+        `Context: ${pctText}% used\n` +
+        `${used.toLocaleString()} / ${limit.toLocaleString()} tokens\n` +
+        `${remaining.toLocaleString()} left`;
+    }
+    ring.setAttribute('aria-label', `Context window ${pctText}% used, ${remaining.toLocaleString()} tokens left`);
+  }
+
+  /**
+   * Fold one LLM response's usage into the running totals immediately.
+   *
+   * The counter used to move only when a message finished rendering, so a long
+   * agentic turn (many LLM calls, tool after tool) sat frozen at the previous
+   * number until everything was done. Each call reports here instead, and
+   * addTokenInfo later subtracts whatever was already counted for the turn.
+   */
+  _recordLiveUsage(usage) {
+    if (!usage) return;
+    const prompt = usage.prompt_tokens || 0;
+    const completion = usage.completion_tokens || 0;
+    const total = prompt + completion;
+    if (total <= 0) return;
+
+    const cost = this._calcMessageCost({ prompt_tokens: prompt, completion_tokens: completion });
+
+    this.totalTokensUsed += total;
+    this._liveCountedTokens += total;
+    if (cost !== null) {
+      this.totalCost += cost;
+      this._liveCountedCost += cost;
+    }
+    // Latest call only: the context is reused across agent iterations, not summed.
+    this._contextTokens = total;
+    this.updateTokenCounter();
+  }
+
+  /** Start-of-turn reset for the live accumulator. */
+  _resetLiveUsage() {
+    this._liveCountedTokens = 0;
+    this._liveCountedCost = 0;
   }
 
   // ── Input ──────────────────────────────────────────────────────
@@ -2175,9 +2318,17 @@ class SNNSidePanel {
     const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
     if (!key) return;
     const data = await chrome.storage.local.get([key]);
-    const session = data[key] || {};
-    session.sessionModel = this._sessionModel || null;
-    await chrome.storage.local.set({ [key]: session });
+    const session = data[key];
+    // Never author a record — only patch one that already exists and already
+    // holds messages. Writing {sessionModel} on its own produces a record
+    // that loadAllHistories hides and loadMostRecentSession restores as an
+    // empty chat, i.e. a conversation that looks like it was never saved.
+    // A session with no record yet gets its model from the next
+    // saveChatHistory, which writes sessionModel on every write anyway.
+    if (!session || !Array.isArray(session.messages)) return;
+    await chrome.storage.local.set({
+      [key]: { ...session, sessionModel: this._sessionModel || null }
+    });
   }
 
   // ── Settings ────────────────────────────────────────────────────
@@ -2254,6 +2405,7 @@ class SNNSidePanel {
     // Keep selected model info for vision checks
     if (this._modelsData?.[model]) this._selectedModelInfo = this._modelsData[model];
     this._updateHeaderVisionBadge(model);
+    this.updateContextRing();   // different model → different window size
   }
 
   _updateModelCapabilities(modelId) {
@@ -2755,6 +2907,7 @@ class SNNSidePanel {
 
   _renderModelInfo(infoDiv, data) {
     this._selectedModelInfo = data;
+    this.updateContextRing();   // context_length may have only just arrived
     let html = '';
 
     // Vision capability banner
@@ -3559,14 +3712,18 @@ class SNNSidePanel {
     // This is the authoritative record of which session the user
     // was last working in. It survives sidebar close/reopen and
     // new-session creation (newSession writes it immediately).
-    const ptrData = await chrome.storage.local.get([SNNSidePanel.ACTIVE_SESSION_PTR]);
+    const ptrData = await chrome.storage.session.get([SNNSidePanel.ACTIVE_SESSION_PTR]);
     const activePtr = ptrData[SNNSidePanel.ACTIVE_SESSION_PTR];
     // Only trust the pointer if it belongs to THIS tab — prevents cross-tab session leakage
     if (activePtr?.key && activePtr.tabId === this.currentTabId) {
       const sessionData = await chrome.storage.local.get([activePtr.key]);
       const session = sessionData[activePtr.key];
-      // Accept the session even if empty (newSession creates empty sessions)
-      if (session) {
+      // Accept the session even if empty — newSession deliberately creates
+      // sessions with messages: []. But require the array to be THERE: a
+      // record without one is a partial write, and restoring it silently
+      // swaps a real conversation for a blank chat. Falling through instead
+      // lets the timestamp scan below recover the intact session.
+      if (session && Array.isArray(session.messages)) {
         this._historyKey = activePtr.key;
         this.currentSessionId = this._extractSessionIdFromKey(activePtr.key);
         this.chatHistory = session.messages || [];
@@ -3575,9 +3732,9 @@ class SNNSidePanel {
         this.restoreChat();
         return;
       }
-      // Pointer exists but session record is missing entirely — clear the
+      // Pointer exists but the record is missing or malformed — clear the
       // stale pointer and fall through to normal discovery.
-      await chrome.storage.local.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
+      await chrome.storage.session.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
     }
 
     // ── Fallback: discover most-recent session by timestamp ────
@@ -3612,10 +3769,18 @@ class SNNSidePanel {
    * Persist a pointer to the currently-active session so it survives
    * sidebar close/reopen. Called after newSession and saveChatHistory
    * so the pointer always reflects reality.
+   *
+   * Deliberately in storage.session, not storage.local: the pointer is keyed
+   * by tabId, and Chrome reuses tab IDs across browser restarts. A pointer
+   * that outlived its browser session would match a *different* tab that
+   * happened to inherit the same ID and load a stranger's conversation into
+   * it. storage.session is cleared on restart, which is exactly the lifetime
+   * a tabId-keyed record should have. Losing it costs nothing — the
+   * timestamp scan in loadMostRecentSession rediscovers the session.
    */
   async _saveActiveSessionPtr() {
     const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
-    await chrome.storage.local.set({
+    await chrome.storage.session.set({
       [SNNSidePanel.ACTIVE_SESSION_PTR]: { key, tabId: this.currentTabId, at: Date.now() }
     });
   }
@@ -3881,7 +4046,7 @@ class SNNSidePanel {
 
       // Clear the active-session pointer so we fall back to
       // per-tab timestamp discovery (not the locked session).
-      await chrome.storage.local.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
+      await chrome.storage.session.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
 
       await this.loadMostRecentSession();
       this._updateLockVisuals();

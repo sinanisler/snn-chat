@@ -70,7 +70,16 @@
         </div>
       </div>
       <div class="sp-input-row-right">
-        <div id="token-counter" class="sp-token-counter" style="display:none">0 tokens</div>
+        <div id="token-counter" class="sp-token-counter" style="display:none">
+          <span id="token-counter-text">0 tokens</span>
+          <span id="context-ring" class="sp-ctx-ring" tabindex="0">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <circle class="sp-ctx-ring-track" cx="12" cy="12" r="9"></circle>
+              <circle class="sp-ctx-ring-fill" id="context-ring-fill" cx="12" cy="12" r="9"></circle>
+            </svg>
+            <span class="sp-ctx-tip" id="context-ring-tip"></span>
+          </span>
+        </div>
       </div>
     </div>
     <div class="sp-attach-bar" id="attach-bar" style="display:none"></div>

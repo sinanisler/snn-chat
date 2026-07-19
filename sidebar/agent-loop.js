@@ -177,6 +177,7 @@ class SNNAgentLoop {
     this._abortController = new AbortController();
     // ── Reset token usage accumulator for this agent run ──
     this.sp.lastTokenUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, cache_write_tokens: 0 };
+    this.sp._resetLiveUsage?.();
 
     try {
       //  - - - - CAPABILITY FAST-PATH  - - - -
@@ -801,6 +802,11 @@ CRITICAL RULES:
         this.sp.lastTokenUsage.cached_tokens = (this.sp.lastTokenUsage.cached_tokens || 0) + cache.cached;
         this.sp.lastTokenUsage.cache_write_tokens = (this.sp.lastTokenUsage.cache_write_tokens || 0) + cache.written;
       }
+
+      // Push the counter forward now, mid-run. A multi-tool turn can make a
+      // dozen calls before anything renders; waiting for the final message
+      // left the UI showing a stale number for the whole run.
+      this.sp._recordLiveUsage?.(json.usage);
     }
 
     return json;

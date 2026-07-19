@@ -741,6 +741,72 @@ body.theme-dark #welcome-screen .sp-model-tag {
   border: 1px solid var(--sp-input-border);
   padding: 3px 10px;
   border-radius: 10px;
+  align-items: center;
+  gap: 7px;
+}
+
+/* ── Context window ring ───────────────────────────────────────── */
+.sp-ctx-ring {
+  position: relative;
+  display: none;              /* shown once a context size is known */
+  align-items: center;
+  line-height: 0;
+  cursor: default;
+  outline: none;
+}
+.sp-ctx-ring.is-active { display: inline-flex; }
+.sp-ctx-ring svg {
+  /* Start the arc at 12 o'clock and grow clockwise. */
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+.sp-ctx-ring-track,
+.sp-ctx-ring-fill {
+  fill: none;
+  stroke-width: 3;
+}
+.sp-ctx-ring-track {
+  stroke: var(--sp-input-border);
+}
+.sp-ctx-ring-fill {
+  stroke: var(--sp-accent);
+  stroke-linecap: round;
+  stroke-dasharray: 56.549;   /* 2πr, r = 9 */
+  stroke-dashoffset: 56.549;  /* empty */
+  transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease;
+}
+.sp-ctx-ring.is-warn .sp-ctx-ring-fill { stroke: #e0a03a; }
+.sp-ctx-ring.is-danger .sp-ctx-ring-fill { stroke: #e05a5a; }
+
+.sp-ctx-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 150px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--sp-bg);
+  border: 1px solid var(--sp-border);
+  color: var(--sp-text);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  text-align: left;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(3px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.sp-ctx-ring:hover .sp-ctx-tip,
+.sp-ctx-ring:focus-visible .sp-ctx-tip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-ctx-ring-fill { transition: none; }
 }
 
 .sp-attach-bar {
