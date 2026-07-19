@@ -125,27 +125,27 @@ class SNNPageActor {
     const base = { detail: msg, duration_ms: duration };
 
     if (err.name === 'NotAllowedError' || /permission/i.test(msg))
-      return { ...base, code: 'PERMISSION_DENIED', message: 'Permission denied.', retryable: false, suggestion: 'Grant the required permission and try again.' };
+      return { ...base, code: 'PERMISSION_DENIED', source: 'user', message: 'The page or browser denied permission.', retryable: false, suggestion: 'Grant the required permission and try again.' };
 
     if (/not found|no element|selector/i.test(msg))
-      return { ...base, code: 'ELEMENT_NOT_FOUND', message: 'Element not found.', selector: payload?.selector, retryable: true, suggestion: 'Try a different selector or wait for the element to appear.' };
+      return { ...base, code: 'ELEMENT_NOT_FOUND', source: 'page', message: 'Could not find that element on the page.', selector: payload?.selector, retryable: true, suggestion: 'The page may have changed or not finished loading. Try again or describe the element differently.' };
 
     if (/not interactable|not visible|hidden|disabled/i.test(msg))
-      return { ...base, code: 'ELEMENT_NOT_INTERACTABLE', message: 'Element not interactable.', selector: payload?.selector, retryable: true, suggestion: 'Element may be hidden or disabled. Try scrolling to it first.' };
+      return { ...base, code: 'ELEMENT_NOT_INTERACTABLE', source: 'page', message: 'Found the element, but it cannot be clicked or typed into.', selector: payload?.selector, retryable: true, suggestion: 'It may be hidden, disabled, or covered by something else.' };
 
     if (err.name === 'TimeoutError' || /timeout|timed out/i.test(msg))
-      return { ...base, code: 'TIMEOUT', message: 'Action timed out.', retryable: true, suggestion: 'The page may be slow. Try again or increase timeout.' };
+      return { ...base, code: 'TIMEOUT', source: 'page', message: 'The page took too long to respond.', retryable: true, suggestion: 'The page may be slow or still loading. Try again.' };
 
     if (/network|fetch|NetworkError/i.test(msg))
-      return { ...base, code: 'NETWORK_ERROR', message: 'Network error.', retryable: true, suggestion: 'Check your connection and try again.' };
+      return { ...base, code: 'NETWORK_ERROR', source: 'network', message: 'A network request failed.', retryable: true, suggestion: 'Check your internet connection and try again.' };
 
     if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError)
-      return { ...base, code: 'SCRIPT_ERROR', message: 'Script error during execution.', retryable: false, suggestion: 'This may be a bug. Please report it.' };
+      return { ...base, code: 'SCRIPT_ERROR', source: 'extension', message: 'SNN hit an internal script error.', retryable: false, suggestion: 'This is a bug on our side — please copy the details and report it.' };
 
     if (/cross-origin|CORS|iframe/i.test(msg))
-      return { ...base, code: 'CROSS_ORIGIN', message: 'Cannot access cross-origin content.', retryable: false, suggestion: 'SNN cannot interact with elements inside cross-origin iframes.' };
+      return { ...base, code: 'CROSS_ORIGIN', source: 'page', message: 'This content is inside a cross-origin frame.', retryable: false, suggestion: 'Browser security prevents SNN from reaching elements inside cross-origin iframes.' };
 
-    return { ...base, code: 'UNKNOWN', message: 'Unexpected error.', retryable: true, suggestion: 'Try again or use a different approach.' };
+    return { ...base, code: 'UNKNOWN', source: 'extension', message: 'Unexpected error.', retryable: true, suggestion: 'Try again or use a different approach. If it keeps happening, copy the details and report it.' };
   }
 
   // ═══════════════════════════════════════════════════════════════

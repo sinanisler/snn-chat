@@ -1683,64 +1683,109 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.snn-error-card-header {
-  display: flex; align-items: center; gap: 8px;
-  padding: 12px 16px;
-  background: rgba(192,57,43,0.12);
-  border-bottom: 1px solid rgba(192,57,43,0.2);
+/* Header: single 26px row — icon, code, source tag, icon buttons. */
+.snn-error-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 6px 5px 9px;
+  background: rgba(192,57,43,0.10);
+  border-bottom: 1px solid rgba(192,57,43,0.18);
 }
-.snn-error-card-icon { font-size: 18px; }
-.snn-error-card-title { font-size: 15px; font-weight: 600; color: var(--sp-danger); }
-.snn-error-card-body {
-  padding: 14px 16px;
-  font-size: 14px;
-  color: var(--sp-text);
-  line-height: 1.5;
-}
-.snn-error-card-body p { margin: 4px 0; }
+.snn-error-ico { font-size: 11px; color: var(--sp-danger); flex-shrink: 0; }
 .snn-error-code {
-  display: flex; gap: 8px; align-items: baseline;
-  margin: 10px 0; padding: 8px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px;
+  color: var(--sp-danger);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.snn-error-src {
+  font-size: 9.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px; border-radius: 3px;
+  background: rgba(128,128,128,0.16); color: var(--sp-text-secondary);
+  white-space: nowrap; flex-shrink: 0;
+  margin-right: auto;               /* pushes the icon buttons right */
+}
+/* A real SNN bug is the one case worth shouting about — it's on us. */
+.snn-error-src.snn-src-extension { background: var(--sp-danger); color: #fff; }
+.snn-error-src.snn-src-user { background: rgba(184,96,11,0.18); color: var(--sp-warning); }
+
+.snn-error-icon-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--sp-text-secondary);
+  padding: 3px 5px; border-radius: 4px;
+  font-size: 11px; line-height: 1; flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.snn-error-icon-btn:hover { background: var(--sp-btn-hover); color: var(--sp-text); }
+
+/* Body: open by default but height-capped, so a huge stack trace
+   scrolls inside the card instead of flooding the chat. */
+.snn-error-body {
+  padding: 7px 9px;
+  max-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.snn-error-body::-webkit-scrollbar { width: 6px; }
+.snn-error-body::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.35); border-radius: 3px; }
+
+/* The message is the thing the user came here to read — highest contrast. */
+.snn-error-msg {
+  font-size: 13px; font-weight: 500; line-height: 1.4;
+  color: var(--sp-text);
+  word-break: break-word;
+}
+.snn-error-hint {
+  display: flex; gap: 5px; align-items: flex-start;
+  margin-top: 5px;
+  font-size: 12px; line-height: 1.4;
+  color: var(--sp-warning);
+  word-break: break-word;
+}
+.snn-error-hint i { font-size: 10px; margin-top: 2px; flex-shrink: 0; }
+.snn-error-meta {
+  margin-top: 5px;
+  font-size: 11px; line-height: 1.4;
+  color: var(--sp-text-secondary);
+  word-break: break-word;
+}
+.snn-error-meta code {
+  font-size: 10.5px; padding: 0 3px; border-radius: 2px;
+  background: rgba(128,128,128,0.15);
+}
+.snn-error-dot { opacity: 0.5; margin: 0 1px; }
+.snn-error-raw {
+  margin: 6px 0 0;
+  padding: 5px 7px;
   background: rgba(128,128,128,0.08);
-  border-radius: 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px; line-height: 1.4;
+  color: var(--sp-text-secondary);
+  white-space: pre-wrap; word-break: break-word;   /* not break-all — keeps words legible */
 }
-.snn-error-code-label {
-  background: var(--sp-danger); color: #fff;
-  padding: 2px 8px; border-radius: 4px;
-  font-size: 11px; font-weight: 700;
-  text-transform: uppercase; flex-shrink: 0;
-}
-.snn-error-code-msg { font-size: 13px; color: var(--sp-text-secondary); word-break: break-word; }
-.snn-error-detail {
-  font-size: 12px; color: var(--sp-text-secondary);
-  margin: 6px 0; padding: 6px 10px;
-  background: rgba(128,128,128,0.05);
-  border-radius: 4px; word-break: break-all;
-}
-.snn-error-detail code { background: rgba(128,128,128,0.15); padding: 1px 4px; border-radius: 2px; font-size: 11px; }
-.snn-error-suggestion {
-  font-size: 13px; color: var(--sp-warning);
-  background: rgba(184,96,11,0.08);
-  padding: 8px 12px; border-radius: 6px;
-  margin-top: 8px;
-}
-.snn-error-card-actions {
-  display: flex; gap: 8px; padding: 12px 16px;
+
+/* Actions: small, right-aligned, never full-width (they used to wrap
+   to a second row in a narrow side panel). */
+.snn-error-acts {
+  display: flex; justify-content: flex-end; gap: 6px;
+  padding: 6px 9px;
   border-top: 1px solid var(--sp-border);
-  flex-wrap: wrap;
 }
 .snn-error-btn {
-  padding: 8px 16px; border: none; border-radius: 6px;
-  font-size: 13px; font-weight: 500; cursor: pointer;
-  transition: all 0.15s;
-  flex: 1; min-width: 90px;
+  padding: 4px 10px; border-radius: 5px;
+  border: 1px solid var(--sp-input-border);
+  background: var(--sp-input-bg); color: var(--sp-text);
+  font-size: 11.5px; font-weight: 500; cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, filter 0.15s;
 }
-.snn-error-btn-retry { background: var(--sp-accent); color: var(--sp-accent-text); }
-.snn-error-btn-retry:hover { filter: brightness(1.12); }
-.snn-error-btn-different { background: var(--sp-input-bg); border: 1px solid var(--sp-input-border); color: var(--sp-text); }
-.snn-error-btn-different:hover { background: var(--sp-btn-hover); }
-.snn-error-btn-dismiss { background: none; color: var(--sp-text-secondary); flex: 0 0 auto; padding: 8px 12px; }
-.snn-error-btn-dismiss:hover { color: var(--sp-text); background: var(--sp-btn-hover); }
+.snn-error-btn:hover { background: var(--sp-btn-hover); }
+.snn-error-btn-retry {
+  background: var(--sp-accent); color: var(--sp-accent-text);
+  border-color: transparent;
+}
+.snn-error-btn-retry:hover { filter: brightness(1.12); background: var(--sp-accent); }
 
 /* ── Result Card ──────────────────────────────────────────────── */
 .snn-result-card {

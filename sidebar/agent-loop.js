@@ -368,10 +368,13 @@ Be honest. The user will see if you claim to have done something you did not.`
     } catch (err) {
       D.error('▶ run CRASHED', { error: err.message, stack: err.stack?.split('\n').slice(0,3).join(' | ') });
       if (!this._cancelled) {
+        // A crash here is most often the LLM call failing (bad key, no
+        // credit, rate limit). Route it through the shared categorizer so
+        // the user is told whose fault it is instead of getting "UNHANDLED".
         const failData = {
           phase: 'AGENTIC_LOOP',
           totalAttempts: 1,
-          error: { code: 'UNHANDLED', message: err.message, retryable: true, suggestion: 'An unexpected error occurred. Try again.' }
+          error: this.sp.categorizeApiError(err)
         };
         if (this.onError) this.onError(failData);
         this._transition('FAILED', failData);
@@ -911,7 +914,7 @@ CRITICAL RULES:
         D.warn('← TIMEOUT', { action: message.action, timeout });
         return {
           success: false,
-          error: { code: 'TIMEOUT', message: `Action timed out after ${timeout / 1000}s.`, retryable: true, suggestion: 'The page may be slow. Try again or increase the timeout.' }
+          error: { code: 'TIMEOUT', source: 'page', message: `The page did not respond within ${timeout / 1000}s.`, detail: `action: ${message.action}`, retryable: true, suggestion: 'The page may be slow or busy. Try again.' }
         };
       }
 
@@ -924,9 +927,11 @@ CRITICAL RULES:
         success: false,
         error: {
           code: 'DISPATCH_ERROR',
-          message: `Could not reach the page: ${err.message}`,
+          source: 'page',
+          message: 'Could not reach the page.',
+          detail: err.message,
           retryable: true,
-          suggestion: 'The page may have navigated away or the extension needs a refresh.'
+          suggestion: 'The page may have navigated away, or it needs a reload for SNN to attach to it.'
         }
       };
     }

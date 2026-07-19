@@ -677,6 +677,9 @@ class SNNSidePanel {
     // Stop any active TTS when user sends a new message
     this._stopTTS();
 
+    // Remembered so the error card's Retry button can re-send it.
+    this._lastSentUserText = message;
+
     // ── Snapshot the context that will be attached to THIS message ──
     const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
     // ── Snapshot tab so we can discard stale responses after tab switch ──
@@ -850,7 +853,10 @@ class SNNSidePanel {
       // Don't show AbortError — it's intentional (tab switch cancelled the request)
       if (error.name === 'AbortError') { this._resetLoadingState(); return; }
       this.removeLoadingMsg();
-      this.addMessage('ai', `Error: ${error.message}`);
+      // Same card the agent path uses — a chat failure should never look
+      // like an assistant reply (it used to render as a plain 'ai' bubble
+      // and even got run through the Markdown parser).
+      this.showErrorCard(error);
     }
 
     this._finishSendMessage();
@@ -862,6 +868,54 @@ class SNNSidePanel {
   // so headers, error parsing, and the Gemini "corrupted thought
   // signature" retry only need to be maintained in one place.
   // ═══════════════════════════════════════════════════════════════
+  /**
+   * Turn an API/network exception into the same {code, source, message,
+   * detail, suggestion, retryable} shape the page actor produces, so both
+   * paths can render through one error card.
+   *
+   * The point of the `source` field is blame clarity: a rejected key or an
+   * empty account is the user's to fix, a 5xx is the provider's, and only
+   * the fallthrough is ours. Without this every one of them rendered as an
+   * identical generic string and read like an extension bug.
+   */
+  categorizeApiError(err) {
+    const raw = err?.message || String(err || 'Unknown error');
+    const status = err?.status;
+    const base = { detail: raw, retryable: true };
+
+    if (err?.name === 'AbortError')
+      return { ...base, code: 'CANCELLED', source: 'user', message: 'Request cancelled.', retryable: false, suggestion: '' };
+
+    if (status === 401 || status === 403)
+      return { ...base, code: 'AUTH_FAILED', source: 'user', message: 'Your API key was rejected.', retryable: false, suggestion: 'Open Settings and check that your OpenRouter key is correct and still active.' };
+
+    if (status === 402)
+      return { ...base, code: 'NO_CREDIT', source: 'user', message: 'Your OpenRouter account is out of credit.', retryable: false, suggestion: 'Add credit at openrouter.ai, or switch to a free model.' };
+
+    if (status === 429)
+      return { ...base, code: 'RATE_LIMITED', source: 'provider', message: 'The provider is rate-limiting your requests.', suggestion: 'Wait a moment and retry, or switch to a different model.' };
+
+    if (status === 404)
+      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available.', retryable: false, suggestion: 'The model may have been renamed or retired. Pick another one in Settings.' };
+
+    if (status === 413 || /context length|too large|maximum context/i.test(raw))
+      return { ...base, code: 'CONTEXT_TOO_LARGE', source: 'user', message: 'This conversation is too long for the model.', retryable: false, suggestion: 'Start a new chat, or switch to a model with a larger context window.' };
+
+    if (status >= 500)
+      return { ...base, code: 'PROVIDER_DOWN', source: 'provider', message: `The model provider returned an error (${status}).`, suggestion: 'This is on the provider\'s side, not SNN. Wait and retry, or try another model.' };
+
+    if (/API key not set|key not set/i.test(raw))
+      return { ...base, code: 'NO_API_KEY', source: 'user', message: 'No OpenRouter API key is set.', retryable: false, suggestion: 'Add your key in Settings to start chatting.' };
+
+    if (err?.name === 'TypeError' && /fetch|network/i.test(raw))
+      return { ...base, code: 'NETWORK_ERROR', source: 'network', message: 'Could not reach OpenRouter.', suggestion: 'Check your internet connection, VPN, or firewall and try again.' };
+
+    if (status)
+      return { ...base, code: `HTTP_${status}`, source: 'provider', message: `The API returned an error (${status}).`, suggestion: 'Retry, or switch models if it persists.' };
+
+    return { ...base, code: 'UNHANDLED', source: 'extension', message: 'Something went wrong inside SNN.', suggestion: 'This looks like a bug on our side — copy the details and report it.' };
+  }
+
   _openRouterHeaders(apiKey) {
     return {
       'Content-Type': 'application/json',
@@ -3426,6 +3480,20 @@ class SNNSidePanel {
    * Shared cleanup after sendMessage completes (agent or plain chat path).
    * Resets loading state, clears context, re-focuses input.
    */
+  /**
+   * Render any thrown error as the standard error card. Falls back to a
+   * plain message bubble only if the agent UI isn't up yet, so an error
+   * can never be swallowed.
+   */
+  showErrorCard(error, step = null) {
+    const data = { error: this.categorizeApiError(error), step, totalAttempts: 1 };
+    if (this._agentUI) {
+      this._agentUI.renderErrorCard(data);
+    } else {
+      this.addMessage('ai', `Error: ${error?.message || 'Unknown error'}`);
+    }
+  }
+
   _finishSendMessage() {
     // Clear active context after sending (selection consumed)
     if (this.selection) {
@@ -4069,10 +4137,21 @@ class SNNSidePanel {
     };
 
     // ── Error retry handlers ───────────────────────────────────
+    // Re-send the last user message verbatim. Previously this only showed
+    // a toast and did nothing, which is exactly the silent-failure the
+    // error card exists to prevent.
     this._onErrorRetry = () => {
-      // Re-run the last task (stored in agent loop internals)
-      this.showToast('Retrying...');
-      // The agent loop will re-execute from failed step
+      const last = this._lastSentUserText;
+      if (this.isLoading || this._agentLoop?.isBusy) {
+        this.showToast('Still working — wait for the current task to finish', 'warning');
+        return;
+      }
+      if (!last) {
+        this.showToast('Nothing to retry', 'warning');
+        return;
+      }
+      this.els.userInput.value = last;
+      this.sendMessage();
     };
 
     this._onErrorTryDifferently = () => {

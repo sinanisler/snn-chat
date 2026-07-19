@@ -495,45 +495,70 @@ class SNNAgentUI {
 
   // ═══════════════════════════════════════════════════════════════
   // ERROR CARD — shown in chat when all retries exhausted
+  //
+  // Compact by design: a one-line header carrying the code + who is at
+  // fault, then a scroll-capped body so a 200-line stack trace can never
+  // push the conversation off screen. The body is open by default —
+  // a hidden error is a silent failure, which is what we're guarding
+  // against — but it is bounded, not unbounded.
   // ═══════════════════════════════════════════════════════════════
+
+  /** Who is responsible — drives the header tag and the wording. */
+  static SOURCE_LABELS = {
+    user:      { label: 'your settings', cls: 'snn-src-user' },
+    page:      { label: 'this page',     cls: 'snn-src-page' },
+    provider:  { label: 'provider',      cls: 'snn-src-provider' },
+    network:   { label: 'network',       cls: 'snn-src-network' },
+    extension: { label: 'SNN bug',       cls: 'snn-src-extension' }
+  };
+
   renderErrorCard(errorData) {
-    const { step, error, totalAttempts, message } = errorData;
+    const { step, error = {}, totalAttempts, message } = errorData || {};
+    const esc = (s) => this.sp.escapeHtml(String(s));
+
+    const source = error.source || 'extension';
+    const src = SNNAgentUI.SOURCE_LABELS[source] || SNNAgentUI.SOURCE_LABELS.extension;
+    const code = error.code || 'ERROR';
+
+    // ── Meta line: action · attempts · selector, only what exists ──
+    const metaBits = [];
+    if (step?.description || step?.action) metaBits.push(esc(step.description || step.action));
+    const attempts = totalAttempts || error.attempt;
+    if (attempts) metaBits.push(`${attempts} attempt${attempts > 1 ? 's' : ''}`);
+    if (error.selector) metaBits.push(`<code>${esc(error.selector)}</code>`);
+
+    // The suggestion and the loop's trailing message say the same kind of
+    // thing — join them into one hint line instead of stacking two panels.
+    const hint = [error.suggestion, message].filter(Boolean).map(esc).join(' ');
+
+    // Only show raw detail when it adds something over the message.
+    const showRaw = error.detail && error.detail !== error.message;
 
     const card = document.createElement('div');
     card.className = 'snn-error-card';
-
-    // Build tried-selectors list if available
-    let selectorsHtml = '';
-    if (error.selector) {
-      selectorsHtml = `<div class="snn-error-detail">Selector: <code>${this.sp.escapeHtml(error.selector)}</code></div>`;
-    }
+    card.dataset.source = source;
 
     card.innerHTML = `
-      <div class="snn-error-card-header">
-        <span class="snn-error-card-icon"><i class="fas fa-triangle-exclamation"></i></span>
-        <span class="snn-error-card-title">Action Failed</span>
+      <div class="snn-error-head">
+        <i class="fas fa-triangle-exclamation snn-error-ico"></i>
+        <span class="snn-error-code">${esc(code)}</span>
+        <span class="snn-error-src ${src.cls}">${esc(src.label)}</span>
+        <button class="snn-error-icon-btn" data-action="copy" title="Copy error details"><i class="fas fa-copy"></i></button>
+        <button class="snn-error-icon-btn" data-action="dismiss" title="Dismiss"><i class="fas fa-xmark"></i></button>
       </div>
-      <div class="snn-error-card-body">
-        <p><strong>Tried to:</strong> ${step?.description || step?.action || 'Unknown action'}</p>
-        ${step?.action ? `<p><strong>Action type:</strong> <code>${this.sp.escapeHtml(step.action)}</code></p>` : ''}
-        <p><strong>Attempts:</strong> ${totalAttempts || (error?.attempt || '?')} ${totalAttempts > 1 ? 'attempts' : 'attempt'}</p>
-        <div class="snn-error-code">
-          <span class="snn-error-code-label">${error.code || 'ERROR'}</span>
-          <span class="snn-error-code-msg">${error.message || 'Unknown error'}</span>
-        </div>
-        ${selectorsHtml}
-        ${error.detail ? `<div class="snn-error-detail">${this.sp.escapeHtml(error.detail)}</div>` : ''}
-        ${error.suggestion ? `<div class="snn-error-suggestion"><i class="fas fa-lightbulb"></i> ${this.sp.escapeHtml(error.suggestion)}</div>` : ''}
-        ${message ? `<div class="snn-error-suggestion" style="margin-top:4px;">${this.sp.escapeHtml(message)}</div>` : ''}
+      <div class="snn-error-body">
+        <div class="snn-error-msg">${esc(error.message || 'Unexpected error.')}</div>
+        ${hint ? `<div class="snn-error-hint"><i class="fas fa-lightbulb"></i><span>${hint}</span></div>` : ''}
+        ${metaBits.length ? `<div class="snn-error-meta">${metaBits.join(' <span class="snn-error-dot">·</span> ')}</div>` : ''}
+        ${showRaw ? `<pre class="snn-error-raw">${esc(error.detail)}</pre>` : ''}
       </div>
-      <div class="snn-error-card-actions">
-        <button class="snn-error-btn snn-error-btn-retry" data-action="retry"><i class="fas fa-arrows-rotate"></i> Retry</button>
-        <button class="snn-error-btn snn-error-btn-different" data-action="different"><i class="fas fa-lightbulb"></i> Try Differently</button>
-        <button class="snn-error-btn snn-error-btn-dismiss" data-action="dismiss"><i class="fas fa-xmark"></i> Dismiss</button>
+      <div class="snn-error-acts">
+        <button class="snn-error-btn snn-error-btn-retry" data-action="retry">Retry</button>
+        <button class="snn-error-btn" data-action="different">Try differently</button>
       </div>
     `;
 
-    // Wire up buttons
+    // ── Wire buttons ──
     card.querySelector('[data-action="retry"]')?.addEventListener('click', () => {
       card.remove();
       if (this.sp._onErrorRetry) this.sp._onErrorRetry();
@@ -542,8 +567,31 @@ class SNNAgentUI {
       card.remove();
       if (this.sp._onErrorTryDifferently) this.sp._onErrorTryDifferently();
     });
-    card.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => {
-      card.remove();
+    card.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => card.remove());
+
+    // Copy a plain-text block the user can paste straight into a bug report.
+    card.querySelector('[data-action="copy"]')?.addEventListener('click', async (e) => {
+      const lines = [
+        `SNN Chat error`,
+        `code: ${code}`,
+        `source: ${source}`,
+        `message: ${error.message || ''}`,
+        step?.action ? `action: ${step.action}` : null,
+        step?.description ? `step: ${step.description}` : null,
+        attempts ? `attempts: ${attempts}` : null,
+        error.selector ? `selector: ${error.selector}` : null,
+        error.detail ? `detail: ${error.detail}` : null,
+        `url: ${location.href}`,
+        `time: ${new Date().toISOString()}`
+      ].filter(Boolean);
+      try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        const btn = e.currentTarget;
+        btn.innerHTML = '<i class="fas fa-check"></i>';
+        setTimeout(() => { btn.innerHTML = '<i class="fas fa-copy"></i>'; }, 1400);
+      } catch (err) {
+        this.showToast('Could not copy to clipboard', 'warning');
+      }
     });
 
     this.sp.els.chatMessages.appendChild(card);
