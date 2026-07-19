@@ -38,6 +38,12 @@ class SNNSidePanel {
 
     // ── In-flight request cancellation ─────────────────────────
     this._activeAbortController = null;
+    // Partial streamed text, kept so an aborted stream can still be saved
+    this._streamPartial = '';
+
+    // ── Storage failure tracking (surfaced, never swallowed) ───
+    this._lastSaveError = null;
+    this._lastSaveToastAt = 0;
 
     // Active context that WILL be attached to the NEXT user message.
     this.activeContext = null;
@@ -682,8 +688,14 @@ class SNNSidePanel {
 
     // ── Snapshot the context that will be attached to THIS message ──
     const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
-    // ── Snapshot tab so we can discard stale responses after tab switch ──
+    // ── Snapshot tab so we can detect a tab switch mid-request ──
     const sendTabId = this.currentTabId;
+    // ── Snapshot the session this turn belongs to ──────────────
+    // A tab switch swaps out chatHistory and _historyKey. The reply still
+    // has to land in the session that asked for it, so every write below
+    // goes through this ref rather than through live state.
+    const sendRef = this.sessionRef();
+    this._streamPartial = '';
 
     D.log('sendMessage', { msgLen: message.length, msgPreview: message.substring(0, 80), contextType: contextSnapshot?.type, attachmentCount: attachments.length, tabId: sendTabId, chatLock: this._chatLockEnabled });
 
@@ -725,13 +737,13 @@ class SNNSidePanel {
       dataUrl: (a.type === 'image' || a.type === 'audio' || a.type === 'video') ? a.dataUrl : undefined,
       text: (a.type === 'text' || a.type === 'pdf' || a.type === 'file') ? a.text : undefined
     }));
-    this.chatHistory.push({
+    sendRef.messages.push({
       role: 'user', content: displayMessage,
       contextType: contextSnapshot?.type || 'none',
       context: contextSnapshot,
       attachments: historyAttachments
     });
-    await this.saveChatHistory();
+    await this.saveChatHistory(sendRef);
 
     // ── UNIFIED AGENT PATH ─────────────────────────────────────
     // ALL messages go through the agent loop. The LLM itself decides
@@ -747,38 +759,43 @@ class SNNSidePanel {
       try {
         const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId);
 
-        // Tab-switch guard: only discard if NOT in locked mode
-        if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
+        // Tab-switch guard. Stale means "don't draw this into the tab the
+        // user is looking at now" — NOT "throw the answer away". The reply
+        // was requested and paid for, so it is still written to the session
+        // that asked for it; only the rendering is skipped.
+        const stale = this._isStaleTurn(sendTabId);
 
         if (agentResult && agentResult.type === 'action') {
           // ── Handle capability queries ────────────────────
           if (agentResult.subtype === 'capabilities' && agentResult.results?.length > 0) {
             const capData = agentResult.results[0].result;
-            this._renderCapabilitiesInChat(capData);
-            this.chatHistory.push(
+            if (!stale) this._renderCapabilitiesInChat(capData);
+            sendRef.messages.push(
               { role: 'assistant', content: this._formatCapabilitiesForHistory(capData) }
             );
-            await this.saveChatHistory();
+            await this.saveChatHistory(sendRef);
           }
           // ── Render LLM's synthesized response if present ──
           if (agentResult.llmResponse) {
-            await this.streamRenderMessage(agentResult.llmResponse);
-            this.chatHistory.push(
+            if (!stale) await this.streamRenderMessage(agentResult.llmResponse);
+            sendRef.messages.push(
               { role: 'assistant', content: agentResult.llmResponse, tokenUsage: this.lastTokenUsage }
             );
-            await this.saveChatHistory();
+            await this.saveChatHistory(sendRef);
           }
+          if (stale) { this._resetLoadingState(); return; }
           this._finishSendMessage();
           return;
         }
 
         // ── Agent returned { type:'chat', content } — stream it ──
         if (agentResult && agentResult.type === 'chat' && agentResult.content) {
-          await this.streamRenderMessage(agentResult.content);
-          this.chatHistory.push(
+          if (!stale) await this.streamRenderMessage(agentResult.content);
+          sendRef.messages.push(
             { role: 'assistant', content: agentResult.content, tokenUsage: this.lastTokenUsage }
           );
-          await this.saveChatHistory();
+          await this.saveChatHistory(sendRef);
+          if (stale) { this._resetLoadingState(); return; }
           this._finishSendMessage();
           return;
         }
@@ -831,27 +848,31 @@ class SNNSidePanel {
       this._pendingAudioAttachments = null;
       this._pendingVideoAttachments = null;
 
-      // ── Tab-switch guard: discard if user switched tabs during API call ──
-      if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
+      // ── Tab-switch guard: skip rendering, but still persist the reply ──
+      const stale = this._isStaleTurn(sendTabId);
 
-      if (settings.enableStreaming !== false) {
-        // Streaming already rendered into DOM; just record in history
-        this.chatHistory.push(
-          { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
-        );
-      } else {
+      // Non-streaming needs an explicit render; streaming already painted
+      // into the DOM as it arrived.
+      if (settings.enableStreaming === false && !stale) {
         this.addMessage('ai', response, this.lastTokenUsage);
-        this.chatHistory.push(
-          { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
-        );
       }
+      sendRef.messages.push(
+        { role: 'assistant', content: response, tokenUsage: this.lastTokenUsage }
+      );
+      await this.saveChatHistory(sendRef);
 
-      await this.saveChatHistory();
+      if (stale) { this._resetLoadingState(); return; }
     } catch (error) {
-      // ── Tab-switch guard for errors too ──
-      if (!this._chatLockEnabled && this.currentTabId !== sendTabId) { this._resetLoadingState(); return; }
-      // Don't show AbortError — it's intentional (tab switch cancelled the request)
-      if (error.name === 'AbortError') { this._resetLoadingState(); return; }
+      const stale = this._isStaleTurn(sendTabId);
+      // An abort is intentional (tab switch / stop button), but whatever
+      // streamed before it is real text the user already saw. Keep it,
+      // flagged as partial, instead of dropping it on the floor.
+      if (error.name === 'AbortError') {
+        await this._persistPartialReply(sendRef);
+        this._resetLoadingState();
+        return;
+      }
+      if (stale) { this._resetLoadingState(); return; }
       this.removeLoadingMsg();
       // Same card the agent path uses — a chat failure should never look
       // like an assistant reply (it used to render as a plain 'ai' bubble
@@ -1108,6 +1129,9 @@ class SNNSidePanel {
           const content = parsed.choices?.[0]?.delta?.content || '';
           if (content) {
             fullResponse += content;
+            // Mirrored so an abort (which throws out of reader.read() and
+            // loses fullResponse) can still persist what already arrived.
+            this._streamPartial = fullResponse;
             contentDiv.innerHTML = this.parseMarkdown(fullResponse) + '<span class="sp-cursor">|</span>';
             this.smartScrollToBottom();
           }
@@ -3290,25 +3314,84 @@ class SNNSidePanel {
     });
   }
 
-  async saveChatHistory() {
-    // Session Lock: always save to fixed key; otherwise per-tab key
-    const key = this._chatLockEnabled ? this._chatLockKey : this.historyKey;
-    // Persist the computed key so subsequent saves target the same session
-    if (!this._chatLockEnabled && !this._historyKey) {
+  /**
+   * Snapshot of the session a write should land in.
+   *
+   * Capture this BEFORE any await that could straddle a tab switch.
+   * _onTabSwitched reassigns _historyKey (to null) and chatHistory (to a
+   * fresh array), so a save that recomputes them afterwards writes the
+   * WRONG messages under the WRONG key — either burying the old tab's
+   * chat under the new tab's key, or overwriting the old session with
+   * the new tab's empty array. Holding the key and the array reference
+   * from before the switch makes a late write land where it belongs.
+   */
+  sessionRef() {
+    return {
+      key: this._chatLockEnabled ? this._chatLockKey : this.historyKey,
+      messages: this.chatHistory,
+      domain: this.currentDomain,
+      tabId: this._chatLockEnabled ? null : this.currentTabId
+    };
+  }
+
+  /** The session currently on screen — used to tell live writes from stale ones. */
+  _liveKey() {
+    return this._chatLockEnabled ? this._chatLockKey : this.historyKey;
+  }
+
+  /**
+   * @param {object|null} ref — a sessionRef() captured earlier. Omit to
+   *                            save whatever session is live right now.
+   * @returns {Promise<boolean>} whether the write actually landed.
+   */
+  async saveChatHistory(ref = null) {
+    const key = ref?.key || this._liveKey();
+    const messages = ref?.messages || this.chatHistory;
+    // A stale ref must never drag the active-session pointer backwards.
+    const isLive = key === this._liveKey();
+    // Latch the computed key so subsequent saves target the same session.
+    // Only for the live session — latching a stale ref's key would point
+    // the panel back at the session the user just navigated away from.
+    if (isLive && !this._chatLockEnabled && !this._historyKey) {
       this._historyKey = key;
     }
-    await chrome.storage.local.set({
-      [key]: {
-        domain: this.currentDomain,
-        tabId: this._chatLockEnabled ? null : this.currentTabId,
-        lastUpdated: Date.now(),
-        messages: this.chatHistory,
-        sessionModel: this._sessionModel || null
-      }
-    });
-    // Keep the active-session pointer in sync so reopen always
-    // restores this session (survives newSession + close/reopen).
-    await this._saveActiveSessionPtr();
+
+    try {
+      await chrome.storage.local.set({
+        [key]: {
+          domain: ref ? ref.domain : this.currentDomain,
+          tabId: ref ? ref.tabId : (this._chatLockEnabled ? null : this.currentTabId),
+          lastUpdated: Date.now(),
+          messages,
+          sessionModel: this._sessionModel || null
+        }
+      });
+      // Keep the active-session pointer in sync so reopen always
+      // restores this session (survives newSession + close/reopen).
+      if (isLive) await this._saveActiveSessionPtr();
+      this._lastSaveError = null;
+      return true;
+    } catch (err) {
+      this._reportSaveFailure(err, key, messages.length);
+      return false;
+    }
+  }
+
+  /**
+   * A save that fails silently is indistinguishable from a chat that was
+   * never sent — the user loses the conversation with no way to tell why.
+   * Surface it once, loudly, and keep the detail for the settings panel.
+   * Throttled because agent runs fire many saves per second and a storage
+   * outage would otherwise bury the UI in toasts.
+   */
+  _reportSaveFailure(err, key, messageCount) {
+    this._lastSaveError = { message: err?.message || String(err), key, at: Date.now() };
+    D.error('saveChatHistory FAILED', { key, messageCount, error: err?.message || String(err) });
+    const now = Date.now();
+    if (!this._lastSaveToastAt || now - this._lastSaveToastAt > 10000) {
+      this._lastSaveToastAt = now;
+      this.showToast('Chat could not be saved — this conversation may be lost', 'error');
+    }
   }
 
   async newSession() {
@@ -3364,6 +3447,33 @@ class SNNSidePanel {
     await this.renderQuickActions();
     await this.renderModelQuickSwitch();
     this.showToast('New chat started');
+  }
+
+  /**
+   * True when the user moved to a different tab while this turn was
+   * in flight, so its result no longer belongs on screen. Session Lock
+   * spans all tabs, so nothing is ever stale there.
+   */
+  _isStaleTurn(sendTabId) {
+    return !this._chatLockEnabled && this.currentTabId !== sendTabId;
+  }
+
+  /**
+   * Save whatever text streamed in before an abort. Without this, cancelling
+   * (or switching tabs) mid-stream left the session holding a question with
+   * no answer, even though the partial reply was already on screen.
+   */
+  async _persistPartialReply(sendRef) {
+    const partial = (this._streamPartial || '').trim();
+    this._streamPartial = '';
+    if (!partial) return;
+    sendRef.messages.push({
+      role: 'assistant',
+      content: partial,
+      tokenUsage: this.lastTokenUsage,
+      partial: true
+    });
+    await this.saveChatHistory(sendRef);
   }
 
   /**
@@ -4114,10 +4224,13 @@ class SNNSidePanel {
         // collapsible group and creates duplicate content on restore.
       }
       if (resultData.type === 'capabilities') {
-        this.chatHistory.push(
+        const ref = this.sessionRef();
+        ref.messages.push(
           { role: 'assistant', content: this._formatCapabilitiesForHistory(resultData.data), tokenUsage: null }
         );
-        this.saveChatHistory().catch(() => {});
+        this.saveChatHistory(ref).catch((err) => {
+          D.error('capabilities save failed', err?.message || String(err));
+        });
       }
     };
 

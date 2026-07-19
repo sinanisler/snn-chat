@@ -255,14 +255,29 @@ class SNNAgentUI {
   }
 
   /**
+   * Persist a write to the session that is live RIGHT NOW, and log any
+   * failure instead of swallowing it.
+   *
+   * The ref is captured synchronously so the pending write can't be
+   * redirected by a tab switch that happens before it settles — see
+   * SNNSidePanel.sessionRef().
+   */
+  _save(ref) {
+    this.sp.saveChatHistory(ref).catch((err) => {
+      D.error('agent-ui: chat save failed', err?.message || String(err));
+    });
+  }
+
+  /**
    * Persist a status entry to chatHistory for tab-switch survival.
    */
   _persistStatusEntry(state, label, detail = {}) {
+    const ref = this.sp.sessionRef();
     // When starting a new agent run (PARSING), cancel any stale in-progress
     // status entries from a previous run so history stays clean.
     if (state === 'PARSING') {
-      for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
-        const m = this.sp.chatHistory[i];
+      for (let i = ref.messages.length - 1; i >= 0; i--) {
+        const m = ref.messages[i];
         if (m.role !== 'agent-status') continue;
         // A terminal entry marks the end of the previous run — stop here.
         // Otherwise we'd walk past a completed run and corrupt an inner
@@ -275,13 +290,13 @@ class SNNAgentUI {
     }
 
     // Every state transition gets its own entry — nothing overwrites.
-    this.sp.chatHistory.push({
+    ref.messages.push({
       role: 'agent-status',
       state,
       label,
       timestamp: Date.now()
     });
-    this.sp.saveChatHistory().catch(() => {});
+    this._save(ref);
   }
 
   /**
@@ -289,13 +304,14 @@ class SNNAgentUI {
    * Called by addActionHistoryEntry for 'start', and updated by updateLastActionEntry.
    */
   _persistActionEntry(status, description, detail = '') {
+    const ref = this.sp.sessionRef();
     // If starting a new action, only cancel the SINGLE most recent stale 'start'
     // entry (the one that was interrupted). Completed entries are already 'ok'/'fail'.
     if (status === 'start') {
-      for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
-        if (this.sp.chatHistory[i].role === 'agent-action' && this.sp.chatHistory[i].status === 'start') {
-          this.sp.chatHistory[i].status = 'cancelled';
-          this.sp.chatHistory[i].detail = 'Interrupted';
+      for (let i = ref.messages.length - 1; i >= 0; i--) {
+        if (ref.messages[i].role === 'agent-action' && ref.messages[i].status === 'start') {
+          ref.messages[i].status = 'cancelled';
+          ref.messages[i].detail = 'Interrupted';
           break; // Only cancel ONE — the most recent interrupted entry
         }
       }
@@ -303,25 +319,25 @@ class SNNAgentUI {
 
     // If updating (not 'start'), find and update the last agent-action entry
     if (status !== 'start') {
-      for (let i = this.sp.chatHistory.length - 1; i >= 0; i--) {
-        if (this.sp.chatHistory[i].role === 'agent-action') {
-          this.sp.chatHistory[i].status = status;
-          this.sp.chatHistory[i].detail = detail;
-          this.sp.chatHistory[i].description = description;
+      for (let i = ref.messages.length - 1; i >= 0; i--) {
+        if (ref.messages[i].role === 'agent-action') {
+          ref.messages[i].status = status;
+          ref.messages[i].detail = detail;
+          ref.messages[i].description = description;
           // Also save the final state
-          this.sp.saveChatHistory().catch(() => {});
+          this._save(ref);
           return;
         }
       }
     }
     // New 'start' entry — append to chatHistory
-    this.sp.chatHistory.push({
+    ref.messages.push({
       role: 'agent-action',
       action: '', description, status, detail,
       timestamp: Date.now()
     });
-    // Auto-save (fire and forget)
-    this.sp.saveChatHistory().catch(() => {});
+    // Auto-save (fire and forget, but failures are logged)
+    this._save(ref);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -402,13 +418,14 @@ class SNNAgentUI {
     this.sp.smartScrollToBottom();
 
     // Persist to chatHistory for session survival
-    this.sp.chatHistory.push({
+    const ref = this.sp.sessionRef();
+    ref.messages.push({
       role: 'agent-reasoning',
       text,
       iteration,
       timestamp: Date.now()
     });
-    this.sp.saveChatHistory().catch(() => {});
+    this._save(ref);
 
     return entry;
   }
