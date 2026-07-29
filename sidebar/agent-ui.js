@@ -537,19 +537,11 @@ class SNNAgentUI {
     const src = SNNAgentUI.SOURCE_LABELS[source] || SNNAgentUI.SOURCE_LABELS.extension;
     const code = error.code || 'ERROR';
 
-    // ── Meta line: action · attempts · selector, only what exists ──
-    const metaBits = [];
-    if (step?.description || step?.action) metaBits.push(esc(step.description || step.action));
-    const attempts = totalAttempts || error.attempt;
-    if (attempts) metaBits.push(`${attempts} attempt${attempts > 1 ? 's' : ''}`);
-    if (error.selector) metaBits.push(`<code>${esc(error.selector)}</code>`);
-
     // The suggestion and the loop's trailing message say the same kind of
     // thing — join them into one hint line instead of stacking two panels.
     const hint = [error.suggestion, message].filter(Boolean).map(esc).join(' ');
 
-    // Only show raw detail when it adds something over the message.
-    const showRaw = error.detail && error.detail !== error.message;
+    const attempts = totalAttempts || error.attempt;
 
     const card = document.createElement('div');
     card.className = 'snn-error-card';
@@ -560,18 +552,15 @@ class SNNAgentUI {
         <i class="fas fa-triangle-exclamation snn-error-ico"></i>
         <span class="snn-error-code">${esc(code)}</span>
         <span class="snn-error-src ${src.cls}">${esc(src.label)}</span>
+        <span class="snn-error-spacer"></span>
+        <button class="snn-error-link" data-action="retry">Retry</button>
+        <button class="snn-error-link" data-action="different">Different</button>
         <button class="snn-error-icon-btn" data-action="copy" title="Copy error details"><i class="fas fa-copy"></i></button>
         <button class="snn-error-icon-btn" data-action="dismiss" title="Dismiss"><i class="fas fa-xmark"></i></button>
       </div>
       <div class="snn-error-body">
         <div class="snn-error-msg">${esc(error.message || 'Unexpected error.')}</div>
-        ${hint ? `<div class="snn-error-hint"><i class="fas fa-lightbulb"></i><span>${hint}</span></div>` : ''}
-        ${metaBits.length ? `<div class="snn-error-meta">${metaBits.join(' <span class="snn-error-dot">·</span> ')}</div>` : ''}
-        ${showRaw ? `<pre class="snn-error-raw">${esc(error.detail)}</pre>` : ''}
-      </div>
-      <div class="snn-error-acts">
-        <button class="snn-error-btn snn-error-btn-retry" data-action="retry">Retry</button>
-        <button class="snn-error-btn" data-action="different">Try differently</button>
+        ${hint ? `<div class="snn-error-hint">${hint}</div>` : ''}
       </div>
     `;
 
