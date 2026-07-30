@@ -204,7 +204,7 @@ class SNNAgentLoop {
 
       const settings = await this.sp.getSettings();
       const apiKey = settings.openrouterKey;
-      if (!apiKey) { this._transition('IDLE'); return { type: 'chat' }; }
+      if (!apiKey && !settings.lmStudioEnabled) { this._transition('IDLE'); return { type: 'chat' }; }
 
       const tools = this._getToolDefinitions();
       const systemPrompt = this._buildToolSystemPrompt(settings);
@@ -387,7 +387,10 @@ class SNNAgentLoop {
         }
 
         // ── Final content (no more tool calls) ────────────────────
-        if (msg.content && !msg.tool_calls) {
+        // Some OpenAI-compatible servers (LM Studio) return tool_calls: []
+        // instead of omitting the field — an empty array is truthy, so this
+        // must check length, not just presence, or the content is dropped.
+        if (msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
           // ── LLM SELF-AUDIT ────────────────────────────────────
           // No regex. No language assumptions. The LLM reads the
           // original request and decides if it actually fulfilled it
@@ -787,6 +790,7 @@ CRITICAL RULES:
    */
   async _callLLMWithTools(messages, tools, settings) {
     const apiKey = settings.openrouterKey;
+    this.sp._lastProviderIsLmStudio = !!settings.lmStudioEnabled;
     // Use per-session model override if set, otherwise fall back to global settings default
     const model = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
 
@@ -796,10 +800,12 @@ CRITICAL RULES:
       tools,
       tool_choice: 'auto',
       parallel_tool_calls: false,  // one tool per response — prevents tool-result interleaving issues
-      usage: { include: true },    // needed for prompt_tokens_details.cached_tokens
       max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
+    if (!settings.lmStudioEnabled) {
+      body.usage = { include: true }; // needed for prompt_tokens_details.cached_tokens (OpenRouter-only)
+    }
 
     const msgCount = messages.length;
     const lastMsg = messages[msgCount - 1];
@@ -807,7 +813,7 @@ CRITICAL RULES:
 
     // Headers, error parsing, and the Gemini "corrupted thought signature"
     // retry are shared with the plain-chat paths — see SNNSidePanel._fetchOpenRouter.
-    const res = await this.sp._fetchOpenRouter(apiKey, body, this._abortController?.signal);
+    const res = await this.sp._fetchOpenRouter(apiKey, body, this._abortController?.signal, false, settings);
     const json = await res.json();
     const choice = json.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;

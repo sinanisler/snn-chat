@@ -1443,6 +1443,32 @@ body.theme-dark #welcome-screen .sp-model-tag {
   font-size: 13px;
   animation: snn-slide-up 0.2s ease;
 }
+/* Collapsed by default — only the vision/text-only banner shows. Hovering
+   (or focusing, for keyboard users) expands the rest: description, params,
+   context, pricing. Keeps the settings panel compact when browsing models. */
+.sp-model-info-banner { margin-bottom: 0; }
+.sp-model-info-hint {
+  font-size: 11px;
+  color: var(--sp-text-secondary);
+  font-style: italic;
+  margin-top: 4px;
+}
+.sp-model-info-details {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease, margin-top 0.25s ease;
+}
+.sp-model-info:hover .sp-model-info-hint,
+.sp-model-info:focus-within .sp-model-info-hint {
+  display: none;
+}
+.sp-model-info:hover .sp-model-info-details,
+.sp-model-info:focus-within .sp-model-info-details {
+  max-height: 600px;
+  opacity: 1;
+  margin-top: 8px;
+}
 .sp-model-info-loading {
   color: var(--sp-text-secondary);
   font-style: italic;

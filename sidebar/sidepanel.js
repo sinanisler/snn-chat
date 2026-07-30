@@ -1049,12 +1049,14 @@ class SNNSidePanel {
     const raw = err?.message || String(err || 'Unknown error');
     const status = err?.status;
     const base = { detail: raw, retryable: true };
+    const isLmStudio = this._lastProviderIsLmStudio === true;
+    const providerName = isLmStudio ? 'LM Studio' : 'OpenRouter';
 
     if (err?.name === 'AbortError')
       return { ...base, code: 'CANCELLED', source: 'user', message: 'Request cancelled.', retryable: false, suggestion: '' };
 
     if (status === 401 || status === 403)
-      return { ...base, code: 'AUTH_FAILED', source: 'user', message: 'Your API key was rejected.', retryable: false, suggestion: 'Open Settings and check that your OpenRouter key is correct and still active.' };
+      return { ...base, code: 'AUTH_FAILED', source: 'user', message: 'Your API key was rejected.', retryable: false, suggestion: isLmStudio ? 'Check that your LM Studio server\'s "Require Authentication" key (if any) matches what you entered.' : 'Open Settings and check that your OpenRouter key is correct and still active.' };
 
     if (status === 402)
       return { ...base, code: 'NO_CREDIT', source: 'user', message: 'Your OpenRouter account is out of credit.', retryable: false, suggestion: 'Add credit at openrouter.ai, or switch to a free model.' };
@@ -1063,7 +1065,7 @@ class SNNSidePanel {
       return { ...base, code: 'RATE_LIMITED', source: 'provider', message: 'The provider is rate-limiting your requests.', suggestion: 'Wait a moment and retry, or switch to a different model.' };
 
     if (status === 404)
-      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available or compatible with chat.', retryable: false, suggestion: 'The model may have been renamed or retired. Pick another one in Settings.' };
+      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available or compatible with chat.', retryable: false, suggestion: isLmStudio ? 'Make sure the model is loaded in LM Studio and the model name matches exactly.' : 'The model may have been renamed or retired. Pick another one in Settings.' };
 
     if (status === 413 || /context length|too large|maximum context/i.test(raw))
       return { ...base, code: 'CONTEXT_TOO_LARGE', source: 'user', message: 'This conversation is too long for the model.', retryable: false, suggestion: 'Start a new chat, or switch to a model with a larger context window.' };
@@ -1075,7 +1077,7 @@ class SNNSidePanel {
       return { ...base, code: 'NO_API_KEY', source: 'user', message: 'No OpenRouter API key is set.', retryable: false, suggestion: 'Add your key in Settings to start chatting.' };
 
     if (err?.name === 'TypeError' && /fetch|network/i.test(raw))
-      return { ...base, code: 'NETWORK_ERROR', source: 'network', message: 'Could not reach OpenRouter.', suggestion: 'Check your internet connection, VPN, or firewall and try again.' };
+      return { ...base, code: 'NETWORK_ERROR', source: 'network', message: `Could not reach ${providerName}.`, suggestion: isLmStudio ? 'Check that the LM Studio server is running, the URL in Settings is correct, and CORS is enabled in its server settings.' : 'Check your internet connection, VPN, or firewall and try again.' };
 
     if (status)
       return { ...base, code: `HTTP_${status}`, source: 'provider', message: `The API returned an error (${status}).`, suggestion: 'Retry, or switch models if it persists.' };
@@ -1083,26 +1085,48 @@ class SNNSidePanel {
     return { ...base, code: 'UNHANDLED', source: 'extension', message: 'Something went wrong inside SNN.', suggestion: 'This looks like a bug on our side — copy the details and report it.' };
   }
 
-  _openRouterHeaders(apiKey) {
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://github.com/sinanisler/SNN-Chat',
-      'X-Title': 'SNN Chat'
-    };
+  /**
+   * Base URL for chat/models requests. LM Studio (or any local
+   * OpenAI-compatible server) swaps in a user-supplied base URL;
+   * otherwise this is OpenRouter.
+   */
+  _getApiBaseUrl(settings) {
+    if (settings?.lmStudioEnabled) {
+      const url = (settings.lmStudioUrl || 'http://localhost:1234/v1').trim();
+      return url.replace(/\/+$/, '');
+    }
+    return 'https://openrouter.ai/api/v1';
+  }
+
+  _openRouterHeaders(apiKey, settings) {
+    const headers = { 'Content-Type': 'application/json' };
+    // Local servers (LM Studio etc.) typically need no key at all — only
+    // send Authorization/OpenRouter-identifying headers when talking to
+    // OpenRouter, or when a key was actually provided for a local server.
+    if (settings?.lmStudioEnabled) {
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    } else {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+      headers['HTTP-Referer'] = 'https://github.com/sinanisler/SNN-Chat';
+      headers['X-Title'] = 'SNN Chat';
+    }
+    return headers;
   }
 
   /**
-   * POST to OpenRouter's chat/completions endpoint. Returns the raw
-   * Response on success — callers decide how to consume the body
-   * (parsed JSON for normal calls, a stream reader for streaming calls).
-   * On a 400 "Corrupted thought signature" error (a known Gemini quirk
-   * triggered by image content), retries once with images stripped.
+   * POST to the chat/completions endpoint (OpenRouter, or a local
+   * OpenAI-compatible server like LM Studio when enabled in settings).
+   * Returns the raw Response on success — callers decide how to consume
+   * the body (parsed JSON for normal calls, a stream reader for streaming
+   * calls). On a 400 "Corrupted thought signature" error (a known
+   * OpenRouter/Gemini quirk triggered by image content), retries once
+   * with images stripped.
    */
-  async _fetchOpenRouter(apiKey, body, signal, _retriedCorrupted = false) {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  async _fetchOpenRouter(apiKey, body, signal, _retriedCorrupted = false, settings = null) {
+    const baseUrl = this._getApiBaseUrl(settings);
+    const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: this._openRouterHeaders(apiKey),
+      headers: this._openRouterHeaders(apiKey, settings),
       body: JSON.stringify(body),
       signal
     });
@@ -1118,7 +1142,7 @@ class SNNSidePanel {
           }
           return m;
         });
-        return this._fetchOpenRouter(apiKey, { ...body, messages: stripped }, signal, true);
+        return this._fetchOpenRouter(apiKey, { ...body, messages: stripped }, signal, true, settings);
       }
 
       let message = `API error ${res.status}`;
@@ -1140,7 +1164,8 @@ class SNNSidePanel {
   async callAPI(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
-    if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
+    this._lastProviderIsLmStudio = !!settings.lmStudioEnabled;
+    if (!apiKey && !settings.lmStudioEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
 
     const model = await this._getEffectiveModel();
     D.log('callAPI', { model, msgLen: message.length, contextType, contextLen: (context || '').length, hasSignal: !!signal });
@@ -1161,7 +1186,7 @@ class SNNSidePanel {
     };
     if (settings.topP !== undefined) body.top_p = settings.topP;
 
-    const res = await this._fetchOpenRouter(apiKey, body, signal);
+    const res = await this._fetchOpenRouter(apiKey, body, signal, false, settings);
 
     const data = await res.json();
     const cache = this._readCacheUsage(data.usage);
@@ -1180,7 +1205,8 @@ class SNNSidePanel {
   async streamResponse(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
-    if (!apiKey) throw new Error('OpenRouter API key not set.');
+    this._lastProviderIsLmStudio = !!settings.lmStudioEnabled;
+    if (!apiKey && !settings.lmStudioEnabled) throw new Error('OpenRouter API key not set.');
 
     const model = await this._getEffectiveModel();
     D.log('streamResponse', { model, msgLen: message.length, contextLen: (context || '').length, contextType });
@@ -1194,12 +1220,15 @@ class SNNSidePanel {
 
     const body = {
       model, messages, stream: true,
-      // Without this OpenRouter emits no usage chunk on a stream at all, so
-      // cache hit rates would be invisible on the most-used code path.
-      usage: { include: true },
       max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
+    if (!settings.lmStudioEnabled) {
+      // Without this OpenRouter emits no usage chunk on a stream at all, so
+      // cache hit rates would be invisible on the most-used code path. Local
+      // OpenAI-compatible servers don't recognize this OpenRouter-only flag.
+      body.usage = { include: true };
+    }
     if (settings.topP !== undefined) body.top_p = settings.topP;
 
     // Create streaming message element
@@ -1212,7 +1241,7 @@ class SNNSidePanel {
 
     let res;
     try {
-      res = await this._fetchOpenRouter(apiKey, body, signal);
+      res = await this._fetchOpenRouter(apiKey, body, signal, false, settings);
     } catch (err) {
       msgDiv.remove();
       throw err;
@@ -2227,9 +2256,9 @@ class SNNSidePanel {
       if (this._modelLocked) return; // locked — no-op
       if (!Object.keys(this._modelsData || {}).length) {
         const apiKey = settings.openrouterKey;
-        if (apiKey?.length > 10) {
+        if (settings.lmStudioEnabled || apiKey?.length > 10) {
           this.showToast('Loading models…');
-          this.loadModels(apiKey).then(() => {
+          this.loadModels(apiKey, settings).then(() => {
             const updated = Object.values(this._modelsData || {});
             this._renderMqsDropdown(updated, effectiveModel, this.els.mqsSearch.value.trim());
             this._openMqsPopover();
@@ -2385,6 +2414,8 @@ class SNNSidePanel {
         chrome.storage.local.get(['settings'], (result) => {
           const s = result.settings || {};
           if (s.openrouterModel === undefined) s.openrouterModel = '';
+          if (s.lmStudioEnabled === undefined) s.lmStudioEnabled = false;
+          if (s.lmStudioUrl === undefined) s.lmStudioUrl = 'http://localhost:1234/v1';
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.debugLogging === undefined) s.debugLogging = false;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
@@ -2408,9 +2439,10 @@ class SNNSidePanel {
     // Apply debug logging toggle to shared SNN_D (also covers agent-loop.js)
     SNN_D.enabled = settings.debugLogging === true;
 
-    // Prefetch model catalog so vision badges / checks use real OpenRouter metadata
-    if (settings.openrouterKey?.length > 10 && !Object.keys(this._modelsData || {}).length) {
-      this.loadModels(settings.openrouterKey).catch(() => {});
+    // Prefetch model catalog so vision badges / checks use real model metadata.
+    // Local servers (LM Studio) need no key at all.
+    if ((settings.lmStudioEnabled || settings.openrouterKey?.length > 10) && !Object.keys(this._modelsData || {}).length) {
+      this.loadModels(settings.openrouterKey, settings).catch(() => {});
     } else {
       this._updateHeaderVisionBadge(settings.openrouterModel || '');
     }
@@ -2555,11 +2587,18 @@ class SNNSidePanel {
       <div class="sp-tab-content active" data-tab-content="api">
         <div class="sp-section">
           <h4>OpenRouter API</h4>
-          
-          <div class="sp-field">
+
+          ${this.toggleHtml('s-lmstudio-enabled', 'Use LM Studio (local)', 'Connect to a local LM Studio server instead of OpenRouter', s.lmStudioEnabled === true)}
+
+          <div class="sp-field" id="s-openrouter-key-field" style="${s.lmStudioEnabled ? 'display:none' : ''}">
             <label>API Key</label>
             <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="sk-or-...">
             <p>New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
+          </div>
+          <div class="sp-field" id="s-lmstudio-url-field" style="${s.lmStudioEnabled ? '' : 'display:none'}">
+            <label>LM Studio Server URL</label>
+            <input type="text" id="s-lmstudio-url" value="${this.escapeHtml(s.lmStudioUrl || 'http://localhost:1234/v1')}" placeholder="http://localhost:1234/v1">
+            <p>Start the local server in LM Studio's Developer tab and enable CORS in its server settings. No API key needed.</p>
           </div>
           <div class="sp-field">
             <label>Model</label>
@@ -2569,7 +2608,7 @@ class SNNSidePanel {
             </div>
             <small>Search by name. Vision-capable models show a Vision badge.</small>
           </div>
-          <div id="s-model-info" class="sp-model-info" style="display:none"></div>
+          <div id="s-model-info" class="sp-model-info" style="display:none" tabindex="0"></div>
           <button class="sp-btn sp-btn-success" id="s-test-connection">Test Connection</button>
           <div class="sp-status" id="s-status"></div>
         </div>
@@ -2719,14 +2758,45 @@ class SNNSidePanel {
       clearTimeout(this._modelTimeout);
       const k = keyInput.value.trim();
       if (k.length > 10) {
-        this._modelTimeout = setTimeout(() => this.loadModels(k), 1500);
+        this._modelTimeout = setTimeout(() => this.loadModels(k, this._formSettings()), 1500);
       }
     });
-    if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey);
+
+    // LM Studio toggle — show/hide key vs. server-URL fields, reload models
+    const lmToggle = this.els.settingsBody.querySelector('#s-lmstudio-enabled');
+    const keyField = this.els.settingsBody.querySelector('#s-openrouter-key-field');
+    const urlField = this.els.settingsBody.querySelector('#s-lmstudio-url-field');
+    const urlInput = this.els.settingsBody.querySelector('#s-lmstudio-url');
+    lmToggle.addEventListener('change', () => {
+      const enabled = lmToggle.checked;
+      keyField.style.display = enabled ? 'none' : '';
+      urlField.style.display = enabled ? '' : 'none';
+      this._modelsData = {};
+      if (enabled) this.loadModels('', this._formSettings());
+    });
+    urlInput.addEventListener('input', () => {
+      clearTimeout(this._modelTimeout);
+      this._modelTimeout = setTimeout(() => {
+        this._modelsData = {};
+        this.loadModels('', this._formSettings());
+      }, 1000);
+    });
+
+    if (s.lmStudioEnabled) this.loadModels('', this._formSettings());
+    else if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey, this._formSettings());
 
     // Rich model picker
     this._setupModelPicker(s.openrouterModel || '');
     if (s.openrouterModel) this.fetchModelInfo();
+  }
+
+  /** Live LM Studio toggle/URL state read straight from the open settings form. */
+  _formSettings() {
+    const el = (id) => this.els.settingsBody?.querySelector(`#${id}`);
+    return {
+      lmStudioEnabled: !!el('s-lmstudio-enabled')?.checked,
+      lmStudioUrl: el('s-lmstudio-url')?.value?.trim() || 'http://localhost:1234/v1'
+    };
   }
 
   _setupModelPicker(selectedId) {
@@ -2885,11 +2955,12 @@ class SNNSidePanel {
       </div>`;
   }
 
-  async loadModels(apiKey) {
+  async loadModels(apiKey, settings = null) {
     try {
-      const res = await fetch('https://openrouter.ai/api/v1/models', {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
+      const baseUrl = this._getApiBaseUrl(settings);
+      const headers = {};
+      if (!settings?.lmStudioEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const res = await fetch(`${baseUrl}/models`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       // Cache model data for picker + vision checks
@@ -2924,8 +2995,9 @@ class SNNSidePanel {
     infoDiv.style.display = 'block';
 
     try {
+      const formSettings = this._formSettings();
       const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key')?.value.trim();
-      if (!apiKey) {
+      if (!formSettings.lmStudioEnabled && !apiKey) {
         infoDiv.innerHTML = '<div class="sp-model-info-error">Enter API key to see model details.</div>';
         return;
       }
@@ -2933,7 +3005,13 @@ class SNNSidePanel {
       // Look up from cached models list — no separate API call needed
       const data = this._modelsData?.[modelId];
       if (!data) {
-        // Fallback: try a direct API call if model not in cache
+        // Fallback: try a direct API call if model not in cache. LM Studio's
+        // OpenAI-compat API has no single-model endpoint, so just report
+        // that nothing more detailed is known for it.
+        if (formSettings.lmStudioEnabled) {
+          infoDiv.innerHTML = '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
+          return;
+        }
         infoDiv.innerHTML = '<div class="sp-model-info-loading">Loading model info...</div>';
         const res = await fetch(`https://openrouter.ai/api/v1/models/${encodeURI(modelId)}`, {
           headers: { 'Authorization': `Bearer ${apiKey}` }
@@ -2955,66 +3033,75 @@ class SNNSidePanel {
   _renderModelInfo(infoDiv, data) {
     this._selectedModelInfo = data;
     this.updateContextRing();   // context_length may have only just arrived
-    let html = '';
 
-    // Vision capability banner
+    // Vision capability banner — the only thing shown collapsed. Everything
+    // else lives in .sp-model-info-details, which only expands on hover/focus
+    // (see CSS) so the settings panel doesn't default to a wall of tags.
     const hasVision = this._modelHasVision(data);
-    html += `<div class="sp-model-info-banner ${hasVision ? 'vision' : 'text-only'}">
+    let bannerHtml = `<div class="sp-model-info-banner ${hasVision ? 'vision' : 'text-only'}">
       <strong>${hasVision ? 'Vision supported' : 'Text only'}</strong>
       <span>${hasVision ? 'Images & screenshots can be sent to this model.' : 'Images will not be sent (text-only model).'}</span>
     </div>`;
 
+    let details = '';
+
     // Description
     if (data.description) {
-      html += `<div class="sp-model-info-desc">${this.escapeHtml(data.description.substring(0, 400))}${data.description.length > 400 ? '...' : ''}</div>`;
+      details += `<div class="sp-model-info-desc">${this.escapeHtml(data.description.substring(0, 400))}${data.description.length > 400 ? '...' : ''}</div>`;
     }
 
     // Architecture / modalities
     const arch = data.architecture;
     if (arch) {
       if (arch.input_modalities && arch.input_modalities.length > 0) {
-        html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
+        details += '<div class="sp-model-info-row"><span class="sp-model-info-label">Input:</span><div class="sp-model-info-tags">';
         for (const mod of arch.input_modalities) {
           const isVision = /image|vision/i.test(String(mod));
-          html += `<span class="sp-model-tag sp-model-tag-input${isVision ? ' vision' : ''}">${this.escapeHtml(mod)}</span>`;
+          details += `<span class="sp-model-tag sp-model-tag-input${isVision ? ' vision' : ''}">${this.escapeHtml(mod)}</span>`;
         }
-        html += '</div></div>';
+        details += '</div></div>';
       }
       if (arch.output_modalities && arch.output_modalities.length > 0) {
-        html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Output:</span><div class="sp-model-info-tags">';
+        details += '<div class="sp-model-info-row"><span class="sp-model-info-label">Output:</span><div class="sp-model-info-tags">';
         for (const mod of arch.output_modalities) {
-          html += `<span class="sp-model-tag sp-model-tag-output">${this.escapeHtml(mod)}</span>`;
+          details += `<span class="sp-model-tag sp-model-tag-output">${this.escapeHtml(mod)}</span>`;
         }
-        html += '</div></div>';
+        details += '</div></div>';
       }
     }
 
     // Supported parameters — from model level (list format) or endpoints[0] (single format)
     const supportedParams = data.supported_parameters || data.endpoints?.[0]?.supported_parameters;
     if (supportedParams && supportedParams.length > 0) {
-      html += '<div class="sp-model-info-row"><span class="sp-model-info-label">Params:</span><div class="sp-model-info-tags">';
+      details += '<div class="sp-model-info-row"><span class="sp-model-info-label">Params:</span><div class="sp-model-info-tags">';
       for (const param of supportedParams) {
-        html += `<span class="sp-model-tag sp-model-tag-param">${this.escapeHtml(param)}</span>`;
+        details += `<span class="sp-model-tag sp-model-tag-param">${this.escapeHtml(param)}</span>`;
       }
-      html += '</div></div>';
+      details += '</div></div>';
     }
 
     // Context length — from top_provider (list format) or endpoints[0] (single format)
     const ctxLen = data.top_provider?.context_length || data.context_length || data.endpoints?.[0]?.context_length;
     if (ctxLen) {
-      html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Context:</span><span class="sp-model-info-value">${(ctxLen / 1024).toFixed(0)}K tokens</span></div>`;
+      details += `<div class="sp-model-info-row"><span class="sp-model-info-label">Context:</span><span class="sp-model-info-value">${(ctxLen / 1024).toFixed(0)}K tokens</span></div>`;
     }
 
     // Pricing
     const price = this._formatModelPrice(data);
     if (price) {
-      html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Price:</span><span class="sp-model-info-value">${this.escapeHtml(price)}</span></div>`;
+      details += `<div class="sp-model-info-row"><span class="sp-model-info-label">Price:</span><span class="sp-model-info-value">${this.escapeHtml(price)}</span></div>`;
     }
 
     // Max completion tokens
     const maxOut = data.top_provider?.max_completion_tokens || data.endpoints?.[0]?.max_completion_tokens;
     if (maxOut) {
-      html += `<div class="sp-model-info-row"><span class="sp-model-info-label">Max output:</span><span class="sp-model-info-value">${maxOut.toLocaleString()} tokens</span></div>`;
+      details += `<div class="sp-model-info-row"><span class="sp-model-info-label">Max output:</span><span class="sp-model-info-value">${maxOut.toLocaleString()} tokens</span></div>`;
+    }
+
+    let html = bannerHtml;
+    if (details) {
+      html += `<div class="sp-model-info-hint">Hover for details</div>`;
+      html += `<div class="sp-model-info-details">${details}</div>`;
     }
 
     infoDiv.innerHTML = html || '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
@@ -3022,9 +3109,10 @@ class SNNSidePanel {
   }
 
   async testConnection() {
+    const formSettings = this._formSettings();
     const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key').value.trim();
     const statusEl = this.els.settingsBody.querySelector('#s-status');
-    if (!apiKey) {
+    if (!formSettings.lmStudioEnabled && !apiKey) {
       statusEl.className = 'sp-status error';
       statusEl.textContent = 'Enter an API key first.';
       return;
@@ -3033,15 +3121,18 @@ class SNNSidePanel {
     statusEl.textContent = 'Testing...';
     statusEl.style.display = 'block';
     try {
-      const res = await fetch('https://openrouter.ai/api/v1/models', {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
+      const baseUrl = this._getApiBaseUrl(formSettings);
+      const headers = {};
+      if (!formSettings.lmStudioEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      const res = await fetch(`${baseUrl}/models`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       statusEl.className = 'sp-status success';
       statusEl.textContent = 'Connection successful!';
     } catch (e) {
       statusEl.className = 'sp-status error';
-      statusEl.textContent = `Failed: ${e.message}`;
+      statusEl.textContent = formSettings.lmStudioEnabled
+        ? `Failed: ${e.message} — is the LM Studio server running with CORS enabled?`
+        : `Failed: ${e.message}`;
     }
   }
 
@@ -3163,6 +3254,8 @@ class SNNSidePanel {
     const settings = {
       openrouterKey: getVal('s-openrouter-key'),
       openrouterModel: getVal('s-openrouter-model'),
+      lmStudioEnabled: getChecked('s-lmstudio-enabled') === true,
+      lmStudioUrl: getVal('s-lmstudio-url') || 'http://localhost:1234/v1',
       maxTokens: parseInt(getVal('s-max-tokens')) || 16000,
       temperature: parseFloat(getVal('s-temperature')) || 0.7,
       topP: parseFloat(getVal('s-top-p')) || 0.9,
@@ -3176,7 +3269,7 @@ class SNNSidePanel {
       quickActions: this.getQuickActionsFromEditor()
     };
 
-    if (!settings.openrouterKey) {
+    if (!settings.lmStudioEnabled && !settings.openrouterKey) {
       this.showToast('No API key set — chat will not work until you add one.', 'warning');
     }
 
