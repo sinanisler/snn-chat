@@ -49,6 +49,7 @@ class SNNAgentLoop {
     this._cancelReason = null;  // 'user' | 'tab-switch' | null
     this._pendingResolve = null; // for BLOCKED state
     this._abortController = null; // for cancelling in-flight LLM fetch
+    this._runRef = null; // sessionRef() this run belongs to — see run()
 
     // Owned SOLELY by run()'s try/finally. Deliberately NOT derived from
     // _state: cancellation paths leave _state at 'CANCELLED' while run() is
@@ -160,9 +161,15 @@ class SNNAgentLoop {
    * Main entry point. Uses OpenRouter native tool calling for reliable action selection.
    * The LLM receives all SNN actions as tool definitions and decides what to do.
    */
-  async run(userMessage, context, tabId) {
+  async run(userMessage, context, tabId, sendRef = null) {
     if (this._running) {
-      this.sp.showToast('Agent is already working. Wait or press Escape to cancel.', 'warning');
+      const busyDomain = this._runRef?.domain;
+      this.sp.showToast(
+        busyDomain
+          ? `Still working on ${busyDomain} — wait, switch back to check on it, or press Escape to cancel it.`
+          : 'Agent is already working. Wait or press Escape to cancel.',
+        'warning'
+      );
       return;
     }
     // Set synchronously — nothing below awaits before the try, so no other
@@ -175,6 +182,14 @@ class SNNAgentLoop {
     this._taskId = this._generateId();
     this._cancelled = false;
     this._abortController = new AbortController();
+    // The session this run belongs to. Tab switches no longer cancel a busy
+    // run (see sidepanel.js _doTabSwitch), so the UI's "live" session can
+    // diverge from this run's session for the rest of its lifetime. Every
+    // write this run makes — chat history saves AND live status/action/
+    // reasoning DOM entries — must target THIS ref, not whatever the side
+    // panel happens to be showing right now. See SNNAgentUI._runRef/_isLive.
+    this._runRef = sendRef;
+    if (this.sp._agentUI) this.sp._agentUI._runRef = sendRef;
     // ── Reset token usage accumulator for this agent run ──
     this.sp.lastTokenUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, cache_write_tokens: 0 };
     this.sp._resetLiveUsage?.();
@@ -268,7 +283,6 @@ class SNNAgentLoop {
 
       while (iteration < MAX_ITERATIONS && !this._cancelled) {
         iteration++;
-        if (!this._checkTabStillValid()) return this._cancelledResult();
 
         // No-op unless the conversation genuinely exceeds this model's window.
         this._fitContextToBudget(messages, settings, iteration);
@@ -302,7 +316,6 @@ class SNNAgentLoop {
           // Execute each tool call
           for (const tc of msg.tool_calls) {
             if (this._cancelled) break;
-            if (!this._checkTabStillValid()) return this._cancelledResult();
 
             const fnName = tc.function?.name || '';
             const fnArgs = this._safeParseJSON(tc.function?.arguments || '{}');
@@ -451,6 +464,8 @@ Be honest. The user will see if you claim to have done something you did not.`
       // silently degrades to tool-less chat.
       this._running = false;
       this._abortController = null;
+      this._runRef = null;
+      if (this.sp._agentUI) this.sp._agentUI._runRef = null;
       // Normalize only non-terminal states. FAILED and CANCELLED are
       // meaningful end states the UI has already rendered and whose action
       // group is already finalized — forcing IDLE on top appends a stray
@@ -504,7 +519,10 @@ Be honest. The user will see if you claim to have done something you did not.`
       }, required: ['url'] },
       { name: 'snn_readPage', desc: 'Read the full text content of the CURRENT page (title, URL, word count, and all extracted text). Use this after snn_navigate to read what the page says. Also use it after clicking a search result or link to read the destination page. The content is returned as plain text — analyze it to find information, links, or decide your next navigation.', params: {}, required: [] },
       { name: 'snn_goBack', desc: 'Go back to the previous page (browser back button). Use this after reading a page to return to search results or the previous page.', params: {}, required: [] },
-      { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] }
+      { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] },
+
+      // ── Task Continuity ────────────────────────────────────────
+      { name: 'snn_checkPreviousTask', desc: 'Check whether an EARLIER task in this conversation was interrupted (stopped, tab-switched away from, or ran out of iterations) before completion, or how it ended. Returns the original request, the steps already taken with their outcomes, and how it closed. Call this when the user asks you to continue, finish, check on, or follow up on something, or when the conversation history shows a task that looks unfinished. After calling it, you MUST verify current page state with snn_mapPage or snn_readPage before repeating or continuing any step — the page may have changed since the interruption, and stale steps must never be blindly replayed.', params: {}, required: [] }
     ];
 
 // Build OpenRouter tool format
@@ -724,6 +742,28 @@ ABSOLUTE PROHIBITION:
   not a diagram. If asked for a diagram, emit mermaid.
 - NEVER claim you are unable to draw or display a diagram — you CAN.
 
+═══════════════════════════════════════════════════════════
+RESUMING AN INTERRUPTED TASK
+═══════════════════════════════════════════════════════════
+
+The user can switch browser tabs while you're working — that no longer stops
+you. But other things still can (the user pressing Stop, starting a New Chat,
+or you running out of iterations), and the conversation history may show a
+task that looks unfinished — e.g. it ends with "[Task stopped by the user
+before completion.]", or the user asks "did you finish that?" / "continue" /
+"what happened with X?".
+
+When you see that: call snn_checkPreviousTask. It returns the original
+request, the steps already taken with their outcomes, and how that task
+ended. Then:
+1. NEVER blindly replay old steps. The page may have navigated, reloaded, or
+   changed since the interruption.
+2. Verify current state FIRST — snn_mapPage or snn_readPage — before deciding
+   what, if anything, still needs doing.
+3. If the goal already looks accomplished, say so instead of redoing work.
+4. If it's genuinely unfinished, pick up from the verified current state, not
+   from the old plan's assumptions.
+
 CRITICAL RULES:
 - NEVER open a new tab. ALL navigation happens in the current tab.
 - NEVER consider a task done after just reading search results. Snippets are NOT research.
@@ -825,6 +865,12 @@ CRITICAL RULES:
     if (actionName === 'getCapabilities') {
       const result = await this._dispatchAction({ action: 'getCapabilities', id: this._generateId(), params: {}, timeout: 5000 });
       return result.success ? result.result : { error: 'Could not load capabilities' };
+    }
+
+    // Special handling for task-continuity check — purely a local read of
+    // this session's own persisted history, no dispatch to the page needed.
+    if (actionName === 'checkPreviousTask') {
+      return this._getPreviousTaskSummary();
     }
 
     // Build step for tracking
@@ -1041,6 +1087,82 @@ CRITICAL RULES:
     }
     this._transition('IDLE');
     return { type: 'action', subtype: 'capabilities', results: this._stepResults };
+  }
+
+  /**
+   * Handler for the snn_checkPreviousTask tool. Every step of every run is
+   * already persisted live as agent-status/agent-action/agent-reasoning
+   * entries (see agent-ui.js _persistStatusEntry/_persistActionEntry) —
+   * this just reads that trace back out, scoped to the most recent run
+   * that ISN'T the one executing right now (compared by taskId).
+   *
+   * Reads from this._runRef.messages (the session THIS run belongs to),
+   * not this.sp.chatHistory — those can differ once a tab switch stops
+   * being a cancellation trigger and the visible session moves elsewhere
+   * mid-run. See run()/_runRef.
+   */
+  _getPreviousTaskSummary() {
+    const messages = this._runRef?.messages || this.sp.chatHistory || [];
+    const myTaskId = this._taskId;
+    const isAgentEntry = (m) => m.role === 'agent-status' || m.role === 'agent-action' || m.role === 'agent-reasoning';
+
+    // Find the most recent agent entry belonging to a DIFFERENT run.
+    let endIdx = -1;
+    let targetTaskId = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (isAgentEntry(m) && m.taskId && m.taskId !== myTaskId) {
+        endIdx = i;
+        targetTaskId = m.taskId;
+        break;
+      }
+    }
+    if (endIdx === -1) {
+      return { found: false, message: 'No previous task found in this conversation.' };
+    }
+
+    // Walk backward collecting every entry from that same run, down to the
+    // user message that started it.
+    let startIdx = endIdx;
+    let originalRequest = null;
+    for (let i = endIdx; i >= 0; i--) {
+      const m = messages[i];
+      if (isAgentEntry(m)) {
+        if (m.taskId !== targetTaskId) break; // ran into an even earlier task
+        startIdx = i;
+      } else if (m.role === 'user') {
+        originalRequest = typeof m.content === 'string' ? m.content : null;
+        startIdx = i;
+        break;
+      } else {
+        break;
+      }
+    }
+
+    // Walk forward from the last matching entry to pick up the run's own
+    // closing status/reply (cancelled marker or final synthesized answer).
+    const steps = [];
+    let outcome = null;
+    for (let i = startIdx; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role === 'agent-action' && m.taskId === targetTaskId) {
+        steps.push(`[${m.status}] ${m.description}${m.detail ? ' — ' + m.detail : ''}`);
+      } else if (m.role === 'agent-status' && m.taskId === targetTaskId && ['IDLE', 'FAILED', 'CANCELLED'].includes(m.state)) {
+        outcome = m.label;
+      } else if (i > endIdx && (m.role === 'assistant' || m.role === 'user')) {
+        // The reply that closed this run out, or a newer turn already began.
+        if (m.role === 'assistant') outcome = m.cancelled ? `Interrupted before finishing: ${m.content}` : m.content;
+        break;
+      }
+    }
+
+    return {
+      found: true,
+      originalRequest: originalRequest || '(unknown)',
+      stepsTaken: steps.length ? steps : ['(no actions were recorded for this task)'],
+      outcome: outcome || 'Unknown — no closing status was recorded.',
+      note: 'This is what happened BEFORE. The page may have changed since then — verify current state with snn_mapPage or snn_readPage before repeating or continuing any step.'
+    };
   }
 
   /**
@@ -1343,22 +1465,6 @@ CRITICAL RULES:
 
     candidates.sort((a, b) => b.score - a.score);
     return candidates[0] || null;
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // STALE STATE DETECTION
-  // ═══════════════════════════════════════════════════════════════
-  _checkTabStillValid() {
-    // Session Lock: tab switches are allowed — agent keeps running on original tab
-    if (this.sp._chatLockEnabled) return true;
-    if (this.sp.currentTabId !== this._sendTabId) {
-      // Tab switched — cancel gracefully, don't show error cards
-      this._cancelled = true;
-      this._cancelReason = 'tab-switch';
-      this._transition('CANCELLED', { reason: 'Tab switched — task interrupted' });
-      return false;
-    }
-    return true;
   }
 
   // ═══════════════════════════════════════════════════════════════

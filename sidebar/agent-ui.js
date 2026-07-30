@@ -17,6 +17,22 @@ class SNNAgentUI {
     this._actionGroupHeaderTextEl = null; // DOM element: header text span
     this._actionGroupDotsEl = null;      // DOM element: animated dots span
     this._actionGroupCount = 0;          // number of action entries in group
+
+    // Session the CURRENTLY RUNNING agent-loop belongs to (sessionRef()
+    // captured at run() start — see agent-loop.js). Tab switches no longer
+    // cancel a busy run, so this can diverge from the side panel's visible
+    // session for the run's whole lifetime. Set/cleared by agent-loop.js.
+    this._runRef = null;
+  }
+
+  /**
+   * True when the run this entry belongs to is the session on screen right
+   * now. False means the agent is working on a tab the user isn't looking
+   * at — the entry must still be PERSISTED (below) but never painted into
+   * the DOM, which belongs to whatever session IS on screen.
+   */
+  _isLive() {
+    return !this._runRef || this._runRef.key === this.sp._liveKey();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -33,6 +49,7 @@ class SNNAgentUI {
   }
 
   hideStatusBar() {
+    if (!this._isLive()) return; // belongs to a tab not on screen — leave the visible DOM alone
     const bar = document.getElementById('snn-agent-status');
     if (bar) bar.remove();
   }
@@ -41,6 +58,7 @@ class SNNAgentUI {
   // PROGRESS BAR — shown above status bar for multi-step tasks
   // ═══════════════════════════════════════════════════════════════
   renderProgress(step, total, description) {
+    if (!this._isLive()) return; // background run — don't paint into the visible session
     let prog = document.getElementById('snn-agent-progress');
     if (!prog) {
       prog = document.createElement('div');
@@ -64,6 +82,7 @@ class SNNAgentUI {
   }
 
   hideProgress() {
+    if (!this._isLive()) return;
     const prog = document.getElementById('snn-agent-progress');
     if (prog) prog.style.display = 'none';
   }
@@ -214,6 +233,11 @@ class SNNAgentUI {
     // Persist to chatHistory for survival across tab switches
     this._persistStatusEntry(state, label, detail);
 
+    // Background run for a tab not on screen — the write above already
+    // landed in the right session; painting it here would land in the
+    // WRONG one (whatever session IS on screen right now).
+    if (!this._isLive()) return null;
+
     // ── Action Group Logic ──────────────────────────────────
     // PARSING / PLANNING always render outside; close any stale group first.
     if (state === 'PARSING' || state === 'PLANNING') {
@@ -272,7 +296,7 @@ class SNNAgentUI {
    * Persist a status entry to chatHistory for tab-switch survival.
    */
   _persistStatusEntry(state, label, detail = {}) {
-    const ref = this.sp.sessionRef();
+    const ref = this._runRef || this.sp.sessionRef();
     // When starting a new agent run (PARSING), cancel any stale in-progress
     // status entries from a previous run so history stays clean.
     if (state === 'PARSING') {
@@ -290,10 +314,13 @@ class SNNAgentUI {
     }
 
     // Every state transition gets its own entry — nothing overwrites.
+    // taskId lets snn_checkPreviousTask (agent-loop.js) tell "this run's own
+    // entries" apart from an EARLIER run's trace when it looks back.
     ref.messages.push({
       role: 'agent-status',
       state,
       label,
+      taskId: this.sp._agentLoop?._taskId || null,
       timestamp: Date.now()
     });
     this._save(ref);
@@ -304,7 +331,7 @@ class SNNAgentUI {
    * Called by addActionHistoryEntry for 'start', and updated by updateLastActionEntry.
    */
   _persistActionEntry(status, description, detail = '') {
-    const ref = this.sp.sessionRef();
+    const ref = this._runRef || this.sp.sessionRef();
     // If starting a new action, only cancel the SINGLE most recent stale 'start'
     // entry (the one that was interrupted). Completed entries are already 'ok'/'fail'.
     if (status === 'start') {
@@ -317,13 +344,16 @@ class SNNAgentUI {
       }
     }
 
-    // If updating (not 'start'), find and update the last agent-action entry
+    // If updating (not 'start'), find and update the last agent-action entry.
+    // description is optional here — updateLastActionEntry doesn't have a new
+    // one to give (it never changed), so omitting it keeps the original
+    // instead of overwriting it with an empty string.
     if (status !== 'start') {
       for (let i = ref.messages.length - 1; i >= 0; i--) {
         if (ref.messages[i].role === 'agent-action') {
           ref.messages[i].status = status;
           ref.messages[i].detail = detail;
-          ref.messages[i].description = description;
+          if (description) ref.messages[i].description = description;
           // Also save the final state
           this._save(ref);
           return;
@@ -334,6 +364,7 @@ class SNNAgentUI {
     ref.messages.push({
       role: 'agent-action',
       action: '', description, status, detail,
+      taskId: this.sp._agentLoop?._taskId || null,
       timestamp: Date.now()
     });
     // Auto-save (fire and forget, but failures are logged)
@@ -346,6 +377,8 @@ class SNNAgentUI {
   addActionHistoryEntry(action, description, status, detail = '') {
     // Persist to chatHistory for tab-switch survival
     this._persistActionEntry(status, description, detail);
+
+    if (!this._isLive()) return null; // background run — leave the visible DOM alone
 
     // Route into action group if one is active
     const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
@@ -371,6 +404,14 @@ class SNNAgentUI {
    * Update the last action history entry (e.g., change from ▶️ to ✅)
    */
   updateLastActionEntry(status, detail = '') {
+    // Persist the ok/fail status to chatHistory so it survives tab switches.
+    // No description to give — it never changed — so _persistActionEntry
+    // keeps whatever was already stored instead of us having to read it
+    // back out of a DOM entry that may not exist for a background run.
+    this._persistActionEntry(status, null, detail);
+
+    if (!this._isLive()) return; // background run — leave the visible DOM alone
+
     const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
     const entries = container.querySelectorAll('.snn-action-entry');
     if (entries.length === 0) return;
@@ -389,10 +430,6 @@ class SNNAgentUI {
         last.appendChild(span);
       }
     }
-    // Persist the ok/fail status to chatHistory so it survives tab switches
-    const textEl = last.querySelector('.snn-action-entry-text');
-    const desc = textEl ? textEl.textContent : '';
-    this._persistActionEntry(status, desc, detail);
     this.sp.smartScrollToBottom();
   }
 
@@ -401,6 +438,19 @@ class SNNAgentUI {
    * reasoning between tool calls. Default: collapsed to avoid clutter.
    */
   addReasoningEntry(text, iteration) {
+    // Persist to chatHistory for session survival
+    const ref = this._runRef || this.sp.sessionRef();
+    ref.messages.push({
+      role: 'agent-reasoning',
+      text,
+      iteration,
+      taskId: this.sp._agentLoop?._taskId || null,
+      timestamp: Date.now()
+    });
+    this._save(ref);
+
+    if (!this._isLive()) return null; // background run — leave the visible DOM alone
+
     const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
 
     const entry = document.createElement('div');
@@ -417,16 +467,6 @@ class SNNAgentUI {
     container.appendChild(entry);
     this.sp.smartScrollToBottom();
 
-    // Persist to chatHistory for session survival
-    const ref = this.sp.sessionRef();
-    ref.messages.push({
-      role: 'agent-reasoning',
-      text,
-      iteration,
-      timestamp: Date.now()
-    });
-    this._save(ref);
-
     return entry;
   }
 
@@ -434,6 +474,7 @@ class SNNAgentUI {
    * Attach a screenshot image to the last action entry so the user can see it.
    */
   attachScreenshotToLastEntry(dataUrl) {
+    if (!this._isLive()) return; // background run — the screenshot isn't lost, just not re-shown live
     const container = this._actionGroupBodyEl || this.sp.els.chatMessages;
     const entries = container.querySelectorAll('.snn-action-entry');
     if (entries.length === 0) return;
@@ -530,6 +571,7 @@ class SNNAgentUI {
   };
 
   renderErrorCard(errorData) {
+    if (!this._isLive()) return; // background run — the failure is still in the persisted trace, just not popped up here
     const { step, error = {}, totalAttempts, message } = errorData || {};
     const esc = (s) => this.sp.escapeHtml(String(s));
 

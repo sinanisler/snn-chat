@@ -670,12 +670,15 @@ class SNNSidePanel {
       return;
     }
 
-    // ── Cancel any running agent loop BEFORE clearing state ──
-    if (this._agentLoop && this._agentLoop.isBusy) {
-      this._agentLoop.cancel('tab-switch');
-      // Brief pause to let cancellation propagate
-      await new Promise(r => setTimeout(r, 100));
-    }
+    // ── Do NOT cancel a running agent loop just because the user looked at
+    // another tab. The loop keeps executing against its own _sendTabId
+    // (captured at run() start, never reassigned here), so it stays correct
+    // regardless of which tab is on screen. sendMessage() captured this run's
+    // sessionRef and threads it through agent-loop.js / agent-ui.js, so its
+    // writes keep landing in the ORIGINAL tab's session even after the UI
+    // below switches to a different tab's session — see _isLive()/_runRef.
+    // Real interruptions (explicit Stop, New Chat, deleting the live session,
+    // toggling Session Lock) still go through _cancelBusyAgent().
 
     // Save current session BEFORE aborting/closing anything
     if (this.chatHistory.length) {
@@ -882,7 +885,7 @@ class SNNSidePanel {
 
     if (this._agentLoop && !this._agentLoop.isBusy && !hasMultimodalAttachments) {
       try {
-        const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId);
+        const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId, sendRef);
 
         // ── Cancelled: stop here. Do NOT fall through. ───────────
         // Falling through to the plain-chat path fired a brand-new LLM
