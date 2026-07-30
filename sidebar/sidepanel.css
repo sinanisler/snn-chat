@@ -1838,6 +1838,7 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   border: 1px solid var(--sp-danger);
   border-radius: 10px;
   overflow: hidden;
+  flex-shrink: 0;
   animation: snn-slide-up 0.25s ease;
 }
 @keyframes snn-slide-up {
@@ -1917,6 +1918,7 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   border: 1px solid var(--sp-success);
   border-radius: 10px;
   overflow: hidden;
+  flex-shrink: 0;
   animation: snn-slide-up 0.25s ease;
 }
 .snn-result-card-header {

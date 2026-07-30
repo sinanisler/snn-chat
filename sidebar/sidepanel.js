@@ -1063,7 +1063,7 @@ class SNNSidePanel {
       return { ...base, code: 'RATE_LIMITED', source: 'provider', message: 'The provider is rate-limiting your requests.', suggestion: 'Wait a moment and retry, or switch to a different model.' };
 
     if (status === 404)
-      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available.', retryable: false, suggestion: 'The model may have been renamed or retired. Pick another one in Settings.' };
+      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available or compatible with chat.', retryable: false, suggestion: 'The model may have been renamed or retired. Pick another one in Settings.' };
 
     if (status === 413 || /context length|too large|maximum context/i.test(raw))
       return { ...base, code: 'CONTEXT_TOO_LARGE', source: 'user', message: 'This conversation is too long for the model.', retryable: false, suggestion: 'Start a new chat, or switch to a model with a larger context window.' };
