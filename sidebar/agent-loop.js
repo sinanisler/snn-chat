@@ -204,7 +204,7 @@ class SNNAgentLoop {
 
       const settings = await this.sp.getSettings();
       const apiKey = settings.openrouterKey;
-      if (!apiKey && !settings.lmStudioEnabled) { this._transition('IDLE'); return { type: 'chat' }; }
+      if (!apiKey && !settings.localLlmEnabled) { this._transition('IDLE'); return { type: 'chat' }; }
 
       const tools = this._getToolDefinitions();
       const systemPrompt = this._buildToolSystemPrompt(settings);
@@ -790,7 +790,7 @@ CRITICAL RULES:
    */
   async _callLLMWithTools(messages, tools, settings) {
     const apiKey = settings.openrouterKey;
-    this.sp._lastProviderIsLmStudio = !!settings.lmStudioEnabled;
+    this.sp._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
     // Use per-session model override if set, otherwise fall back to global settings default
     const model = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';
 
@@ -803,7 +803,7 @@ CRITICAL RULES:
       max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
-    if (!settings.lmStudioEnabled) {
+    if (!settings.localLlmEnabled) {
       body.usage = { include: true }; // needed for prompt_tokens_details.cached_tokens (OpenRouter-only)
     }
 

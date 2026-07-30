@@ -1049,14 +1049,14 @@ class SNNSidePanel {
     const raw = err?.message || String(err || 'Unknown error');
     const status = err?.status;
     const base = { detail: raw, retryable: true };
-    const isLmStudio = this._lastProviderIsLmStudio === true;
-    const providerName = isLmStudio ? 'LM Studio' : 'OpenRouter';
+    const isLocalLlm = this._lastProviderIsLocalLlm === true;
+    const providerName = isLocalLlm ? 'your local server' : 'OpenRouter';
 
     if (err?.name === 'AbortError')
       return { ...base, code: 'CANCELLED', source: 'user', message: 'Request cancelled.', retryable: false, suggestion: '' };
 
     if (status === 401 || status === 403)
-      return { ...base, code: 'AUTH_FAILED', source: 'user', message: 'Your API key was rejected.', retryable: false, suggestion: isLmStudio ? 'Check that your LM Studio server\'s "Require Authentication" key (if any) matches what you entered.' : 'Open Settings and check that your OpenRouter key is correct and still active.' };
+      return { ...base, code: 'AUTH_FAILED', source: 'user', message: 'Your API key was rejected.', retryable: false, suggestion: isLocalLlm ? 'Check that your local server\'s auth key (if it requires one) matches what you entered.' : 'Open Settings and check that your OpenRouter key is correct and still active.' };
 
     if (status === 402)
       return { ...base, code: 'NO_CREDIT', source: 'user', message: 'Your OpenRouter account is out of credit.', retryable: false, suggestion: 'Add credit at openrouter.ai, or switch to a free model.' };
@@ -1065,7 +1065,7 @@ class SNNSidePanel {
       return { ...base, code: 'RATE_LIMITED', source: 'provider', message: 'The provider is rate-limiting your requests.', suggestion: 'Wait a moment and retry, or switch to a different model.' };
 
     if (status === 404)
-      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available or compatible with chat.', retryable: false, suggestion: isLmStudio ? 'Make sure the model is loaded in LM Studio and the model name matches exactly.' : 'The model may have been renamed or retired. Pick another one in Settings.' };
+      return { ...base, code: 'MODEL_UNAVAILABLE', source: 'provider', message: 'That model is not available or compatible with chat.', retryable: false, suggestion: isLocalLlm ? 'Make sure the model is loaded on your local server and the model name matches exactly.' : 'The model may have been renamed or retired. Pick another one in Settings.' };
 
     if (status === 413 || /context length|too large|maximum context/i.test(raw))
       return { ...base, code: 'CONTEXT_TOO_LARGE', source: 'user', message: 'This conversation is too long for the model.', retryable: false, suggestion: 'Start a new chat, or switch to a model with a larger context window.' };
@@ -1077,7 +1077,7 @@ class SNNSidePanel {
       return { ...base, code: 'NO_API_KEY', source: 'user', message: 'No OpenRouter API key is set.', retryable: false, suggestion: 'Add your key in Settings to start chatting.' };
 
     if (err?.name === 'TypeError' && /fetch|network/i.test(raw))
-      return { ...base, code: 'NETWORK_ERROR', source: 'network', message: `Could not reach ${providerName}.`, suggestion: isLmStudio ? 'Check that the LM Studio server is running, the URL in Settings is correct, and CORS is enabled in its server settings.' : 'Check your internet connection, VPN, or firewall and try again.' };
+      return { ...base, code: 'NETWORK_ERROR', source: 'network', message: `Could not reach ${providerName}.`, suggestion: isLocalLlm ? 'Check that your local server is running, the URL in Settings is correct, and CORS is enabled if your server requires it.' : 'Check your internet connection, VPN, or firewall and try again.' };
 
     if (status)
       return { ...base, code: `HTTP_${status}`, source: 'provider', message: `The API returned an error (${status}).`, suggestion: 'Retry, or switch models if it persists.' };
@@ -1086,13 +1086,13 @@ class SNNSidePanel {
   }
 
   /**
-   * Base URL for chat/models requests. LM Studio (or any local
-   * OpenAI-compatible server) swaps in a user-supplied base URL;
-   * otherwise this is OpenRouter.
+   * Base URL for chat/models requests. Any local OpenAI-compatible
+   * server (LM Studio, Ollama, vLLM, llama.cpp, etc.) swaps in a
+   * user-supplied base URL; otherwise this is OpenRouter.
    */
   _getApiBaseUrl(settings) {
-    if (settings?.lmStudioEnabled) {
-      const url = (settings.lmStudioUrl || 'http://localhost:1234/v1').trim();
+    if (settings?.localLlmEnabled) {
+      const url = (settings.localLlmUrl || 'http://localhost:1234/v1').trim();
       return url.replace(/\/+$/, '');
     }
     return 'https://openrouter.ai/api/v1';
@@ -1100,10 +1100,10 @@ class SNNSidePanel {
 
   _openRouterHeaders(apiKey, settings) {
     const headers = { 'Content-Type': 'application/json' };
-    // Local servers (LM Studio etc.) typically need no key at all — only
+    // Local servers typically need no key at all — only
     // send Authorization/OpenRouter-identifying headers when talking to
     // OpenRouter, or when a key was actually provided for a local server.
-    if (settings?.lmStudioEnabled) {
+    if (settings?.localLlmEnabled) {
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     } else {
       headers['Authorization'] = `Bearer ${apiKey}`;
@@ -1115,7 +1115,7 @@ class SNNSidePanel {
 
   /**
    * POST to the chat/completions endpoint (OpenRouter, or a local
-   * OpenAI-compatible server like LM Studio when enabled in settings).
+   * OpenAI-compatible server when enabled in settings).
    * Returns the raw Response on success — callers decide how to consume
    * the body (parsed JSON for normal calls, a stream reader for streaming
    * calls). On a 400 "Corrupted thought signature" error (a known
@@ -1164,8 +1164,8 @@ class SNNSidePanel {
   async callAPI(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
-    this._lastProviderIsLmStudio = !!settings.lmStudioEnabled;
-    if (!apiKey && !settings.lmStudioEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
+    this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
+    if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
 
     const model = await this._getEffectiveModel();
     D.log('callAPI', { model, msgLen: message.length, contextType, contextLen: (context || '').length, hasSignal: !!signal });
@@ -1205,8 +1205,8 @@ class SNNSidePanel {
   async streamResponse(message, context, contextType, signal) {
     const settings = await this.getSettings();
     const apiKey = settings.openrouterKey;
-    this._lastProviderIsLmStudio = !!settings.lmStudioEnabled;
-    if (!apiKey && !settings.lmStudioEnabled) throw new Error('OpenRouter API key not set.');
+    this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
+    if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set.');
 
     const model = await this._getEffectiveModel();
     D.log('streamResponse', { model, msgLen: message.length, contextLen: (context || '').length, contextType });
@@ -1223,7 +1223,7 @@ class SNNSidePanel {
       max_tokens: settings.maxTokens || 16000,
       temperature: settings.temperature ?? 0.7
     };
-    if (!settings.lmStudioEnabled) {
+    if (!settings.localLlmEnabled) {
       // Without this OpenRouter emits no usage chunk on a stream at all, so
       // cache hit rates would be invisible on the most-used code path. Local
       // OpenAI-compatible servers don't recognize this OpenRouter-only flag.
@@ -2256,7 +2256,7 @@ class SNNSidePanel {
       if (this._modelLocked) return; // locked — no-op
       if (!Object.keys(this._modelsData || {}).length) {
         const apiKey = settings.openrouterKey;
-        if (settings.lmStudioEnabled || apiKey?.length > 10) {
+        if (settings.localLlmEnabled || apiKey?.length > 10) {
           this.showToast('Loading models…');
           this.loadModels(apiKey, settings).then(() => {
             const updated = Object.values(this._modelsData || {});
@@ -2414,8 +2414,8 @@ class SNNSidePanel {
         chrome.storage.local.get(['settings'], (result) => {
           const s = result.settings || {};
           if (s.openrouterModel === undefined) s.openrouterModel = '';
-          if (s.lmStudioEnabled === undefined) s.lmStudioEnabled = false;
-          if (s.lmStudioUrl === undefined) s.lmStudioUrl = 'http://localhost:1234/v1';
+          if (s.localLlmEnabled === undefined) s.localLlmEnabled = false;
+          if (s.localLlmUrl === undefined) s.localLlmUrl = 'http://localhost:1234/v1';
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.debugLogging === undefined) s.debugLogging = false;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
@@ -2440,8 +2440,8 @@ class SNNSidePanel {
     SNN_D.enabled = settings.debugLogging === true;
 
     // Prefetch model catalog so vision badges / checks use real model metadata.
-    // Local servers (LM Studio) need no key at all.
-    if ((settings.lmStudioEnabled || settings.openrouterKey?.length > 10) && !Object.keys(this._modelsData || {}).length) {
+    // Local servers need no key at all.
+    if ((settings.localLlmEnabled || settings.openrouterKey?.length > 10) && !Object.keys(this._modelsData || {}).length) {
       this.loadModels(settings.openrouterKey, settings).catch(() => {});
     } else {
       this._updateHeaderVisionBadge(settings.openrouterModel || '');
@@ -2588,17 +2588,17 @@ class SNNSidePanel {
         <div class="sp-section">
           <h4>OpenRouter API</h4>
 
-          ${this.toggleHtml('s-lmstudio-enabled', 'Use LM Studio (local)', 'Connect to a local LM Studio server instead of OpenRouter', s.lmStudioEnabled === true)}
+          ${this.toggleHtml('s-local-llm-enabled', 'Use Local LLM (OpenAI-compatible)', 'Connect to a local server — LM Studio, Ollama, vLLM, llama.cpp, or anything else that speaks the OpenAI API — instead of OpenRouter', s.localLlmEnabled === true)}
 
-          <div class="sp-field" id="s-openrouter-key-field" style="${s.lmStudioEnabled ? 'display:none' : ''}">
+          <div class="sp-field" id="s-openrouter-key-field" style="${s.localLlmEnabled ? 'display:none' : ''}">
             <label>API Key</label>
             <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="sk-or-...">
             <p>New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
           </div>
-          <div class="sp-field" id="s-lmstudio-url-field" style="${s.lmStudioEnabled ? '' : 'display:none'}">
-            <label>LM Studio Server URL</label>
-            <input type="text" id="s-lmstudio-url" value="${this.escapeHtml(s.lmStudioUrl || 'http://localhost:1234/v1')}" placeholder="http://localhost:1234/v1">
-            <p>Start the local server in LM Studio's Developer tab and enable CORS in its server settings. No API key needed.</p>
+          <div class="sp-field" id="s-local-llm-url-field" style="${s.localLlmEnabled ? '' : 'display:none'}">
+            <label>Local Server URL</label>
+            <input type="text" id="s-local-llm-url" value="${this.escapeHtml(s.localLlmUrl || 'http://localhost:1234/v1')}" placeholder="http://localhost:1234/v1">
+            <p>Start your local OpenAI-compatible server and make sure CORS is enabled if it requires it. No API key needed unless your server requires one.</p>
           </div>
           <div class="sp-field">
             <label>Model</label>
@@ -2762,13 +2762,13 @@ class SNNSidePanel {
       }
     });
 
-    // LM Studio toggle — show/hide key vs. server-URL fields, reload models
-    const lmToggle = this.els.settingsBody.querySelector('#s-lmstudio-enabled');
+    // Local LLM toggle — show/hide key vs. server-URL fields, reload models
+    const localToggle = this.els.settingsBody.querySelector('#s-local-llm-enabled');
     const keyField = this.els.settingsBody.querySelector('#s-openrouter-key-field');
-    const urlField = this.els.settingsBody.querySelector('#s-lmstudio-url-field');
-    const urlInput = this.els.settingsBody.querySelector('#s-lmstudio-url');
-    lmToggle.addEventListener('change', () => {
-      const enabled = lmToggle.checked;
+    const urlField = this.els.settingsBody.querySelector('#s-local-llm-url-field');
+    const urlInput = this.els.settingsBody.querySelector('#s-local-llm-url');
+    localToggle.addEventListener('change', () => {
+      const enabled = localToggle.checked;
       keyField.style.display = enabled ? 'none' : '';
       urlField.style.display = enabled ? '' : 'none';
       this._modelsData = {};
@@ -2782,7 +2782,7 @@ class SNNSidePanel {
       }, 1000);
     });
 
-    if (s.lmStudioEnabled) this.loadModels('', this._formSettings());
+    if (s.localLlmEnabled) this.loadModels('', this._formSettings());
     else if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey, this._formSettings());
 
     // Rich model picker
@@ -2790,12 +2790,12 @@ class SNNSidePanel {
     if (s.openrouterModel) this.fetchModelInfo();
   }
 
-  /** Live LM Studio toggle/URL state read straight from the open settings form. */
+  /** Live local-LLM toggle/URL state read straight from the open settings form. */
   _formSettings() {
     const el = (id) => this.els.settingsBody?.querySelector(`#${id}`);
     return {
-      lmStudioEnabled: !!el('s-lmstudio-enabled')?.checked,
-      lmStudioUrl: el('s-lmstudio-url')?.value?.trim() || 'http://localhost:1234/v1'
+      localLlmEnabled: !!el('s-local-llm-enabled')?.checked,
+      localLlmUrl: el('s-local-llm-url')?.value?.trim() || 'http://localhost:1234/v1'
     };
   }
 
@@ -2959,7 +2959,7 @@ class SNNSidePanel {
     try {
       const baseUrl = this._getApiBaseUrl(settings);
       const headers = {};
-      if (!settings?.lmStudioEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      if (!settings?.localLlmEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
       const res = await fetch(`${baseUrl}/models`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -2997,7 +2997,7 @@ class SNNSidePanel {
     try {
       const formSettings = this._formSettings();
       const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key')?.value.trim();
-      if (!formSettings.lmStudioEnabled && !apiKey) {
+      if (!formSettings.localLlmEnabled && !apiKey) {
         infoDiv.innerHTML = '<div class="sp-model-info-error">Enter API key to see model details.</div>';
         return;
       }
@@ -3005,10 +3005,10 @@ class SNNSidePanel {
       // Look up from cached models list — no separate API call needed
       const data = this._modelsData?.[modelId];
       if (!data) {
-        // Fallback: try a direct API call if model not in cache. LM Studio's
-        // OpenAI-compat API has no single-model endpoint, so just report
-        // that nothing more detailed is known for it.
-        if (formSettings.lmStudioEnabled) {
+        // Fallback: try a direct API call if model not in cache. Most local
+        // OpenAI-compat servers have no single-model endpoint, so just
+        // report that nothing more detailed is known for it.
+        if (formSettings.localLlmEnabled) {
           infoDiv.innerHTML = '<div class="sp-model-info-empty">No detailed info available for this model.</div>';
           return;
         }
@@ -3112,7 +3112,7 @@ class SNNSidePanel {
     const formSettings = this._formSettings();
     const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key').value.trim();
     const statusEl = this.els.settingsBody.querySelector('#s-status');
-    if (!formSettings.lmStudioEnabled && !apiKey) {
+    if (!formSettings.localLlmEnabled && !apiKey) {
       statusEl.className = 'sp-status error';
       statusEl.textContent = 'Enter an API key first.';
       return;
@@ -3123,15 +3123,15 @@ class SNNSidePanel {
     try {
       const baseUrl = this._getApiBaseUrl(formSettings);
       const headers = {};
-      if (!formSettings.lmStudioEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+      if (!formSettings.localLlmEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
       const res = await fetch(`${baseUrl}/models`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       statusEl.className = 'sp-status success';
       statusEl.textContent = 'Connection successful!';
     } catch (e) {
       statusEl.className = 'sp-status error';
-      statusEl.textContent = formSettings.lmStudioEnabled
-        ? `Failed: ${e.message} — is the LM Studio server running with CORS enabled?`
+      statusEl.textContent = formSettings.localLlmEnabled
+        ? `Failed: ${e.message} — is your local server running with CORS enabled?`
         : `Failed: ${e.message}`;
     }
   }
@@ -3254,8 +3254,8 @@ class SNNSidePanel {
     const settings = {
       openrouterKey: getVal('s-openrouter-key'),
       openrouterModel: getVal('s-openrouter-model'),
-      lmStudioEnabled: getChecked('s-lmstudio-enabled') === true,
-      lmStudioUrl: getVal('s-lmstudio-url') || 'http://localhost:1234/v1',
+      localLlmEnabled: getChecked('s-local-llm-enabled') === true,
+      localLlmUrl: getVal('s-local-llm-url') || 'http://localhost:1234/v1',
       maxTokens: parseInt(getVal('s-max-tokens')) || 16000,
       temperature: parseFloat(getVal('s-temperature')) || 0.7,
       topP: parseFloat(getVal('s-top-p')) || 0.9,
@@ -3269,7 +3269,7 @@ class SNNSidePanel {
       quickActions: this.getQuickActionsFromEditor()
     };
 
-    if (!settings.lmStudioEnabled && !settings.openrouterKey) {
+    if (!settings.localLlmEnabled && !settings.openrouterKey) {
       this.showToast('No API key set — chat will not work until you add one.', 'warning');
     }
 
