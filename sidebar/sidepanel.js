@@ -2590,10 +2590,10 @@ class SNNSidePanel {
 
           ${this.toggleHtml('s-local-llm-enabled', 'Use Local LLM (OpenAI-compatible)', 'Connect to a local server — LM Studio, Ollama, vLLM, llama.cpp, or anything else that speaks the OpenAI API — instead of OpenRouter', s.localLlmEnabled === true)}
 
-          <div class="sp-field" id="s-openrouter-key-field" style="${s.localLlmEnabled ? 'display:none' : ''}">
-            <label>API Key</label>
-            <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="sk-or-...">
-            <p>New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
+          <div class="sp-field" id="s-openrouter-key-field">
+            <label id="s-openrouter-key-label">${s.localLlmEnabled ? 'API Key (optional)' : 'API Key'}</label>
+            <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="${s.localLlmEnabled ? 'Only if your server requires one' : 'sk-or-...'}">
+            <p id="s-openrouter-key-hint" style="${s.localLlmEnabled ? 'display:none' : ''}">New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
           </div>
           <div class="sp-field" id="s-local-llm-url-field" style="${s.localLlmEnabled ? '' : 'display:none'}">
             <label>Local Server URL</label>
@@ -2762,27 +2762,32 @@ class SNNSidePanel {
       }
     });
 
-    // Local LLM toggle — show/hide key vs. server-URL fields, reload models
+    // Local LLM toggle — key field stays visible but becomes optional
+    // (some local/remote OpenAI-compatible servers still require a key),
+    // server-URL field shows/hides, and models reload for the new target.
     const localToggle = this.els.settingsBody.querySelector('#s-local-llm-enabled');
-    const keyField = this.els.settingsBody.querySelector('#s-openrouter-key-field');
+    const keyLabel = this.els.settingsBody.querySelector('#s-openrouter-key-label');
+    const keyHint = this.els.settingsBody.querySelector('#s-openrouter-key-hint');
     const urlField = this.els.settingsBody.querySelector('#s-local-llm-url-field');
     const urlInput = this.els.settingsBody.querySelector('#s-local-llm-url');
     localToggle.addEventListener('change', () => {
       const enabled = localToggle.checked;
-      keyField.style.display = enabled ? 'none' : '';
+      keyLabel.textContent = enabled ? 'API Key (optional)' : 'API Key';
+      keyInput.placeholder = enabled ? 'Only if your server requires one' : 'sk-or-...';
+      keyHint.style.display = enabled ? 'none' : '';
       urlField.style.display = enabled ? '' : 'none';
       this._modelsData = {};
-      if (enabled) this.loadModels('', this._formSettings());
+      if (enabled) this.loadModels(keyInput.value.trim(), this._formSettings());
     });
     urlInput.addEventListener('input', () => {
       clearTimeout(this._modelTimeout);
       this._modelTimeout = setTimeout(() => {
         this._modelsData = {};
-        this.loadModels('', this._formSettings());
+        this.loadModels(keyInput.value.trim(), this._formSettings());
       }, 1000);
     });
 
-    if (s.localLlmEnabled) this.loadModels('', this._formSettings());
+    if (s.localLlmEnabled) this.loadModels(s.openrouterKey || '', this._formSettings());
     else if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey, this._formSettings());
 
     // Rich model picker
