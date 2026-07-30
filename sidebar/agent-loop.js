@@ -789,7 +789,7 @@ CRITICAL RULES:
    * Call OpenRouter with tools parameter.
    */
   async _callLLMWithTools(messages, tools, settings) {
-    const apiKey = settings.openrouterKey;
+    const apiKey = this.sp._getEffectiveApiKey(settings);
     this.sp._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
     // Use per-session model override if set, otherwise fall back to global settings default
     const model = this.sp._sessionModel || settings.openrouterModel || 'deepseek/deepseek-v4-flash';

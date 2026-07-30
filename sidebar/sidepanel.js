@@ -1098,6 +1098,19 @@ class SNNSidePanel {
     return 'https://openrouter.ai/api/v1';
   }
 
+  /**
+   * The API key to actually send. Kept as two entirely separate fields
+   * (openrouterKey vs. localLlmKey) so switching the local-LLM toggle can
+   * never clobber the other provider's key — the local key is also gated
+   * behind its own opt-in toggle since most local servers need none at all.
+   */
+  _getEffectiveApiKey(settings) {
+    if (settings?.localLlmEnabled) {
+      return settings.localLlmKeyEnabled ? (settings.localLlmKey || '') : '';
+    }
+    return settings?.openrouterKey || '';
+  }
+
   _openRouterHeaders(apiKey, settings) {
     const headers = { 'Content-Type': 'application/json' };
     // Local servers typically need no key at all — only
@@ -1163,7 +1176,7 @@ class SNNSidePanel {
 
   async callAPI(message, context, contextType, signal) {
     const settings = await this.getSettings();
-    const apiKey = settings.openrouterKey;
+    const apiKey = this._getEffectiveApiKey(settings);
     this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
     if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
 
@@ -1204,7 +1217,7 @@ class SNNSidePanel {
 
   async streamResponse(message, context, contextType, signal) {
     const settings = await this.getSettings();
-    const apiKey = settings.openrouterKey;
+    const apiKey = this._getEffectiveApiKey(settings);
     this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
     if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set.');
 
@@ -2258,7 +2271,7 @@ class SNNSidePanel {
         const apiKey = settings.openrouterKey;
         if (settings.localLlmEnabled || apiKey?.length > 10) {
           this.showToast('Loading models…');
-          this.loadModels(apiKey, settings).then(() => {
+          this.loadModels(this._getEffectiveApiKey(settings), settings).then(() => {
             const updated = Object.values(this._modelsData || {});
             this._renderMqsDropdown(updated, effectiveModel, this.els.mqsSearch.value.trim());
             this._openMqsPopover();
@@ -2416,6 +2429,8 @@ class SNNSidePanel {
           if (s.openrouterModel === undefined) s.openrouterModel = '';
           if (s.localLlmEnabled === undefined) s.localLlmEnabled = false;
           if (s.localLlmUrl === undefined) s.localLlmUrl = 'http://localhost:1234/v1';
+          if (s.localLlmKeyEnabled === undefined) s.localLlmKeyEnabled = false;
+          if (s.localLlmKey === undefined) s.localLlmKey = '';
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.debugLogging === undefined) s.debugLogging = false;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
@@ -2442,7 +2457,7 @@ class SNNSidePanel {
     // Prefetch model catalog so vision badges / checks use real model metadata.
     // Local servers need no key at all.
     if ((settings.localLlmEnabled || settings.openrouterKey?.length > 10) && !Object.keys(this._modelsData || {}).length) {
-      this.loadModels(settings.openrouterKey, settings).catch(() => {});
+      this.loadModels(this._getEffectiveApiKey(settings), settings).catch(() => {});
     } else {
       this._updateHeaderVisionBadge(settings.openrouterModel || '');
     }
@@ -2590,15 +2605,22 @@ class SNNSidePanel {
 
           ${this.toggleHtml('s-local-llm-enabled', 'Use Local LLM (OpenAI-compatible)', 'Connect to a local server — LM Studio, Ollama, vLLM, llama.cpp, or anything else that speaks the OpenAI API — instead of OpenRouter', s.localLlmEnabled === true)}
 
-          <div class="sp-field" id="s-openrouter-key-field">
-            <label id="s-openrouter-key-label">${s.localLlmEnabled ? 'API Key (optional)' : 'API Key'}</label>
-            <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="${s.localLlmEnabled ? 'Only if your server requires one' : 'sk-or-...'}">
-            <p id="s-openrouter-key-hint" style="${s.localLlmEnabled ? 'display:none' : ''}">New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
+          <div class="sp-field" id="s-openrouter-key-field" style="${s.localLlmEnabled ? 'display:none' : ''}">
+            <label>API Key</label>
+            <input type="password" id="s-openrouter-key" value="${this.escapeHtml(s.openrouterKey || '')}" placeholder="sk-or-...">
+            <p>New to APIs? Register <a  href="https://openrouter.ai/workspaces/" target="_blank" rel="noopener">openrouter.ai</a>, create a workspace, generate an API key, and paste it here.</p>
           </div>
           <div class="sp-field" id="s-local-llm-url-field" style="${s.localLlmEnabled ? '' : 'display:none'}">
             <label>Local Server URL</label>
             <input type="text" id="s-local-llm-url" value="${this.escapeHtml(s.localLlmUrl || 'http://localhost:1234/v1')}" placeholder="http://localhost:1234/v1">
-            <p>Start your local OpenAI-compatible server and make sure CORS is enabled if it requires it. No API key needed unless your server requires one.</p>
+            <p>Start your local OpenAI-compatible server and make sure CORS is enabled if it requires it.</p>
+          </div>
+          <div class="sp-field" id="s-local-llm-key-toggle-field" style="${s.localLlmEnabled ? '' : 'display:none'}">
+            ${this.toggleHtml('s-local-llm-key-enabled', 'This server requires an API key', 'Most local servers don\'t need one — only enable this if yours does', s.localLlmKeyEnabled === true)}
+          </div>
+          <div class="sp-field" id="s-local-llm-key-field" style="${(s.localLlmEnabled && s.localLlmKeyEnabled) ? '' : 'display:none'}">
+            <label>Local Server API Key</label>
+            <input type="password" id="s-local-llm-key" value="${this.escapeHtml(s.localLlmKey || '')}" placeholder="Key for your local/remote server">
           </div>
           <div class="sp-field">
             <label>Model</label>
@@ -2752,42 +2774,57 @@ class SNNSidePanel {
     this.els.settingsBody.querySelector('#s-export-history').addEventListener('click', () => this.exportHistory());
     this.els.settingsBody.querySelector('#s-clear-history').addEventListener('click', () => this.clearAllHistory());
 
-    // Model input — load models on key input
+    // Model input — load models on OpenRouter key input (OpenRouter mode only —
+    // the local server's own key field, if shown, has its own listener below)
     const keyInput = this.els.settingsBody.querySelector('#s-openrouter-key');
     keyInput.addEventListener('input', () => {
       clearTimeout(this._modelTimeout);
       const k = keyInput.value.trim();
-      if (k.length > 10) {
+      if (!localToggle.checked && k.length > 10) {
         this._modelTimeout = setTimeout(() => this.loadModels(k, this._formSettings()), 1500);
       }
     });
 
-    // Local LLM toggle — key field stays visible but becomes optional
-    // (some local/remote OpenAI-compatible servers still require a key),
-    // server-URL field shows/hides, and models reload for the new target.
+    // Local LLM toggle — swaps the OpenRouter key field for a server-URL
+    // field plus its own separate, optional key toggle. Kept fully apart
+    // from the OpenRouter key so switching providers never clobbers either.
     const localToggle = this.els.settingsBody.querySelector('#s-local-llm-enabled');
-    const keyLabel = this.els.settingsBody.querySelector('#s-openrouter-key-label');
-    const keyHint = this.els.settingsBody.querySelector('#s-openrouter-key-hint');
+    const keyField = this.els.settingsBody.querySelector('#s-openrouter-key-field');
     const urlField = this.els.settingsBody.querySelector('#s-local-llm-url-field');
     const urlInput = this.els.settingsBody.querySelector('#s-local-llm-url');
+    const localKeyToggleField = this.els.settingsBody.querySelector('#s-local-llm-key-toggle-field');
+    const localKeyToggle = this.els.settingsBody.querySelector('#s-local-llm-key-enabled');
+    const localKeyField = this.els.settingsBody.querySelector('#s-local-llm-key-field');
+    const localKeyInput = this.els.settingsBody.querySelector('#s-local-llm-key');
+
+    const reloadLocalModels = () => {
+      this._modelsData = {};
+      const key = localKeyToggle.checked ? localKeyInput.value.trim() : '';
+      this.loadModels(key, this._formSettings());
+    };
+
     localToggle.addEventListener('change', () => {
       const enabled = localToggle.checked;
-      keyLabel.textContent = enabled ? 'API Key (optional)' : 'API Key';
-      keyInput.placeholder = enabled ? 'Only if your server requires one' : 'sk-or-...';
-      keyHint.style.display = enabled ? 'none' : '';
+      keyField.style.display = enabled ? 'none' : '';
       urlField.style.display = enabled ? '' : 'none';
-      this._modelsData = {};
-      if (enabled) this.loadModels(keyInput.value.trim(), this._formSettings());
+      localKeyToggleField.style.display = enabled ? '' : 'none';
+      localKeyField.style.display = (enabled && localKeyToggle.checked) ? '' : 'none';
+      if (enabled) reloadLocalModels();
     });
     urlInput.addEventListener('input', () => {
       clearTimeout(this._modelTimeout);
-      this._modelTimeout = setTimeout(() => {
-        this._modelsData = {};
-        this.loadModels(keyInput.value.trim(), this._formSettings());
-      }, 1000);
+      this._modelTimeout = setTimeout(reloadLocalModels, 1000);
+    });
+    localKeyToggle.addEventListener('change', () => {
+      localKeyField.style.display = localKeyToggle.checked ? '' : 'none';
+      reloadLocalModels();
+    });
+    localKeyInput.addEventListener('input', () => {
+      clearTimeout(this._modelTimeout);
+      this._modelTimeout = setTimeout(reloadLocalModels, 1000);
     });
 
-    if (s.localLlmEnabled) this.loadModels(s.openrouterKey || '', this._formSettings());
+    if (s.localLlmEnabled) reloadLocalModels();
     else if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey, this._formSettings());
 
     // Rich model picker
@@ -2798,9 +2835,12 @@ class SNNSidePanel {
   /** Live local-LLM toggle/URL state read straight from the open settings form. */
   _formSettings() {
     const el = (id) => this.els.settingsBody?.querySelector(`#${id}`);
+    const localKeyEnabled = !!el('s-local-llm-key-enabled')?.checked;
     return {
       localLlmEnabled: !!el('s-local-llm-enabled')?.checked,
-      localLlmUrl: el('s-local-llm-url')?.value?.trim() || 'http://localhost:1234/v1'
+      localLlmUrl: el('s-local-llm-url')?.value?.trim() || 'http://localhost:1234/v1',
+      localLlmKeyEnabled: localKeyEnabled,
+      localLlmKey: localKeyEnabled ? (el('s-local-llm-key')?.value?.trim() || '') : ''
     };
   }
 
@@ -3001,7 +3041,9 @@ class SNNSidePanel {
 
     try {
       const formSettings = this._formSettings();
-      const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key')?.value.trim();
+      const apiKey = formSettings.localLlmEnabled
+        ? formSettings.localLlmKey
+        : this.els.settingsBody.querySelector('#s-openrouter-key')?.value.trim();
       if (!formSettings.localLlmEnabled && !apiKey) {
         infoDiv.innerHTML = '<div class="sp-model-info-error">Enter API key to see model details.</div>';
         return;
@@ -3115,7 +3157,9 @@ class SNNSidePanel {
 
   async testConnection() {
     const formSettings = this._formSettings();
-    const apiKey = this.els.settingsBody.querySelector('#s-openrouter-key').value.trim();
+    const apiKey = formSettings.localLlmEnabled
+      ? formSettings.localLlmKey
+      : this.els.settingsBody.querySelector('#s-openrouter-key').value.trim();
     const statusEl = this.els.settingsBody.querySelector('#s-status');
     if (!formSettings.localLlmEnabled && !apiKey) {
       statusEl.className = 'sp-status error';
@@ -3261,6 +3305,8 @@ class SNNSidePanel {
       openrouterModel: getVal('s-openrouter-model'),
       localLlmEnabled: getChecked('s-local-llm-enabled') === true,
       localLlmUrl: getVal('s-local-llm-url') || 'http://localhost:1234/v1',
+      localLlmKeyEnabled: getChecked('s-local-llm-key-enabled') === true,
+      localLlmKey: getVal('s-local-llm-key'),
       maxTokens: parseInt(getVal('s-max-tokens')) || 16000,
       temperature: parseFloat(getVal('s-temperature')) || 0.7,
       topP: parseFloat(getVal('s-top-p')) || 0.9,
