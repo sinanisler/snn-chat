@@ -49,6 +49,10 @@ Syntax rules (violating these renders a broken diagram):
 
 class SNNSidePanel {
   constructor() {
+    // Identifies writes made by THIS panel instance so the cross-panel
+    // storage listener (_setupCrossPanelSync) can tell its own save events
+    // apart from a save made by another window's panel — see that method.
+    this._instanceId = Math.random().toString(36).slice(2) + Date.now().toString(36);
     this.chatHistory = [];
     this.isLoading = false;
     this.totalTokensUsed = 0;
@@ -241,6 +245,7 @@ class SNNSidePanel {
     this._loadVoicesAsync();       // preload TTS voices (async)
     this.setupContextWatcher();
     this._setupTabTracking();
+    this._setupCrossPanelSync();
     this._initAgentLoop();
 
     this._updateLockVisuals();
@@ -355,6 +360,45 @@ class SNNSidePanel {
     });
     // Initial active context
     this.refreshActiveContext();
+  }
+
+  /**
+   * Multiple side panel instances (one per browser window) can be open at
+   * once against the SAME session — the common case is Session Lock, which
+   * deliberately shares one storage key across every tab/window. Each
+   * instance only ever knew about its own in-memory chatHistory: if window
+   * A saved a message, window B never found out, and B's next save wrote
+   * its own stale array back over storage, silently erasing A's message.
+   * This adopts a foreign instance's write to the session currently on
+   * screen instead of losing it.
+   *
+   * Mutates the existing chatHistory array in place rather than reassigning
+   * it, so a send already in flight in THIS panel — which snapshots the
+   * array by reference via sessionRef() — picks up the merge too, instead
+   * of its own later save overwriting it back out.
+   */
+  _setupCrossPanelSync() {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      const liveKey = this._liveKey();
+      const change = changes[liveKey];
+      if (!change || !change.newValue) return;
+      const incoming = change.newValue;
+      if (incoming.writer === this._instanceId) return; // our own write
+      if (!Array.isArray(incoming.messages)) return;
+
+      this.chatHistory.length = 0;
+      this.chatHistory.push(...incoming.messages);
+      this._sessionModel = incoming.sessionModel || this._sessionModel;
+      D.log('Adopted remote update to live session', { key: liveKey, msgCount: incoming.messages.length });
+
+      // Skip the DOM refresh while a turn is generating here — restoreChat()
+      // would wipe the in-progress streaming/loading UI. The array is
+      // already merged for whenever this turn's own save happens; the
+      // display catches up on the next natural restoreChat() (tab switch,
+      // reopen, etc.) if it doesn't get one sooner.
+      if (!this.isLoading) this.restoreChat();
+    });
   }
 
   // ── Context-Menu Intent Handler ────────────────────────────────
@@ -858,11 +902,11 @@ class SNNSidePanel {
           return;
         }
 
-        // Tab-switch guard. Stale means "don't draw this into the tab the
+        // Session guard. Stale means "don't draw this into the session the
         // user is looking at now" — NOT "throw the answer away". The reply
         // was requested and paid for, so it is still written to the session
         // that asked for it; only the rendering is skipped.
-        const stale = this._isStaleTurn(sendTabId);
+        const stale = this._isStaleTurn(sendRef);
 
         if (agentResult && agentResult.type === 'action') {
           // ── Handle capability queries ────────────────────
@@ -947,8 +991,8 @@ class SNNSidePanel {
       this._pendingAudioAttachments = null;
       this._pendingVideoAttachments = null;
 
-      // ── Tab-switch guard: skip rendering, but still persist the reply ──
-      const stale = this._isStaleTurn(sendTabId);
+      // ── Session guard: skip rendering, but still persist the reply ──
+      const stale = this._isStaleTurn(sendRef);
 
       // Non-streaming needs an explicit render; streaming already painted
       // into the DOM as it arrived.
@@ -962,7 +1006,7 @@ class SNNSidePanel {
 
       if (stale) { this._resetLoadingState(); return; }
     } catch (error) {
-      const stale = this._isStaleTurn(sendTabId);
+      const stale = this._isStaleTurn(sendRef);
       // An abort is intentional (tab switch / stop button), but whatever
       // streamed before it is real text the user already saw. Keep it,
       // flagged as partial, instead of dropping it on the floor.
@@ -3297,7 +3341,11 @@ class SNNSidePanel {
   }
 
   async switchSession(key, domain) {
+    // Stop any turn still in flight for the session we're leaving BEFORE
+    // saving it — see _cancelBusyAgent.
+    await this._cancelBusyAgent('switch-session');
     await this.saveChatHistory();
+    this._resetLoadingState();
 
     // ── If loading the locked global session, enable Session Lock ──
     if (key === this._chatLockKey) {
@@ -3347,8 +3395,15 @@ class SNNSidePanel {
 
   async deleteSession(key) {
     if (!confirm('Delete this chat session?')) return;
+    // Deleting the LIVE session out from under a turn still in flight let
+    // that turn's eventual save resurrect the record it just wrote to —
+    // stop it first. A different (non-live) session being deleted has
+    // nothing generating for it, so there's nothing to cancel.
+    const isLiveSession = this.historyKey === key;
+    if (isLiveSession) await this._cancelBusyAgent('delete-session');
     await chrome.storage.local.remove([key]);
-    if (this.historyKey === key) {
+    if (isLiveSession) {
+      this._resetLoadingState();
       this.chatHistory = [];
       this._clearChatMessages();
     }
@@ -3358,9 +3413,11 @@ class SNNSidePanel {
 
   async clearAllHistory() {
     if (!confirm('Delete ALL chat history? This cannot be undone.')) return;
+    await this._cancelBusyAgent('clear-all-history');
     const all = await chrome.storage.local.get(null);
     const keys = Object.keys(all).filter(k => k.startsWith('snn_chat_history_'));
     await chrome.storage.local.remove(keys);
+    this._resetLoadingState();
     this.chatHistory = [];
     this._clearChatMessages();
     if (this.els.historyOverlay.classList.contains('visible')) this.renderHistory();
@@ -3834,7 +3891,10 @@ class SNNSidePanel {
           tabId: ref ? ref.tabId : (this._chatLockEnabled ? null : this.currentTabId),
           lastUpdated: Date.now(),
           messages,
-          sessionModel: this._sessionModel || null
+          sessionModel: this._sessionModel || null,
+          // Lets _setupCrossPanelSync recognize a change event as our own
+          // write and skip re-adopting what we just wrote ourselves.
+          writer: this._instanceId
         }
       });
       // Keep the active-session pointer in sync so reopen always
@@ -3866,9 +3926,17 @@ class SNNSidePanel {
   }
 
   async newSession() {
+    // Stop any turn still in flight for the session we're leaving. Without
+    // this, an agent run started here keeps acting (clicking, navigating)
+    // after the user has moved to a blank chat, and its eventual reply used
+    // to render into whatever session was on screen when it resolved.
+    // See _isStaleTurn / _cancelBusyAgent.
+    await this._cancelBusyAgent('new-session');
+
     // Session Lock: just clear chat, keep same locked session
     if (this._chatLockEnabled) {
       if (this.chatHistory.length) await this.saveChatHistory();
+      this._resetLoadingState();
       this.chatHistory = [];
       this.totalTokensUsed = 0;
       this._contextConsumedInSession = false;
@@ -3886,6 +3954,7 @@ class SNNSidePanel {
     }
     // ── Save old session first ────────────────────────────────
     if (this.chatHistory.length) await this.saveChatHistory();
+    this._resetLoadingState();
     // ── Create brand-new session identity ─────────────────────
     this.currentSessionId = this.generateId();
     const tabId = this.currentTabId || 'unknown';
@@ -3921,12 +3990,41 @@ class SNNSidePanel {
   }
 
   /**
-   * True when the user moved to a different tab while this turn was
-   * in flight, so its result no longer belongs on screen. Session Lock
-   * spans all tabs, so nothing is ever stale there.
+   * True when the reply about to be shown belongs to a session that is no
+   * longer the one on screen, so its result no longer belongs on screen.
+   *
+   * Compares against the session KEY the turn was sent from (sendRef.key),
+   * not the tab id. A tab switch is only one way the live session can
+   * change — New Chat, loading a different session from History, and
+   * toggling Session Lock all swap out _historyKey/_chatLockEnabled while
+   * the tab itself stays the same, and a tab-id-only check missed exactly
+   * those cases: the tab never changed, so "stale" was always false, and a
+   * reply that finished after one of those actions rendered straight into
+   * whatever (wrong) session was now on screen.
    */
-  _isStaleTurn(sendTabId) {
-    return !this._chatLockEnabled && this.currentTabId !== sendTabId;
+  _isStaleTurn(sendRef) {
+    return sendRef.key !== this._liveKey();
+  }
+
+  /**
+   * Stop a busy agent loop before an action swaps out the session under it
+   * (New Chat, switching sessions, deleting the live one, toggling Session
+   * Lock). Without this the agent keeps clicking/navigating/calling the
+   * LLM against a session the user has already left — see _isStaleTurn.
+   * Mirrors the cancellation _doTabSwitch already does for tab switches.
+   *
+   * Callers must save the outgoing session and only THEN call
+   * _resetLoadingState() (same order as _doTabSwitch): resetLoadingState
+   * aborts the plain-chat fetch, whose own catch handler persists the
+   * partial reply via the SAME key — if that abort fires before the manual
+   * save, the two writes race and the partial can lose.
+   */
+  async _cancelBusyAgent(reason) {
+    if (this._agentLoop && this._agentLoop.isBusy) {
+      this._agentLoop.cancel(reason);
+      // Brief pause to let cancellation propagate
+      await new Promise(r => setTimeout(r, 100));
+    }
   }
 
   /**
@@ -3999,12 +4097,19 @@ class SNNSidePanel {
    * UNLOCKING: saves locked session, switches back to per-tab mode.
    */
   async _toggleChatLock() {
+    await this._cancelBusyAgent('toggle-session-lock');
     const wasLocked = this._chatLockEnabled;
-    this._chatLockEnabled = !wasLocked;
 
-    if (this._chatLockEnabled && !wasLocked) {
+    if (!wasLocked) {
       // ═══ LOCKING: save current → switch to unified session ═══
-      await this.saveChatHistory();
+      // Save BEFORE flipping the flag. saveChatHistory()'s key comes from
+      // _liveKey(), which reads _chatLockEnabled — flip first and this
+      // save resolves to _chatLockKey instead of the outgoing per-tab
+      // key, silently overwriting (and destroying) whatever locked-session
+      // history already existed with this tab's conversation.
+      if (this.chatHistory.length) await this.saveChatHistory();
+      this._resetLoadingState();
+      this._chatLockEnabled = true;
 
       const data = await chrome.storage.local.get([this._chatLockKey]);
       if (data[this._chatLockKey]?.messages?.length) {
@@ -4031,9 +4136,14 @@ class SNNSidePanel {
       this._updateLockVisuals();
       await this.renderModelQuickSwitch();
       this.showToast('<i class="fas fa-lock"></i> Session Locked — one session across all tabs');
-    } else if (!this._chatLockEnabled && wasLocked) {
+    } else {
       // ═══ UNLOCKING: save locked → back to per-tab ═══
+      // Still locked at this point (flag not flipped yet), so this save's
+      // _liveKey() correctly resolves to _chatLockKey — the same ordering
+      // fix as the locking branch above.
       await this.saveChatHistory();
+      this._resetLoadingState();
+      this._chatLockEnabled = false;
 
       this.currentSessionId = this.generateId();
       this._historyKey = null;

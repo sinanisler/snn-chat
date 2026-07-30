@@ -848,15 +848,17 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 });
 
 // ── Cleanup on tab close ──────────────────────────────────────────
+// Deliberately does NOT touch chrome.storage.local's snn_chat_history_*
+// records — that's the conversation itself, and the History panel exists
+// precisely so a user can find it again after the tab is long gone (an
+// earlier version deleted a tab's history the moment the tab closed,
+// which silently erased any conversation the instant its tab was closed —
+// completely normal, frequent behavior — despite the History UI implying
+// it's a durable archive the user manages via Delete/Clear All).
+// The only thing genuinely tab-lifetime-scoped is the tab-tracking state
+// below, which lives in chrome.storage.session and is fine to drop.
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   chrome.runtime.sendMessage({ action: 'tabClosed', tabId }).catch(() => {});
-
-  const all = await chrome.storage.local.get(null);
-  const prefix = `snn_chat_history_${tabId}_`;
-  const keys = Object.keys(all).filter(k => k.startsWith(prefix));
-  if (keys.length) {
-    await chrome.storage.local.remove(keys);
-  }
 
   const tabs = await chrome.tabs.query({});
   if (tabs.length === 0) {
