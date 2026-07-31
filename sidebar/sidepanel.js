@@ -773,9 +773,13 @@ class SNNSidePanel {
   }
 
   // ── Chat ────────────────────────────────────────────────────────
-  async sendMessage() {
-    const message = this.els.userInput.value.trim();
-    const attachments = [...(this._pendingAttachments || [])];
+  async sendMessage(regenerateOptions = null) {
+    // Regenerate re-sends the last user turn without re-appending a
+    // duplicate user bubble/history entry — the caller has already
+    // stripped the old answer and passes back that same user turn's data.
+    const isRegenerate = !!regenerateOptions;
+    const message = isRegenerate ? (regenerateOptions.content || '') : this.els.userInput.value.trim();
+    const attachments = isRegenerate ? (regenerateOptions.attachments || []) : [...(this._pendingAttachments || [])];
     if ((!message && attachments.length === 0) || this.isLoading) return;
 
     // A busy agent must not fall through to the plain-chat path unannounced —
@@ -815,14 +819,16 @@ class SNNSidePanel {
     this._lastSentUserText = message;
 
     // ── Snapshot the context that will be attached to THIS message ──
-    const contextSnapshot = this.activeContext ? { ...this.activeContext } : null;
+    const contextSnapshot = isRegenerate
+      ? (regenerateOptions.contextSnapshot || null)
+      : (this.activeContext ? { ...this.activeContext } : null);
     // ── Snapshot tab so we can detect a tab switch mid-request ──
     const sendTabId = this.currentTabId;
     // ── Snapshot the session this turn belongs to ──────────────
     // A tab switch swaps out chatHistory and _historyKey. The reply still
     // has to land in the session that asked for it, so every write below
     // goes through this ref rather than through live state.
-    const sendRef = this.sessionRef();
+    const sendRef = isRegenerate ? regenerateOptions.sendRef : this.sessionRef();
     this._streamPartial = '';
 
     D.log('sendMessage', { msgLen: message.length, msgPreview: message.substring(0, 80), contextType: contextSnapshot?.type, attachmentCount: attachments.length, tabId: sendTabId, chatLock: this._chatLockEnabled });
@@ -833,13 +839,16 @@ class SNNSidePanel {
 
     this.isLoading = true;
     this._setSendBtnToStop();
-    this.els.userInput.value = '';
-    this.autoResize();
     this.els.welcomeScreen.style.display = 'none';
 
-    // Consume attachments from the composer
-    this._pendingAttachments = [];
-    this._renderAttachmentBar();
+    if (!isRegenerate) {
+      this.els.userInput.value = '';
+      this.autoResize();
+
+      // Consume attachments from the composer
+      this._pendingAttachments = [];
+      this._renderAttachmentBar();
+    }
 
     // Mark context as consumed so page context won't re-attach automatically
     if (contextSnapshot) {
@@ -850,28 +859,30 @@ class SNNSidePanel {
       ? `[Attached ${attachments.length} file${attachments.length > 1 ? 's' : ''}]`
       : '');
 
-    // Render user message with context chip + attachments
-    this.addMessage('user', displayMessage, null, contextSnapshot, attachments);
+    if (!isRegenerate) {
+      // Render user message with context chip + attachments
+      this.addMessage('user', displayMessage, null, contextSnapshot, attachments);
 
-    // ── Push user message to chatHistory NOW so it survives tab switches ──
-    // Store lightweight attachment metadata (not huge binary blobs for text files)
-    const historyAttachments = attachments.map(a => ({
-      id: a.id,
-      name: a.name,
-      type: a.type,
-      mime: a.mime,
-      size: a.size,
-      // Keep data URLs for re-sends (image, audio, video); keep text content for text/pdf files
-      dataUrl: (a.type === 'image' || a.type === 'audio' || a.type === 'video') ? a.dataUrl : undefined,
-      text: (a.type === 'text' || a.type === 'pdf' || a.type === 'file') ? a.text : undefined
-    }));
-    sendRef.messages.push({
-      role: 'user', content: displayMessage,
-      contextType: contextSnapshot?.type || 'none',
-      context: contextSnapshot,
-      attachments: historyAttachments
-    });
-    await this.saveChatHistory(sendRef);
+      // ── Push user message to chatHistory NOW so it survives tab switches ──
+      // Store lightweight attachment metadata (not huge binary blobs for text files)
+      const historyAttachments = attachments.map(a => ({
+        id: a.id,
+        name: a.name,
+        type: a.type,
+        mime: a.mime,
+        size: a.size,
+        // Keep data URLs for re-sends (image, audio, video); keep text content for text/pdf files
+        dataUrl: (a.type === 'image' || a.type === 'audio' || a.type === 'video') ? a.dataUrl : undefined,
+        text: (a.type === 'text' || a.type === 'pdf' || a.type === 'file') ? a.text : undefined
+      }));
+      sendRef.messages.push({
+        role: 'user', content: displayMessage,
+        contextType: contextSnapshot?.type || 'none',
+        context: contextSnapshot,
+        attachments: historyAttachments
+      });
+      await this.saveChatHistory(sendRef);
+    }
 
     // ── UNIFIED AGENT PATH ─────────────────────────────────────
     // ALL messages go through the agent loop. The LLM itself decides
@@ -1519,11 +1530,16 @@ class SNNSidePanel {
     actions.innerHTML = `
       <button class="sp-msg-action copy" title="Copy">Copy</button>
       <button class="sp-msg-action speak" title="Read aloud">▶ Read</button>
+      <button class="sp-msg-action regenerate" title="Regenerate response"><i class="fa-solid fa-arrows-rotate"></i></button>
     `;
 
     actions.querySelector('.copy').addEventListener('click', () => {
       navigator.clipboard.writeText(content);
       this.showToast('Copied!', 'success');
+    });
+
+    actions.querySelector('.regenerate').addEventListener('click', () => {
+      this.regenerateLastAnswer();
     });
 
     const speakBtn = actions.querySelector('.speak');
@@ -1551,6 +1567,69 @@ class SNNSidePanel {
 
     // Insert actions at the beginning (left side)
     meta.insertBefore(actions, meta.firstChild);
+
+    // Regenerate only ever makes sense on the most recent answer — an
+    // earlier answer is no longer "the last turn" the user can redo.
+    this._updateRegenerateButtonVisibility();
+  }
+
+  /** Show the regenerate button only on the last AI message in the chat. */
+  _updateRegenerateButtonVisibility() {
+    const aiMsgs = this.els.chatMessages.querySelectorAll('.sp-msg-ai');
+    aiMsgs.forEach((el, idx) => {
+      const btn = el.querySelector('.sp-msg-action.regenerate');
+      if (!btn) return;
+      btn.style.display = (idx === aiMsgs.length - 1) ? '' : 'none';
+    });
+  }
+
+  /**
+   * Regenerate the last AI answer: drop it (and any trailing action-group
+   * entries) from history/DOM, then re-run the send flow for the last user
+   * turn without re-appending a duplicate user bubble/history entry.
+   */
+  async regenerateLastAnswer() {
+    if (this.isLoading || this._agentLoop?.isBusy) {
+      this.showToast('Still working — wait for the current task to finish', 'warning');
+      return;
+    }
+
+    const sendRef = this.sessionRef();
+    const messages = sendRef.messages || [];
+    let lastUserIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx === -1) {
+      this.showToast('Nothing to regenerate', 'warning');
+      return;
+    }
+    const userMsg = messages[lastUserIdx];
+
+    // Drop everything after the last user turn (the previous answer, plus
+    // any agent-action/reasoning entries that came with it).
+    messages.length = lastUserIdx + 1;
+    await this.saveChatHistory(sendRef);
+
+    // Remove the corresponding DOM nodes (AI bubble, token info, action
+    // groups) that followed the last user bubble.
+    const userDivs = this.els.chatMessages.querySelectorAll('.sp-msg-user');
+    const lastUserDiv = userDivs[userDivs.length - 1];
+    if (lastUserDiv) {
+      let node = lastUserDiv.nextElementSibling;
+      while (node) {
+        const next = node.nextElementSibling;
+        node.remove();
+        node = next;
+      }
+    }
+
+    await this.sendMessage({
+      content: userMsg.content,
+      attachments: userMsg.attachments || [],
+      contextSnapshot: userMsg.context || null,
+      sendRef
+    });
   }
 
   // ── TTS (Text-to-Speech) ──────────────────────────────────────
