@@ -282,6 +282,13 @@ body.theme-dark #welcome-screen .sp-model-tag {
   border-bottom-left-radius: 4px;
 }
 
+/* A bubble containing a diagram otherwise shrinks to hug its content —
+   force it to the full panel width so the diagram has room to fill. */
+.sp-msg-ai.has-diagram {
+  align-self: stretch;
+  width: 100%;
+}
+
 .sp-msg.loading {
   color: var(--sp-text-secondary);
   font-style: italic;

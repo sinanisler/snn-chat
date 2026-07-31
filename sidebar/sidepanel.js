@@ -1926,6 +1926,12 @@ class SNNSidePanel {
     if (!svg) return;
     pre.dataset.snnZoom = '1';
 
+    // The message bubble otherwise shrinks to hug its content (align-self:
+    // flex-start), so a narrow diagram left the whole bubble narrow too.
+    // Force it to take the full panel width so the diagram has room to fill.
+    const msgDiv = pre.closest('.sp-msg-ai');
+    if (msgDiv) msgDiv.classList.add('has-diagram');
+
     // Natural size: prefer the viewBox, which mermaid always emits and which
     // survives us stripping the width/height attributes below.
     const vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
@@ -1957,10 +1963,11 @@ class SNNSidePanel {
     const bar = document.createElement('div');
     bar.className = 'sp-diagram-ctrls';
     const btns = [
-      ['zoomout', '−', 'Zoom out'],
-      ['zoomin',  '+',      'Zoom in'],
-      ['fit',     '⤢', 'Fit to width'],
-      ['full',    '⛶', 'Expand'],
+      ['zoomout',  '−', 'Zoom out'],
+      ['zoomin',   '+', 'Zoom in'],
+      ['fit',      '⤢', 'Fit to width'],
+      ['download', 'fa:fa-solid fa-angles-down', 'Download as PDF'],
+      ['full',     '⛶', 'Expand'],
     ];
     for (const [act, glyph, title] of btns) {
       const b = document.createElement('button');
@@ -1968,7 +1975,11 @@ class SNNSidePanel {
       b.className = 'sp-diagram-btn';
       b.dataset.act = act;
       b.title = title;
-      b.textContent = glyph;
+      if (glyph.startsWith('fa:')) {
+        b.innerHTML = `<i class="${glyph.slice(3)}"></i>`;
+      } else {
+        b.textContent = glyph;
+      }
       bar.appendChild(b);
     }
     return bar;
@@ -1990,26 +2001,34 @@ class SNNSidePanel {
       viewport.classList.toggle('is-pannable', pannable);
     };
 
+    // Fits to the viewport's WIDTH only (matches the button's "Fit to
+    // width" label) — a diagram narrower than the panel is scaled UP to
+    // fill it rather than sitting small in the middle, which used to
+    // happen because this capped at scale 1 (no upscaling).
     const fit = () => {
       const vw = viewport.clientWidth || natW;
       const vh = viewport.clientHeight || natH;
-      state.k = clamp(Math.min(vw / natW, vh / natH, 1));
-      // Centre horizontally; pin to the top so a tall diagram starts at its root.
-      state.x = Math.max(0, (vw - natW * state.k) / 2);
+      state.k = clamp(vw / natW);
+      state.x = 0;
+      // Pin to the top so a tall diagram starts at its root; otherwise centre.
       state.y = Math.max(0, (vh - natH * state.k) / 2);
       apply();
     };
 
-    // Opening view: fit, unless fitting would make the text unreadable — then
-    // stay at the legibility floor, anchored top-left, and let the user pan.
+    // Opening view: fit-to-width, unless that would shrink a wide diagram's
+    // text past legibility — then stay at the legibility floor, anchored
+    // top-left, and let the user pan/zoom manually instead.
     const initial = () => {
       const vw = viewport.clientWidth || natW;
-      const fitK = Math.min(vw / natW, 1);
-      if (fitK >= this._MERMAID_MIN_LEGIBLE) { fit(); return; }
-      state.k = this._MERMAID_MIN_LEGIBLE;
-      state.x = 0;
-      state.y = 0;
-      apply();
+      const fitK = vw / natW;
+      if (fitK < this._MERMAID_MIN_LEGIBLE) {
+        state.k = this._MERMAID_MIN_LEGIBLE;
+        state.x = 0;
+        state.y = 0;
+        apply();
+        return;
+      }
+      fit();
     };
 
     // Zoom about the viewport centre so button-zoom keeps your place.
@@ -2027,10 +2046,11 @@ class SNNSidePanel {
       const act = e.target.closest('.sp-diagram-btn')?.dataset.act;
       if (!act) return;
       e.preventDefault();
-      if (act === 'zoomin')  zoomBy(1.25);
-      if (act === 'zoomout') zoomBy(1 / 1.25);
-      if (act === 'fit')     fit();
-      if (act === 'full')    this._openDiagramFullscreen(svg, natW, natH);
+      if (act === 'zoomin')   zoomBy(1.25);
+      if (act === 'zoomout')  zoomBy(1 / 1.25);
+      if (act === 'fit')      fit();
+      if (act === 'download') this._downloadDiagramAsPdf(svg, natW, natH);
+      if (act === 'full')     this._openDiagramFullscreen(svg, natW, natH);
     });
 
     // ── Wheel: ctrl/⌘ + wheel zooms, plain wheel scrolls the chat ──
@@ -2119,6 +2139,116 @@ class SNNSidePanel {
     overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay) dismiss(); });
 
     this._installDiagramPanZoom(wrap, viewport, clone, natW, natH);
+  }
+
+  /**
+   * Export a diagram as a one-page PDF. No PDF library is bundled, so this
+   * rasterizes the SVG to a JPEG on a canvas and wraps those JPEG bytes
+   * directly in a hand-built single-image PDF (DCTDecode needs no
+   * re-encoding) — small and dependency-free.
+   */
+  async _downloadDiagramAsPdf(svg, natW, natH) {
+    try {
+      const scale = 2; // render at 2x for crisp text in the exported page
+      const jpegBytes = await this._rasterizeSvgToJpeg(svg, natW, natH, scale);
+      const pdfParts = this._buildSinglePageImagePdf(jpegBytes, natW * scale, natH * scale);
+      const blob = new Blob(pdfParts, { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `diagram-${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      D.warn('Diagram PDF export failed:', e.message);
+      this.showToast('Could not export diagram as PDF', 'error');
+    }
+  }
+
+  /** Rasterize an SVG element to JPEG bytes via an offscreen canvas. */
+  async _rasterizeSvgToJpeg(svg, natW, natH, scale = 2) {
+    const clone = svg.cloneNode(true);
+    clone.removeAttribute('style');
+    clone.setAttribute('width', natW);
+    clone.setAttribute('height', natH);
+    if (!clone.getAttribute('viewBox')) clone.setAttribute('viewBox', `0 0 ${natW} ${natH}`);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+    const svgStr = new XMLSerializer().serializeToString(clone);
+    const svgUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+
+    const img = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('SVG rasterization failed'));
+      im.src = svgUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(natW * scale);
+    canvas.height = Math.round(natH * scale);
+    const ctx = canvas.getContext('2d');
+    // Diagrams render on a transparent background — bake in white so the
+    // exported page looks right regardless of the panel's light/dark theme.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise((resolve, reject) =>
+      canvas.toBlob((b) => b ? resolve(b) : reject(new Error('canvas.toBlob failed')), 'image/jpeg', 0.92));
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+
+  /**
+   * Minimal single-page PDF wrapping one JPEG image. JPEG bytes can be
+   * embedded in a PDF stream as-is (Filter /DCTDecode), so no PDF library
+   * or re-encoding is needed. Page size matches the image at 96dpi
+   * (px * 0.75 = pt).
+   */
+  _buildSinglePageImagePdf(jpegBytes, pxW, pxH) {
+    const ptW = Math.round(pxW * 0.75);
+    const ptH = Math.round(pxH * 0.75);
+    const enc = new TextEncoder();
+    const parts = [];
+    const offsets = [0];
+    let pos = 0;
+    const push = (data) => {
+      const bytes = typeof data === 'string' ? enc.encode(data) : data;
+      parts.push(bytes);
+      pos += bytes.length;
+    };
+
+    push('%PDF-1.4\n');
+
+    offsets[1] = pos;
+    push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+    offsets[2] = pos;
+    push('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+
+    offsets[3] = pos;
+    push(`3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${ptW} ${ptH}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`);
+
+    offsets[4] = pos;
+    push(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${pxW} /Height ${pxH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
+    push(jpegBytes);
+    push('\nendstream\nendobj\n');
+
+    const contentStream = `q ${ptW} 0 0 ${ptH} 0 0 cm /Im0 Do Q`;
+    offsets[5] = pos;
+    push(`5 0 obj\n<< /Length ${contentStream.length} >>\nstream\n${contentStream}\nendstream\nendobj\n`);
+
+    const xrefStart = pos;
+    let xref = 'xref\n0 6\n0000000000 65535 f \n';
+    for (let i = 1; i <= 5; i++) {
+      xref += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+    }
+    push(xref);
+    push(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
+
+    return parts;
   }
 
   escapeHtml(s) {
