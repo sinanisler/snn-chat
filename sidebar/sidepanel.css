@@ -2094,13 +2094,20 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
 .snn-status-entry-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .snn-action-entry {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   padding: 6px 12px;
   margin: 2px 0;
   border-radius: 6px;
   font-size: 13px;
   max-width: 100%;
+}
+.snn-action-entry-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .snn-action-entry.snn-action-start {
   background: rgba(5,86,199,0.08);
@@ -2184,6 +2191,43 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Run Page Script — collapsed code preview ────────────────── */
+.snn-action-code-details {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--sp-border, #333);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin-top: 2px;
+}
+.snn-action-code-summary {
+  cursor: pointer;
+  color: #999;
+  font-size: 0.78em;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.snn-action-code-summary::-webkit-details-marker { display: none; }
+.snn-action-code-content {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  color: #bbb;
+  font-family: var(--sp-mono-font, 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.snn-action-group-body .snn-action-code-details {
+  margin-left: 0px;
 }
 
 /* ── Action Group Accordion ──────────────────────────────────── */

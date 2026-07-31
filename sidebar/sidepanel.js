@@ -3786,9 +3786,16 @@ class SNNSidePanel {
     const icons = { start: '<i class="fas fa-play"></i>', ok: '<i class="fas fa-circle-check"></i>', fail: '<i class="fas fa-circle-xmark"></i>', info: '<i class="fas fa-circle-info"></i>', cancelled: '<i class="fas fa-arrow-left"></i>' };
     const icon = icons[msg.status] || '<i class="fas fa-circle"></i>';
     entry.innerHTML = `
-      <span class="snn-action-entry-icon">${icon}</span>
-      <span class="snn-action-entry-text">${this.escapeHtml(msg.description || '')}</span>
-      ${msg.detail ? `<span class="snn-action-entry-detail">${this.escapeHtml(msg.detail)}</span>` : ''}
+      <div class="snn-action-entry-row">
+        <span class="snn-action-entry-icon">${icon}</span>
+        <span class="snn-action-entry-text">${this.escapeHtml(msg.description || '')}</span>
+        ${msg.detail ? `<span class="snn-action-entry-detail">${this.escapeHtml(msg.detail)}</span>` : ''}
+      </div>
+      ${msg.code ? `
+      <details class="snn-action-code-details">
+        <summary class="snn-action-code-summary"><i class="fas fa-code"></i> View code</summary>
+        <div class="snn-action-code-content">${this.escapeHtml(msg.code)}</div>
+      </details>` : ''}
     `;
     container.appendChild(entry);
   }

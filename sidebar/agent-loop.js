@@ -924,7 +924,8 @@ CRITICAL RULES:
 
     // Show in UI
     if (this.sp._agentUI) {
-      this.sp._agentUI.addActionHistoryEntry(actionName, step.description, 'start');
+      const code = actionName === 'page_script' ? (params.code || '') : null;
+      this.sp._agentUI.addActionHistoryEntry(actionName, step.description, 'start', '', code);
     }
 
     // Dispatch with retry (includes ELEMENT_NOT_FOUND scan recovery)

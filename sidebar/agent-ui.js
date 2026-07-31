@@ -330,7 +330,7 @@ class SNNAgentUI {
    * Persist an action history entry to chatHistory so it survives tab switches.
    * Called by addActionHistoryEntry for 'start', and updated by updateLastActionEntry.
    */
-  _persistActionEntry(status, description, detail = '') {
+  _persistActionEntry(status, description, detail = '', code = null) {
     const ref = this._runRef || this.sp.sessionRef();
     // If starting a new action, only cancel the SINGLE most recent stale 'start'
     // entry (the one that was interrupted). Completed entries are already 'ok'/'fail'.
@@ -364,6 +364,7 @@ class SNNAgentUI {
     ref.messages.push({
       role: 'agent-action',
       action: '', description, status, detail,
+      code: code || null,
       taskId: this.sp._agentLoop?._taskId || null,
       timestamp: Date.now()
     });
@@ -374,9 +375,9 @@ class SNNAgentUI {
   // ═══════════════════════════════════════════════════════════════
   // ACTION HISTORY ENTRY — a chat bubble showing what agent did
   // ═══════════════════════════════════════════════════════════════
-  addActionHistoryEntry(action, description, status, detail = '') {
+  addActionHistoryEntry(action, description, status, detail = '', code = null) {
     // Persist to chatHistory for tab-switch survival
-    this._persistActionEntry(status, description, detail);
+    this._persistActionEntry(status, description, detail, code);
 
     if (!this._isLive()) return null; // background run — leave the visible DOM alone
 
@@ -390,9 +391,16 @@ class SNNAgentUI {
     const icon = icons[status] || '<i class="fas fa-circle"></i>';
 
     entry.innerHTML = `
-      <span class="snn-action-entry-icon">${icon}</span>
-      <span class="snn-action-entry-text">${this.sp.escapeHtml(description)}</span>
-      ${detail ? `<span class="snn-action-entry-detail">${this.sp.escapeHtml(detail)}</span>` : ''}
+      <div class="snn-action-entry-row">
+        <span class="snn-action-entry-icon">${icon}</span>
+        <span class="snn-action-entry-text">${this.sp.escapeHtml(description)}</span>
+        ${detail ? `<span class="snn-action-entry-detail">${this.sp.escapeHtml(detail)}</span>` : ''}
+      </div>
+      ${code ? `
+      <details class="snn-action-code-details">
+        <summary class="snn-action-code-summary"><i class="fas fa-code"></i> View code</summary>
+        <div class="snn-action-code-content">${this.sp.escapeHtml(code)}</div>
+      </details>` : ''}
     `;
 
     container.appendChild(entry);
@@ -427,7 +435,8 @@ class SNNAgentUI {
         const span = document.createElement('span');
         span.className = 'snn-action-entry-detail';
         span.textContent = detail;
-        last.appendChild(span);
+        const row = last.querySelector('.snn-action-entry-row') || last;
+        row.appendChild(span);
       }
     }
     this.sp.smartScrollToBottom();
