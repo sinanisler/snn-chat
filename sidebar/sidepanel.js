@@ -2812,7 +2812,7 @@ class SNNSidePanel {
         <div class="sp-section">
           <h4>OpenRouter API</h4>
 
-          ${this.toggleHtml('s-local-llm-enabled', 'Use Local LLM (OpenAI-compatible)', 'Connect to a local server — LM Studio, Ollama, vLLM, llama.cpp, or anything else that speaks the OpenAI API — instead of OpenRouter', s.localLlmEnabled === true)}
+          ${this.toggleHtml('s-local-llm-enabled', 'Use Local LLM (OpenAI-compatible)', 'Connect to a local server — LM Studio, Ollama, vLLM, llama.cpp, or anything else that speaks the OpenAI API.', s.localLlmEnabled === true)}
 
           <div class="sp-field" id="s-openrouter-key-field" style="${s.localLlmEnabled ? 'display:none' : ''}">
             <label>API Key</label>
