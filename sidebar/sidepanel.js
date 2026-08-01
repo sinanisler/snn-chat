@@ -995,10 +995,10 @@ class SNNSidePanel {
 
       let response;
       if (settings.enableStreaming !== false) {
-        response = await this.streamResponse(message || displayMessage, context, contextType, signal);
+        response = await this.streamResponse(message || displayMessage, context, contextType, signal, sendRef);
       } else {
         this.addLoadingMsg();
-        response = await this.callAPI(message || displayMessage, context, contextType, signal);
+        response = await this.callAPI(message || displayMessage, context, contextType, signal, sendRef);
         this.removeLoadingMsg();
       }
       this._pendingImageAttachments = null;
@@ -1185,7 +1185,7 @@ class SNNSidePanel {
     return res;
   }
 
-  async callAPI(message, context, contextType, signal) {
+  async callAPI(message, context, contextType, signal, sendRef = null) {
     const settings = await this.getSettings();
     const apiKey = this._getEffectiveApiKey(settings);
     this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
@@ -1197,7 +1197,7 @@ class SNNSidePanel {
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
 
     const { messages, userMessage } =
-      this._buildChatMessages(systemPrompt, context, contextType, message, model);
+      this._buildChatMessages(systemPrompt, context, contextType, message, model, sendRef);
 
     // ── Inject multimodal content (images, audio, video) if model supports it ──
     this._injectMultimodalContent(messages, userMessage, model);
@@ -1226,7 +1226,7 @@ class SNNSidePanel {
     return data.choices[0]?.message?.content || '';
   }
 
-  async streamResponse(message, context, contextType, signal) {
+  async streamResponse(message, context, contextType, signal, sendRef = null) {
     const settings = await this.getSettings();
     const apiKey = this._getEffectiveApiKey(settings);
     this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
@@ -1237,7 +1237,7 @@ class SNNSidePanel {
     let systemPrompt = settings.systemPrompt || 'You are a helpful AI assistant.';
     systemPrompt = this._getAugmentedSystemPrompt(systemPrompt);
     const { messages, userMessage } =
-      this._buildChatMessages(systemPrompt, context, contextType, message, model);
+      this._buildChatMessages(systemPrompt, context, contextType, message, model, sendRef);
 
     // ── Inject multimodal content (images, audio, video) if model supports it ──
     this._injectMultimodalContent(messages, userMessage, model);
@@ -3708,7 +3708,7 @@ class SNNSidePanel {
       const data = await chrome.storage.local.get([key]);
       if (data[key]) {
         const session = data[key];
-        this.chatHistory = session.messages || [];
+        this._setChatHistory(session.messages, key);
         this.currentDomain = session.domain || '';
         this.currentSessionId = '__locked__';
         this._historyKey = this._chatLockKey;
@@ -3729,11 +3729,37 @@ class SNNSidePanel {
     const data = await chrome.storage.local.get([key]);
     if (data[key]) {
       const session = data[key];
-      this.chatHistory = session.messages || [];
+
+      // ── Opening a per-tab session turns Session Lock OFF ───────
+      // _liveKey() hard-returns _chatLockKey while _chatLockEnabled is set
+      // and ignores _historyKey entirely, so leaving the flag on here sent
+      // every subsequent write for THIS conversation to the locked key:
+      // it buried the global session under an unrelated per-tab chat, and
+      // the session the user actually opened never received the new turn.
+      // _isStaleTurn couldn't catch it either — both sides of that
+      // comparison were the lock key, so the turn looked perfectly live.
+      // Mirrors the branch above, where opening the global session row
+      // turns the lock ON.
+      const wasLocked = this._chatLockEnabled;
+      if (wasLocked) {
+        this._chatLockEnabled = false;
+        await this._saveChatLockState();
+      }
+
+      this._setChatHistory(session.messages, key);
       this.currentDomain = session.domain || domain;
-      // If session has a tabId, update current tab
-      if (session.tabId) {
-        this.currentTabId = session.tabId;
+      this._updateLockVisuals();   // after currentDomain — it renders it
+      // Adopt the stored tabId only if that tab is still the same page.
+      // Sessions outlive their tabs and Chrome reissues the ids, so an
+      // unchecked adopt pointed currentTabId at a dead tab — or at a live
+      // tab showing something else entirely, which is where page-context
+      // requests and agent actions would then be sent.
+      if (session.tabId && session.tabId !== this.currentTabId) {
+        try {
+          const tab = await chrome.tabs.get(session.tabId);
+          const host = tab?.url ? new URL(tab.url).hostname : '';
+          if (host && host === (session.domain || '')) this.currentTabId = session.tabId;
+        } catch (e) { /* tab is gone — stay on the tab we're actually on */ }
       }
       this.currentSessionId = this._extractSessionIdFromKey(key);
       this.historyKey = key;
@@ -3742,10 +3768,16 @@ class SNNSidePanel {
       this.activeContext = null;
       this._sessionModel = session.sessionModel || null;
       this._modelLocked = (session.messages || []).length > 0;
+      // Point the active-session pointer at what's now on screen. Without
+      // this, closing and reopening the panel silently reverted to the
+      // session that was live before the user picked this one.
+      await this._saveActiveSessionPtr();
       this.restoreChat();
       this.closeHistory();
       this.renderModelQuickSwitch();
-      this.showToast('Session loaded');
+      this.showToast(wasLocked
+        ? '<i class="fas fa-lock-open"></i> Session unlocked — per-tab session loaded'
+        : 'Session loaded');
     }
   }
 
@@ -3755,16 +3787,49 @@ class SNNSidePanel {
     // that turn's eventual save resurrect the record it just wrote to —
     // stop it first. A different (non-live) session being deleted has
     // nothing generating for it, so there's nothing to cancel.
-    const isLiveSession = this.historyKey === key;
+    // _liveKey(), not the historyKey getter — the two can name different
+    // sessions, and the one that decides where writes land is _liveKey().
+    const isLiveSession = this._liveKey() === key;
     if (isLiveSession) await this._cancelBusyAgent('delete-session');
     await chrome.storage.local.remove([key]);
     if (isLiveSession) {
       this._resetLoadingState();
-      this.chatHistory = [];
-      this._clearChatMessages();
+      await this._resetToBlankSession();
     }
     this.renderHistory();
     this.showToast('Session deleted');
+  }
+
+  /**
+   * Drop every trace of the session that was on screen and start a blank one.
+   *
+   * Clearing chatHistory and the DOM was not enough on its own: _historyKey
+   * still named the record that had just been removed, so the next save
+   * recreated it, and the active-session pointer still pointed there, so a
+   * reopen resurrected it too. _modelLocked also stayed set, which left the
+   * user unable to pick a model in a chat with no messages in it.
+   *
+   * Under Session Lock the key is fixed and stays — a cleared locked session
+   * is still the locked session.
+   */
+  async _resetToBlankSession() {
+    this.chatHistory = [];
+    this.totalTokensUsed = 0;
+    this.totalCost = 0;
+    this.activeContext = null;
+    this._contextConsumedInSession = false;
+    this._sessionModel = null;
+    this._modelLocked = false;
+    if (!this._chatLockEnabled) {
+      this.currentSessionId = this.generateId();
+      this._historyKey = `snn_chat_history_${this.currentTabId || 'unknown'}_${this.currentSessionId}`;
+    }
+    await chrome.storage.session.remove([SNNSidePanel.ACTIVE_SESSION_PTR]);
+    this._clearChatMessages();
+    this.els.welcomeScreen.style.display = '';
+    this.els.tokenCounter.style.display = 'none';
+    this.refreshActiveContext();
+    await this.renderModelQuickSwitch();
   }
 
   async clearAllHistory() {
@@ -3774,8 +3839,7 @@ class SNNSidePanel {
     const keys = Object.keys(all).filter(k => k.startsWith('snn_chat_history_'));
     await chrome.storage.local.remove(keys);
     this._resetLoadingState();
-    this.chatHistory = [];
-    this._clearChatMessages();
+    await this._resetToBlankSession();
     if (this.els.historyOverlay.classList.contains('visible')) this.renderHistory();
     this.showToast('All history cleared');
   }
@@ -4085,6 +4149,30 @@ class SNNSidePanel {
    */
   static ACTIVE_SESSION_PTR = 'snn_active_session';
 
+  /**
+   * Identifies the current browser run. Lives in storage.session, so it is
+   * regenerated every restart — which is precisely the lifetime a tab id is
+   * meaningful for. Stamped onto every session record so the tab-id scan in
+   * loadMostRecentSession can tell "this tab's conversation" from "some
+   * previous run's tab that happened to hold the same id".
+   */
+  static BROWSER_RUN_KEY = 'snn_browser_run';
+
+  async _browserRunId() {
+    if (this._runId) return this._runId;
+    const data = await chrome.storage.session.get(SNNSidePanel.BROWSER_RUN_KEY);
+    let id = data[SNNSidePanel.BROWSER_RUN_KEY];
+    if (!id) {
+      id = this.generateId();
+      await chrome.storage.session.set({ [SNNSidePanel.BROWSER_RUN_KEY]: id });
+    }
+    // Two panels opening simultaneously could each generate one and the
+    // later write wins. The cost is a missed auto-restore (falls back to a
+    // fresh session), never a wrong one, so it isn't worth a lock.
+    this._runId = id;
+    return id;
+  }
+
   get historyKey() {
     // Session Lock: use fixed key — same session across ALL tabs
     if (this._chatLockEnabled) return this._historyKey || this._chatLockKey;
@@ -4119,7 +4207,7 @@ class SNNSidePanel {
         const session = data[this._chatLockKey];
         this._historyKey = this._chatLockKey;
         this.currentSessionId = '__locked__';
-        this.chatHistory = session.messages;
+        this._setChatHistory(session.messages, this._chatLockKey);
         this._sessionModel = session.sessionModel || null;
         this._modelLocked = session.messages.length > 0;
         this.restoreChat();
@@ -4146,7 +4234,7 @@ class SNNSidePanel {
       if (session && Array.isArray(session.messages)) {
         this._historyKey = activePtr.key;
         this.currentSessionId = this._extractSessionIdFromKey(activePtr.key);
-        this.chatHistory = session.messages || [];
+        this._setChatHistory(session.messages, activePtr.key);
         this._sessionModel = session.sessionModel || null;
         this._modelLocked = (session.messages || []).length > 0;
         this.restoreChat();
@@ -4158,11 +4246,24 @@ class SNNSidePanel {
     }
 
     // ── Fallback: discover most-recent session by timestamp ────
+    // Restricted to records written during THIS browser run. A tab id only
+    // identifies a conversation for as long as the browser keeps handing it
+    // to the same tab: Chrome starts reissuing low ids after a restart, so
+    // an unguarded prefix scan over permanent storage let a brand-new tab
+    // inherit whatever conversation the previous run's tab 5 happened to
+    // hold — a different site, on a different day, presented as this tab's
+    // chat and appended to by the next message. This is the same hazard the
+    // pointer above avoids by living in storage.session; the scan needs its
+    // own guard because storage.local outlives the run.
+    // Records with no stamp are pre-upgrade: they stay reachable through
+    // History, they just don't auto-restore into a tab that can't be shown
+    // to be theirs.
+    const runId = await this._browserRunId();
     const all = await chrome.storage.local.get(null);
     const tabSessions = [];
     const prefix = `snn_chat_history_${this.currentTabId}_`;
     for (const key in all) {
-      if (key.startsWith(prefix) && all[key].messages?.length) {
+      if (key.startsWith(prefix) && all[key].messages?.length && all[key].browserRun === runId) {
         tabSessions.push({ key, lastUpdated: all[key].lastUpdated || 0, messages: all[key].messages });
       }
     }
@@ -4171,7 +4272,7 @@ class SNNSidePanel {
       const recent = tabSessions[0];
       this._historyKey = recent.key;
       this.currentSessionId = this._extractSessionIdFromKey(recent.key);
-      this.chatHistory = recent.messages;
+      this._setChatHistory(recent.messages, recent.key);
       // Restore per-session model if saved
       this._sessionModel = null; this._modelLocked = false;
       const fullSession = all[recent.key];
@@ -4225,6 +4326,41 @@ class SNNSidePanel {
     };
   }
 
+  /**
+   * Install a freshly-loaded message array as the live conversation.
+   *
+   * Use this instead of `this.chatHistory = ...` anywhere a session is being
+   * LOADED (as opposed to deliberately cleared).
+   *
+   * The whole sendRef design rests on the panel and a running turn sharing
+   * ONE array object — sessionRef() hands out the reference, and every write
+   * the turn makes goes through it. _setupCrossPanelSync knows this and
+   * mutates in place for exactly that reason. Plain reassignment here broke
+   * it: a tab switch away from a running agent and back again reloaded the
+   * same key from storage into a NEW array, so the run kept appending to the
+   * old one while the panel held a copy frozen at the moment of the switch.
+   * Both saved under the same key, so the panel's next save — the user's next
+   * message — wrote its stale copy over everything the run had appended since.
+   * The lost entries stayed on screen (the agent UI had painted them live),
+   * so nothing about the moment looked wrong.
+   *
+   * When the run's ref points at the session being loaded, its array is the
+   * authoritative one: it already contains everything storage has, plus
+   * anything written since the read. Keep it and drop the copy.
+   *
+   * @param {Array} messages — the array just read out of storage
+   * @param {string} key — the session key those messages belong to. Passed
+   *        explicitly because callers set _historyKey after this runs.
+   */
+  _setChatHistory(messages, key) {
+    const runRef = this._agentLoop?._runRef;
+    if (runRef && runRef.key === key && Array.isArray(runRef.messages)) {
+      this.chatHistory = runRef.messages;
+      return;
+    }
+    this.chatHistory = messages || [];
+  }
+
   /** The session currently on screen — used to tell live writes from stale ones. */
   _liveKey() {
     return this._chatLockEnabled ? this._chatLockKey : this.historyKey;
@@ -4248,6 +4384,7 @@ class SNNSidePanel {
     }
 
     try {
+      const browserRun = await this._browserRunId();
       await chrome.storage.local.set({
         [key]: {
           domain: ref ? ref.domain : this.currentDomain,
@@ -4255,6 +4392,9 @@ class SNNSidePanel {
           lastUpdated: Date.now(),
           messages,
           sessionModel: this._sessionModel || null,
+          // Which browser run the tabId above was valid in — see
+          // _browserRunId and the fallback scan in loadMostRecentSession.
+          browserRun,
           // Lets _setupCrossPanelSync recognize a change event as our own
           // write and skip re-adopting what we just wrote ourselves.
           writer: this._instanceId
@@ -4306,6 +4446,15 @@ class SNNSidePanel {
       this.activeContext = null;
       this._sessionModel = null;
       this._modelLocked = false;
+      // ── Persist the CLEARED session ───────────────────────────
+      // Without this the clear only ever existed in memory, and which way
+      // that hurt depended on what the user did next: reopening the panel
+      // reloaded the old messages straight back out of _chatLockKey, and
+      // unlocking wrote this empty array over them (the unlock path saves
+      // unconditionally), destroying the global session with no undo.
+      // Only sending a message made the clear real. The unlocked branch
+      // below has always written its empty record for the same reason.
+      await this.saveChatHistory();
       this._clearChatMessages();
       this.els.welcomeScreen.style.display = '';
       this.els.tokenCounter.style.display = 'none';
@@ -4331,17 +4480,12 @@ class SNNSidePanel {
     // ── Persist the empty session record so the pointer resolves ──
     // If we don't write this, loadMostRecentSession() sees an empty/missing
     // session, deletes the pointer, and falls back to the OLD session.
-    await chrome.storage.local.set({
-      [this._historyKey]: {
-        domain: this.currentDomain,
-        tabId: this.currentTabId,
-        lastUpdated: Date.now(),
-        messages: [],
-        sessionModel: null
-      }
-    });
-    // ── Persist the pointer NOW so reopen picks up THIS session ──
-    await this._saveActiveSessionPtr();
+    // Routed through saveChatHistory rather than a raw set() so the record
+    // carries the same `writer` and `browserRun` stamps as every other
+    // write — a bare set() here produced the one record in the system that
+    // our own cross-panel listener mistook for a foreign panel's write.
+    // It also persists the pointer (isLive is true), so reopen lands here.
+    await this.saveChatHistory();
     // ── Clear UI ──────────────────────────────────────────────
     this._clearChatMessages();
     this.els.welcomeScreen.style.display = '';
@@ -4478,7 +4622,7 @@ class SNNSidePanel {
       if (data[this._chatLockKey]?.messages?.length) {
         // Restore existing locked session
         const session = data[this._chatLockKey];
-        this.chatHistory = session.messages;
+        this._setChatHistory(session.messages, this._chatLockKey);
         this._sessionModel = session.sessionModel || null;
         this._modelLocked = session.messages.length > 0;
         this.restoreChat();
@@ -4717,7 +4861,7 @@ class SNNSidePanel {
    * system prompt itself — which made the system prompt volatile and left
    * nothing at all cacheable.
    */
-  _buildChatMessages(systemPrompt, context, contextType, message, model) {
+  _buildChatMessages(systemPrompt, context, contextType, message, model, sendRef = null) {
     let userMessage = message;
     if (context && contextType === 'selection') {
       systemPrompt += '\nFocus on the user\'s selected text.';
@@ -4727,8 +4871,14 @@ class SNNSidePanel {
       this._withCacheBreakpoint({ role: 'system', content: systemPrompt }, model, systemPrompt.length)
     ];
 
+    // sendRef.messages, not this.chatHistory: sendMessage captured the ref
+    // before any await, and a tab switch between there and here reassigns
+    // chatHistory to the other tab's conversation. Reading live state sent
+    // the model the wrong chat as context, and left the dedupe below unable
+    // to match the trailing entry — so the question went twice.
+    const source = sendRef?.messages || this.chatHistory || [];
     const history = this._stableHistoryWindow(
-      this.chatHistory.filter(m => m.role === 'user' || m.role === 'assistant')
+      source.filter(m => m.role === 'user' || m.role === 'assistant')
     ).map(m => ({ role: m.role, content: m.content }));
 
     // sendMessage pushes the current turn to chatHistory BEFORE calling us, so

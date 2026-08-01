@@ -228,8 +228,16 @@ class SNNAgentLoop {
       ));
 
       // ── 2. Conversation history (user + assistant messages only) ──
+      // Read from _runRef.messages, not sp.chatHistory — the same invariant
+      // _buildLLMHistory() documents further down. There is an await between
+      // claiming _runRef above and getting here (getSettings), and a tab
+      // switch resolving inside it reassigns sp.chatHistory to the OTHER
+      // tab's conversation. That fed the model a different chat as context
+      // for this one, and left the dedupe below unable to find the current
+      // question — so it was sent twice.
+      const runHistory = this._runRef?.messages || this.sp.chatHistory || [];
       const historyMessages = this.sp._stableHistoryWindow(
-        this.sp.chatHistory.filter(m => m.role === 'user' || m.role === 'assistant')
+        runHistory.filter(m => m.role === 'user' || m.role === 'assistant')
       ).map(m => ({ role: m.role, content: m.content }));
 
       // The current turn is re-added last, after the page context — drop it
