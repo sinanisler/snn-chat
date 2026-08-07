@@ -146,12 +146,68 @@ chrome.tabs.query({ active: true }).then((tabs) => {
 // ═══════════════════════════════════════════════════════════════════
 // CONTEXT MENU — Right-click "Ask SNN" on selected text
 // ═══════════════════════════════════════════════════════════════════
-chrome.runtime.onInstalled.addListener(() => {
+// Keep in sync with SidePanel.getDefaultQuickActions() in sidebar/sidepanel.js
+const DEFAULT_QUICK_ACTIONS = [
+  { text: 'Summarize', prompt: 'Summarize this concisely.' },
+  { text: 'Key points', prompt: 'Extract the key points as a short bulleted list.' },
+  { text: 'Explain simply', prompt: 'Explain this in simple terms, as if to someone new to the topic.' },
+  { text: 'Translate', prompt: 'Translate this into English.' },
+  { text: 'Improve writing', prompt: 'Rewrite this to be clearer and more polished, keeping the original meaning and tone.' },
+  { text: 'Draft a reply', prompt: 'Draft a reply to this, in a professional and concise tone.' },
+  { text: 'Fact-check', prompt: 'Fact-check this. Identify the key factual claims, then search for and check at least two independent sources to verify each one before giving me your verdict — do not rely on this page alone.' },
+  { text: 'Pros & cons', prompt: "List the pros and cons of what's described here." }
+];
+
+// Quick actions live in settings; the context menu mirrors them so the
+// user's own list shows up under "Ask SNN about …" as a submenu.
+async function getQuickActions() {
+  try {
+    const { settings } = await chrome.storage.local.get(['settings']);
+    const actions = settings?.quickActions;
+    return actions?.length ? actions : DEFAULT_QUICK_ACTIONS;
+  } catch (e) {
+    D.warn('Failed to read quick actions:', e?.message || e);
+    return DEFAULT_QUICK_ACTIONS;
+  }
+}
+
+// The prompt text is carried in the menu id (indices would go stale as
+// soon as the user reorders their quick actions in settings).
+const QA_PREFIX = 'snn-qa:';
+
+async function buildContextMenus() {
+  await chrome.contextMenus.removeAll();
+
+  // Parent item — a parent with children is not clickable itself, so the
+  // original "attach selection and let me type" behaviour becomes its
+  // first child.
   chrome.contextMenus.create({
     id: 'snn-ask-selection',
     title: 'Ask SNN about "%s"',
     contexts: ['selection']
   });
+  chrome.contextMenus.create({
+    id: 'snn-ask-selection-open',
+    parentId: 'snn-ask-selection',
+    title: 'Ask a question…',
+    contexts: ['selection']
+  });
+  chrome.contextMenus.create({
+    id: 'snn-qa-separator',
+    parentId: 'snn-ask-selection',
+    type: 'separator',
+    contexts: ['selection']
+  });
+  for (const action of await getQuickActions()) {
+    if (!action?.text || !action?.prompt) continue;
+    chrome.contextMenus.create({
+      id: QA_PREFIX + action.prompt,
+      parentId: 'snn-ask-selection',
+      title: action.text,
+      contexts: ['selection']
+    });
+  }
+
   chrome.contextMenus.create({
     id: 'snn-ask-page',
     title: 'Ask SNN about this page',
@@ -167,6 +223,20 @@ chrome.runtime.onInstalled.addListener(() => {
     title: 'Ask SNN to summarize this link',
     contexts: ['link']
   });
+}
+
+chrome.runtime.onInstalled.addListener(() => { buildContextMenus(); });
+chrome.runtime.onStartup?.addListener(() => { buildContextMenus(); });
+
+// Rebuild whenever the user edits their quick actions in settings.
+let _menuRebuildTimer = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.settings) return;
+  const before = JSON.stringify(changes.settings.oldValue?.quickActions || null);
+  const after = JSON.stringify(changes.settings.newValue?.quickActions || null);
+  if (before === after) return;
+  clearTimeout(_menuRebuildTimer);
+  _menuRebuildTimer = setTimeout(() => buildContextMenus(), 200);
 });
 
 // ── Robust side-panel opener ──────────────────────────────────
@@ -244,8 +314,25 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   // chat and attaches the relevant context (or prefills a suggestion) but
   // waits for the user to type/confirm their question instead of auto-sending.
   let intent = null;
+
+  // Quick action picked from the "Ask SNN about …" submenu: attach the
+  // selection AND run the action's prompt straight away.
+  if (typeof info.menuItemId === 'string' && info.menuItemId.startsWith(QA_PREFIX)) {
+    intent = {
+      type: 'selection',
+      selectionText: info.selectionText || '',
+      suggestedPrompt: info.menuItemId.slice(QA_PREFIX.length),
+      autoSend: true
+    };
+    _openSidePanelForTab(tab);
+    chrome.storage.session.set({
+      snn_context_menu_intent: { ...intent, tabId: tab.id, timestamp: Date.now() }
+    }).catch(err => D.warn('Failed to store context-menu intent:', err?.message || err));
+    return;
+  }
+
   switch (info.menuItemId) {
-    case 'snn-ask-selection':
+    case 'snn-ask-selection-open':
       // Attach the highlighted text as context; user asks what they want.
       intent = { type: 'selection', selectionText: info.selectionText || '' };
       break;

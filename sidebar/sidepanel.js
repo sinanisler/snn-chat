@@ -463,7 +463,15 @@ class SNNSidePanel {
             chrome.storage.session.set({ snn_selection: this.selection }).catch(() => {});
           }
           this.refreshActiveContext();
-          toastMsg = 'Selection attached — ask your question';
+          // A quick action picked from the context-menu submenu carries its
+          // prompt with it — prefill it (and send it, if it's a quick action).
+          if (entry.suggestedPrompt) {
+            this.els.userInput.value = entry.suggestedPrompt;
+            this.autoResize();
+            toastMsg = entry.autoSend ? '' : 'Edit or confirm, then send';
+          } else {
+            toastMsg = 'Selection attached — ask your question';
+          }
           break;
         }
 
@@ -506,6 +514,14 @@ class SNNSidePanel {
       if (val) this.els.userInput.setSelectionRange(val.length, val.length);
 
       if (toastMsg) this.showToast(toastMsg, '');
+
+      // Quick actions fire immediately, same as clicking them in the
+      // quick-actions popover. Release the re-entry guard first so
+      // sendMessage()'s own intent check isn't blocked.
+      if (entry.autoSend && this.els.userInput.value.trim()) {
+        this._ctxMenuInProgress = false;
+        this.sendMessage();
+      }
     } catch (e) {
       D.warn('Context-menu intent check failed:', e.message);
     } finally {
