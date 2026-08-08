@@ -2042,52 +2042,6 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   font-size: 11px; opacity: 0.6; margin-left: auto;
 }
 
-/* ── Permission Modal Overlay ─────────────────────────────────── */
-.snn-permission-overlay {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.5);
-  z-index: 3000;
-  display: flex; align-items: center; justify-content: center;
-  animation: snn-fade-in 0.2s ease;
-}
-@keyframes snn-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-.snn-permission-modal {
-  background: var(--sp-panel-bg);
-  border: 1px solid var(--sp-border);
-  border-radius: 14px;
-  padding: 28px 24px;
-  max-width: 320px;
-  width: 90%;
-  text-align: center;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-  animation: snn-modal-pop 0.25s ease;
-}
-@keyframes snn-modal-pop {
-  from { transform: scale(0.9); opacity: 0; }
-  to   { transform: scale(1); opacity: 1; }
-}
-.snn-permission-icon { font-size: 36px; margin-bottom: 12px; }
-.snn-permission-modal h3 { font-size: 17px; font-weight: 600; color: var(--sp-text); margin-bottom: 8px; }
-.snn-permission-modal p { font-size: 14px; color: var(--sp-text-secondary); line-height: 1.5; margin-bottom: 20px; }
-.snn-permission-actions { display: flex; gap: 10px; justify-content: center; }
-.snn-permission-allow {
-  padding: 10px 24px; border: none; border-radius: 8px;
-  background: var(--sp-accent); color: var(--sp-accent-text);
-  font-size: 14px; font-weight: 600; cursor: pointer;
-  transition: filter 0.15s;
-}
-.snn-permission-allow:hover { filter: brightness(1.12); }
-.snn-permission-deny {
-  padding: 10px 24px; border: 1px solid var(--sp-border); border-radius: 8px;
-  background: var(--sp-input-bg); color: var(--sp-text);
-  font-size: 14px; font-weight: 500; cursor: pointer;
-  transition: background 0.15s;
-}
-.snn-permission-deny:hover { background: var(--sp-btn-hover); }
-
 /* ── Capabilities Grid ────────────────────────────────────────── */
 .snn-capabilities-grid {
   display: flex;
@@ -2158,7 +2112,6 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
 .snn-status-entry.snn-status-retrying  { background: rgba(184,96,11,0.06); color: var(--sp-warning); border-left: 2px solid var(--sp-warning); }
 .snn-status-entry.snn-status-reporting { background: rgba(30,126,52,0.06); color: var(--sp-success); border-left: 2px solid var(--sp-success); }
 .snn-status-entry.snn-status-failed    { background: rgba(192,57,43,0.08); color: var(--sp-danger); border-left: 2px solid var(--sp-danger); }
-.snn-status-entry.snn-status-blocked   { background: rgba(184,96,11,0.06); color: var(--sp-warning); border-left: 2px solid var(--sp-warning); }
 .snn-status-entry.snn-status-cancelled { background: rgba(128,128,128,0.05); color: var(--sp-text-secondary); border-left: 2px solid var(--sp-border); font-style: italic; opacity: 0.7; }
 .snn-status-entry.snn-status-idle      { background: rgba(30,126,52,0.05); color: var(--sp-success); border-left: 2px solid var(--sp-success); }
 

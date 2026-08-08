@@ -3,7 +3,7 @@
 //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Runs in the side panel. Orchestrates the full agent lifecycle:
 // IDLE → PARSING → PLANNING → EXECUTING → WAITING → OBSERVING
-//   → REPORTING (or RETRYING → FAILED / BLOCKED → CANCELLED)
+//   → REPORTING (or RETRYING → FAILED → CANCELLED)
 //
 // DESIGN PRINCIPLES:
 // 1. Every error is surfaced to the user — NEVER silent.
@@ -47,7 +47,6 @@ class SNNAgentLoop {
     this._stepResults = [];
     this._cancelled = false;
     this._cancelReason = null;  // 'user' | 'tab-switch' | null
-    this._pendingResolve = null; // for BLOCKED state
     this._abortController = null; // for cancelling in-flight LLM fetch
     this._runRef = null; // sessionRef() this run belongs to — see run()
 
@@ -93,7 +92,6 @@ class SNNAgentLoop {
     this.onProgress = null;      // (step, total, description)
     this.onError = null;         // (errorCardData)
     this.onResult = null;        // (reportData)
-    this.onBlocked = null;       // (question) -> returns Promise
     this.onReasoning = null;     // (text, iteration) - interleaved thinking/reasoning between tools
   }
 
@@ -150,11 +148,6 @@ class SNNAgentLoop {
     }
     const label = reason === 'tab-switch' ? 'Tab switched — task interrupted' : 'User cancelled';
     this._transition('CANCELLED', { reason: label });
-    // Resolve any pending BLOCKED promise
-    if (this._pendingResolve) {
-      this._pendingResolve('denied');
-      this._pendingResolve = null;
-    }
   }
 
   /**
@@ -1483,21 +1476,6 @@ CRITICAL RULES:
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // BLOCKED STATE — WAIT FOR USER
-  // ═══════════════════════════════════════════════════════════════
-  async _waitForUserDecision() {
-    return new Promise((resolve) => {
-      this._pendingResolve = resolve;
-      if (this.onBlocked) {
-        this.onBlocked('SNN needs your permission to continue.').then(resolve);
-      } else {
-        // Default: approve after 10s (safety timeout)
-        setTimeout(() => { if (this._pendingResolve === resolve) { this._pendingResolve = null; resolve('approved'); } }, 10000);
-      }
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════
   // STATE TRANSITION
   // ═══════════════════════════════════════════════════════════════
   _transition(newState, detail = {}) {
@@ -1519,7 +1497,6 @@ CRITICAL RULES:
     this._stepResults = [];
     this._cancelled = false;
     this._cancelReason = null;
-    this._pendingResolve = null;
     this._abortController = null;
     this._lastScreenshot = null;
     this._selfAuditDone = false;

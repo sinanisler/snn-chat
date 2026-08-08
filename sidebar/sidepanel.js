@@ -4442,7 +4442,7 @@ class SNNSidePanel {
           continue;
         }
 
-        // Terminal states: IDLE closes group; FAILED/CANCELLED/BLOCKED close group
+        // Terminal states: IDLE closes group; FAILED/CANCELLED close group
         // and ALSO render outside so the error is visible.
         if (s === 'IDLE') {
           groupEntries.push({ type: 'status', msg });
@@ -4450,7 +4450,7 @@ class SNNSidePanel {
           flushGroup();
           continue;
         }
-        if (s === 'FAILED' || s === 'CANCELLED' || s === 'BLOCKED') {
+        if (s === 'FAILED' || s === 'CANCELLED') {
           flushGroup();  // close any existing group first
           this._renderPersistedStatusEntry(msg); // show error outside
           continue;
@@ -4594,7 +4594,6 @@ class SNNSidePanel {
       RETRYING:  { icon: 'fa-arrows-rotate',     cls: 'snn-status-retrying',  label: 'Retrying...' },
       REPORTING: { icon: 'fa-chart-simple',       cls: 'snn-status-reporting', label: 'Compiling results...' },
       FAILED:    { icon: 'fa-triangle-exclamation', cls: 'snn-status-failed', label: 'Failed' },
-      BLOCKED:   { icon: 'fa-lock',              cls: 'snn-status-blocked',   label: 'Waiting for permission...' },
       CANCELLED: { icon: 'fa-xmark',             cls: 'snn-status-cancelled', label: 'Cancelled' },
       IDLE:      { icon: 'fa-circle-check',      cls: 'snn-status-idle',      label: 'Done' }
     };
@@ -5974,14 +5973,6 @@ class SNNSidePanel {
       if (this._agentUI) {
         this._agentUI.addReasoningEntry(text, iteration);
       }
-    };
-
-    // ── Blocked callback ───────────────────────────────────────
-    this._agentLoop.onBlocked = (question) => {
-      if (this._agentUI) {
-        return this._agentUI.showPermissionModal(question);
-      }
-      return Promise.resolve('denied');
     };
 
     // ── Error retry handlers ───────────────────────────────────

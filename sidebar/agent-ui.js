@@ -105,7 +105,6 @@ class SNNAgentUI {
       RETRYING:  { icon: 'fa-arrows-rotate',     cls: 'snn-status-retrying',  label: 'Retrying...' },
       REPORTING: { icon: 'fa-chart-simple',       cls: 'snn-status-reporting', label: 'Compiling results...' },
       FAILED:    { icon: 'fa-triangle-exclamation', cls: 'snn-status-failed', label: 'Failed' },
-      BLOCKED:   { icon: 'fa-lock',              cls: 'snn-status-blocked',   label: 'Waiting for permission...' },
       CANCELLED: { icon: 'fa-xmark',             cls: 'snn-status-cancelled', label: 'Cancelled' },
       IDLE:      { icon: 'fa-circle-check',      cls: 'snn-status-idle',      label: 'Done' }
     };
@@ -199,11 +198,6 @@ class SNNAgentUI {
         this._actionGroupHeaderTextEl.textContent = 'Interrupted';
       }
       if (iconEl) iconEl.innerHTML = '<i class="fas fa-xmark"></i>';
-    } else if (state === 'BLOCKED') {
-      if (this._actionGroupHeaderTextEl) {
-        this._actionGroupHeaderTextEl.textContent = `Blocked${countLabel}`;
-      }
-      if (iconEl) iconEl.innerHTML = '<i class="fas fa-lock"></i>';
     }
 
     // Clear refs so the next run can start a fresh group
@@ -251,7 +245,7 @@ class SNNAgentUI {
 
     // Terminal/error states that should appear OUTSIDE the group:
     // close the group first so the error is visible.
-    if (state === 'FAILED' || state === 'BLOCKED' || state === 'CANCELLED') {
+    if (state === 'FAILED' || state === 'CANCELLED') {
       this._finalizeActionGroup(state);
     }
 
@@ -685,42 +679,6 @@ class SNNAgentUI {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // PERMISSION MODAL — shown when agent hits BLOCKED state
-  // ═══════════════════════════════════════════════════════════════
-  showPermissionModal(question) {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'snn-permission-overlay';
-      overlay.innerHTML = `
-        <div class="snn-permission-modal">
-          <div class="snn-permission-icon"><i class="fas fa-lock"></i></div>
-          <h3>Permission Required</h3>
-          <p>${this.sp.escapeHtml(question || 'SNN needs your permission to continue.')}</p>
-          <div class="snn-permission-actions">
-            <button class="snn-permission-allow"><i class="fas fa-check"></i> Allow</button>
-            <button class="snn-permission-deny"><i class="fas fa-xmark"></i> Deny</button>
-          </div>
-        </div>
-      `;
-
-      overlay.querySelector('.snn-permission-allow').addEventListener('click', () => {
-        overlay.remove();
-        resolve('approved');
-      });
-      overlay.querySelector('.snn-permission-deny').addEventListener('click', () => {
-        overlay.remove();
-        resolve('denied');
-      });
-      // Click outside to deny
-      overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) { overlay.remove(); resolve('denied'); }
-      });
-
-      document.body.appendChild(overlay);
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════
   // TOAST NOTIFICATION (extends existing toast with richer types)
   // ═══════════════════════════════════════════════════════════════
   showToast(msg, type = '') {
@@ -734,7 +692,7 @@ class SNNAgentUI {
   cleanup() {
     document.getElementById('snn-agent-status')?.remove();
     document.getElementById('snn-agent-progress')?.remove();
-    document.querySelectorAll('.snn-error-card, .snn-result-card, .snn-permission-overlay').forEach(el => el.remove());
+    document.querySelectorAll('.snn-error-card, .snn-result-card').forEach(el => el.remove());
   }
 }
 
