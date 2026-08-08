@@ -20,6 +20,19 @@ var SNN_D = {
 };
 var D = SNN_D;
 
+// ── MODEL CATALOG CACHE ────────────────────────────────────────────
+// The side panel is torn down every time it closes, so without a
+// persisted catalog every reopen re-downloads OpenRouter's ~2MB /models
+// response before the quick-switch has anything to show.
+// Stale-while-revalidate: serve the cache instantly, then silently
+// refetch in the background once it's older than SOFT. Past HARD the
+// cache is ignored entirely and we wait for the network. New models ship
+// several times a day, so SOFT is deliberately short — and the refresh
+// button in Settings → API forces a fetch regardless of either age.
+var MODELS_CACHE_KEY  = 'snn_models_cache';
+var MODELS_CACHE_SOFT = 60 * 60 * 1000;        // 1 hour  → revalidate in background
+var MODELS_CACHE_HARD = 24 * 60 * 60 * 1000;   // 24 hours → don't serve at all
+
 // ── DIAGRAM CAPABILITY ─────────────────────────────────────────────
 // Appended to every plain-chat system prompt. Without it the model has no way
 // to know the panel renders mermaid (see renderMermaid) and falls back to
@@ -106,6 +119,12 @@ class SNNSidePanel {
     // ── Cached OpenRouter model metadata ─────────────────────
     this._modelsData = {};
     this._selectedModelInfo = null;
+    // Catalog load state, so the pickers can tell "still fetching" apart
+    // from "fetch failed" apart from "no key configured" instead of
+    // collapsing all three into a misleading "add your API key" message.
+    this._modelsState = 'idle';    // idle | loading | ready | error
+    this._modelsError = null;
+    this._modelsPromise = null;    // in-flight fetch, shared by all callers
 
     // ── Per-session model override (locked after 1st message) ─
     this._sessionModel = null;   // null = use global default
@@ -2488,60 +2507,81 @@ class SNNSidePanel {
     }
 
     // ── Populate dropdown list ──────────────────────────────
-    const models = Object.values(this._modelsData || {});
-    this._renderMqsDropdown(models, effectiveModel, '');
-
-    // ── Search handler ──────────────────────────────────────
-    this.els.mqsSearch.oninput = () => {
-      this._renderMqsDropdown(models, effectiveModel, this.els.mqsSearch.value.trim());
-    };
+    // Only the selection is stored here; the list itself always reads
+    // this._modelsData at paint time. Snapshotting it into a closure was
+    // the reason a catalog that finished loading after this ran left the
+    // popover stuck on "No models loaded" until some other code path
+    // happened to re-render it.
+    this._mqsSelectedId = effectiveModel;
+    this._refreshMqsList();
 
     // ── Trigger click: load models if needed, then toggle ────
-    this.els.mqsTrigger.onclick = (e) => {
+    this.els.mqsTrigger.onclick = async (e) => {
       e.stopPropagation();
       if (this._modelLocked) return; // locked — no-op
       if (!Object.keys(this._modelsData || {}).length) {
-        const apiKey = settings.openrouterKey;
-        if (settings.localLlmEnabled || apiKey?.length > 10) {
-          this.showToast('Loading models…');
-          this.loadModels(this._getEffectiveApiKey(settings), settings).then(() => {
-            const updated = Object.values(this._modelsData || {});
-            this._renderMqsDropdown(updated, effectiveModel, this.els.mqsSearch.value.trim());
-            this._openMqsPopover();
-          }).catch(() => {
-            this.showToast('Failed to load models', 'warning');
-          });
-        } else {
+        const live = await this.getSettings();
+        if (!live.localLlmEnabled && !(live.openrouterKey?.length > 10)) {
           this.showToast('Set API key in Settings first', 'warning');
+          return;
         }
+        // Open first — the popover's own empty state reports progress,
+        // which beats a toast that vanishes before the fetch lands.
+        this._openMqsPopover();
+        const ok = await this.loadModels(this._getEffectiveApiKey(live), live);
+        if (!ok) this.showToast('Failed to load models', 'warning');
         return;
       }
       this._toggleMqsPopover();
     };
 
-    // ── Close on outside click ──────────────────────────────
-    if (!this._mqsOutsideBound) {
-      this._mqsOutsideBound = true;
+    // ── One-time listeners ──────────────────────────────────
+    // renderModelQuickSwitch() runs on every session switch and after
+    // every send, so anything bound with addEventListener has to be
+    // guarded or it stacks up a duplicate per call.
+    if (!this._mqsBound) {
+      this._mqsBound = true;
+
+      // Search
+      this.els.mqsSearch.addEventListener('input', () => this._refreshMqsList());
+
+      // Close on outside click
       document.addEventListener('click', (ev) => {
         if (!this.els.mqsTrigger?.contains(ev.target) &&
             !this.els.mqsPopover?.contains(ev.target)) {
           this._closeMqsPopover();
         }
       });
-    }
 
-    // ── Close on Escape ─────────────────────────────────────
-    this.els.mqsSearch.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape') this._closeMqsPopover();
-    });
+      // Close on Escape
+      this.els.mqsSearch.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') this._closeMqsPopover();
+      });
+
+      // Retry from the popover's error state
+      this.els.mqsList.addEventListener('click', async (ev) => {
+        if (!ev.target.closest('[data-mqs-retry]')) return;
+        const live = await this.getSettings();
+        await this.loadModels(this._getEffectiveApiKey(live), live, { force: true });
+      });
+    }
   }
 
-  _renderMqsDropdown(models, selectedId, filterText) {
+  /** Repaint the quick-switch list from current state. Safe to call anytime. */
+  _refreshMqsList() {
+    if (!this.els?.mqsList) return;
+    this._renderMqsDropdown(this.els.mqsSearch?.value.trim() || '');
+  }
+
+  _renderMqsDropdown(filterText) {
     const list = this.els.mqsList;
     if (!list) return;
 
+    const selectedId = this._mqsSelectedId;
+    const models = Object.values(this._modelsData || {});
+
     if (!models.length) {
-      list.innerHTML = '<div class="sp-mqs-option muted">No models loaded. Add API key in Settings.</div>';
+      list.innerHTML = this._mqsEmptyStateHtml();
       return;
     }
 
@@ -2598,7 +2638,8 @@ class SNNSidePanel {
         this.els.mqsCurrentModel.textContent = id.includes('/') ? id.split('/').pop() : id;
         this.els.mqsTrigger.title = `Session model: ${id}`;
         this._updateModelCapabilities(id);
-        this._renderMqsDropdown(models, id, this.els.mqsSearch.value.trim());
+        this._mqsSelectedId = id;
+        this._refreshMqsList();
         this.showToast(`Model: ${id.includes('/') ? id.split('/').pop() : id}`);
         // Persist the model choice in the session data
         this._persistSessionModel();
@@ -2606,22 +2647,36 @@ class SNNSidePanel {
     });
   }
 
+  /**
+   * Empty state for the quick-switch list. The old code showed
+   * "Add API key in Settings" for every empty case, which lied whenever
+   * the real problem was a slow fetch or a failed one.
+   */
+  _mqsEmptyStateHtml() {
+    if (this._modelsState === 'loading') {
+      return '<div class="sp-mqs-option muted">Loading models…</div>';
+    }
+    if (this._modelsState === 'error') {
+      return `<div class="sp-mqs-option muted">Couldn't load models${
+        this._modelsError ? ` (${this.escapeHtml(this._modelsError)})` : ''
+      }. <button type="button" class="sp-mqs-retry" data-mqs-retry>Retry</button></div>`;
+    }
+    return '<div class="sp-mqs-option muted">No models loaded. Add API key in Settings.</div>';
+  }
+
   _toggleMqsPopover() {
     const popover = this.els.mqsPopover;
     const trigger = this.els.mqsTrigger;
     if (!popover || !trigger) return;
     const isOpen = popover.style.display === 'block';
-    if (isOpen) {
-      this._closeMqsPopover();
-    } else {
-      // Focus search input when opening
-      popover.style.display = 'block';
-      trigger.classList.add('open');
-      setTimeout(() => this.els.mqsSearch?.focus(), 50);
-    }
+    if (isOpen) this._closeMqsPopover();
+    else this._openMqsPopover();
   }
 
   _openMqsPopover() {
+    // Always repaint on open — the catalog may have arrived (or been
+    // refreshed from Settings) since this list was last rendered.
+    this._refreshMqsList();
     if (this.els.mqsPopover) this.els.mqsPopover.style.display = 'block';
     if (this.els.mqsTrigger) this.els.mqsTrigger.classList.add('open');
     setTimeout(() => this.els.mqsSearch?.focus(), 50);
@@ -2678,6 +2733,12 @@ class SNNSidePanel {
 
   async applySettings() {
     const settings = await this.getSettings();
+
+    // Hydrate the model catalog from disk BEFORE anything renders, so the
+    // quick switch paints a populated list on the first frame instead of
+    // waiting on a ~2MB network round-trip.
+    const needsRevalidate = await this._hydrateModelsFromCache(settings);
+
     const theme = settings.theme || 'auto';
     document.body.className = `theme-${theme}`;
     document.documentElement.style.setProperty('--sp-font-size', `${settings.fontSize || 16}px`);
@@ -2688,9 +2749,11 @@ class SNNSidePanel {
     SNN_D.enabled = settings.debugLogging === true;
 
     // Prefetch model catalog so vision badges / checks use real model metadata.
-    // Local servers need no key at all.
-    if ((settings.localLlmEnabled || settings.openrouterKey?.length > 10) && !Object.keys(this._modelsData || {}).length) {
-      this.loadModels(this._getEffectiveApiKey(settings), settings).catch(() => {});
+    // Local servers need no key at all. With a warm cache this is a silent
+    // background revalidation — the UI is already populated by now.
+    const canFetch = settings.localLlmEnabled || settings.openrouterKey?.length > 10;
+    if (canFetch && needsRevalidate) {
+      this.loadModels(this._getEffectiveApiKey(settings), settings);
     } else {
       this._updateHeaderVisionBadge(settings.openrouterModel || '');
     }
@@ -2857,11 +2920,16 @@ class SNNSidePanel {
           </div>
           <div class="sp-field">
             <label>Model</label>
-            <div class="sp-model-picker" id="s-model-picker">
-              <input type="text" id="s-openrouter-model" value="${this.escapeHtml(s.openrouterModel || '')}" placeholder="Search models..." autocomplete="off">
-              <div class="sp-model-dropdown" id="s-model-dropdown" style="display:none"></div>
+            <div class="sp-model-picker-row">
+              <div class="sp-model-picker" id="s-model-picker">
+                <input type="text" id="s-openrouter-model" value="${this.escapeHtml(s.openrouterModel || '')}" placeholder="Search models..." autocomplete="off">
+                <div class="sp-model-dropdown" id="s-model-dropdown" style="display:none"></div>
+              </div>
+              <button type="button" class="sp-model-refresh" id="s-model-refresh" title="Refresh model list — fetches the newest models from your provider">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+              </button>
             </div>
-            <small>Search by name. Vision-capable models show a Vision badge.</small>
+            <small>Search by name. Vision-capable models show a Vision badge. The list is cached — hit refresh to pull models released today.</small>
           </div>
           <div id="s-model-info" class="sp-model-info" style="display:none" tabindex="0"></div>
           <button class="sp-btn sp-btn-success" id="s-test-connection">Test Connection</button>
@@ -3014,7 +3082,10 @@ class SNNSidePanel {
       clearTimeout(this._modelTimeout);
       const k = keyInput.value.trim();
       if (!localToggle.checked && k.length > 10) {
-        this._modelTimeout = setTimeout(() => this.loadModels(k, this._formSettings()), 1500);
+        // force: a new key must not be answered by an in-flight request
+        // that was issued with the old one.
+        this._modelTimeout = setTimeout(
+          () => this.loadModels(k, this._formSettings(), { force: true }), 1500);
       }
     });
 
@@ -3030,10 +3101,23 @@ class SNNSidePanel {
     const localKeyField = this.els.settingsBody.querySelector('#s-local-llm-key-field');
     const localKeyInput = this.els.settingsBody.querySelector('#s-local-llm-key');
 
-    const reloadLocalModels = () => {
+    /** The key the currently-selected provider would use, read live from the form. */
+    const formApiKey = (fs) => fs.localLlmEnabled
+      ? (fs.localLlmKeyEnabled ? localKeyInput.value.trim() : '')
+      : keyInput.value.trim();
+
+    /**
+     * Drop the catalog and refetch for whichever provider the form now
+     * describes. Always forced: the provider (and with it the cache key and
+     * any in-flight request) has just changed underneath us.
+     */
+    const reloadModels = () => {
       this._modelsData = {};
-      const key = localKeyToggle.checked ? localKeyInput.value.trim() : '';
-      this.loadModels(key, this._formSettings());
+      this._refreshMqsList();
+      const fs = this._formSettings();
+      const key = formApiKey(fs);
+      if (!fs.localLlmEnabled && key.length <= 10) return;  // nothing to fetch with
+      this.loadModels(key, fs, { force: true });
     };
 
     localToggle.addEventListener('change', () => {
@@ -3042,23 +3126,54 @@ class SNNSidePanel {
       urlField.style.display = enabled ? '' : 'none';
       localKeyToggleField.style.display = enabled ? '' : 'none';
       localKeyField.style.display = (enabled && localKeyToggle.checked) ? '' : 'none';
-      if (enabled) reloadLocalModels();
+      // Both directions — switching back to OpenRouter used to leave the
+      // local server's catalog in place, which the persisted cache would
+      // then make survive across panel reopens.
+      reloadModels();
     });
     urlInput.addEventListener('input', () => {
       clearTimeout(this._modelTimeout);
-      this._modelTimeout = setTimeout(reloadLocalModels, 1000);
+      this._modelTimeout = setTimeout(reloadModels, 1000);
     });
     localKeyToggle.addEventListener('change', () => {
       localKeyField.style.display = localKeyToggle.checked ? '' : 'none';
-      reloadLocalModels();
+      reloadModels();
     });
     localKeyInput.addEventListener('input', () => {
       clearTimeout(this._modelTimeout);
-      this._modelTimeout = setTimeout(reloadLocalModels, 1000);
+      this._modelTimeout = setTimeout(reloadModels, 1000);
     });
 
-    if (s.localLlmEnabled) reloadLocalModels();
-    else if (s.openrouterKey?.length > 10) this.loadModels(s.openrouterKey, this._formSettings());
+    // ── Manual catalog refresh ──────────────────────────────────
+    // The cache is what makes the pickers instant, but providers ship new
+    // models several times a day — this is the escape hatch that lets
+    // someone try a model released minutes ago without waiting out the TTL.
+    const refreshBtn = this.els.settingsBody.querySelector('#s-model-refresh');
+    refreshBtn?.addEventListener('click', async () => {
+      if (refreshBtn.classList.contains('spinning')) return;
+      const fs = this._formSettings();
+      const key = formApiKey(fs);
+      if (!fs.localLlmEnabled && key.length <= 10) {
+        this.showToast('Add your API key first', 'warning');
+        return;
+      }
+      refreshBtn.classList.add('spinning');
+      refreshBtn.disabled = true;
+      await this._clearModelsCache();
+      const ok = await this.loadModels(key, fs, { force: true });
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = false;
+      this.showToast(
+        ok ? `Model list refreshed — ${Object.keys(this._modelsData).length} models`
+           : `Refresh failed${this._modelsError ? `: ${this.escapeHtml(this._modelsError)}` : ''}`,
+        ok ? '' : 'warning'
+      );
+    });
+
+    // Opening Settings no longer forces a fetch — applySettings() has
+    // already hydrated the cache and revalidated it if stale. Only fetch
+    // when there is genuinely nothing to show.
+    if (!Object.keys(this._modelsData || {}).length) reloadModels();
 
     // Rich model picker
     this._setupModelPicker(s.openrouterModel || '');
@@ -3233,17 +3348,138 @@ class SNNSidePanel {
       </div>`;
   }
 
-  async loadModels(apiKey, settings = null) {
+  // ── Model catalog cache (chrome.storage.local) ──────────────────
+  // Keyed by baseUrl so switching between OpenRouter and a local server
+  // never serves one provider's catalog to the other.
+  async _readModelsCache(baseUrl) {
     try {
-      const baseUrl = this._getApiBaseUrl(settings);
+      const { [MODELS_CACHE_KEY]: c } = await chrome.storage.local.get([MODELS_CACHE_KEY]);
+      if (!c || c.baseUrl !== baseUrl || !c.models) return null;
+      const age = Date.now() - (c.ts || 0);
+      if (age > MODELS_CACHE_HARD) return null;
+      return { models: c.models, age, stale: age > MODELS_CACHE_SOFT };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Project a model down to the fields the UI actually reads before it goes
+   * to disk. OpenRouter's payload is ~2MB, most of it long descriptions and
+   * per-endpoint detail nothing here touches — persisting it whole would
+   * make every panel open pay a deserialization cost that defeats the point
+   * of caching. Keep this in sync with _modelHasVision, _formatModelPrice,
+   * _renderModelInfo and agent-loop's context-window lookup.
+   */
+  _trimModelForCache(m) {
+    const ep = m.endpoints?.[0];
+    return {
+      id: m.id,
+      name: m.name,
+      // 400 chars is all _renderModelInfo shows; the slack keeps its
+      // "…" overflow indicator honest for genuinely longer text.
+      description: m.description ? String(m.description).slice(0, 500) : undefined,
+      architecture: m.architecture && {
+        input_modalities: m.architecture.input_modalities,
+        output_modalities: m.architecture.output_modalities,
+        modality: m.architecture.modality
+      },
+      pricing: m.pricing && { prompt: m.pricing.prompt, completion: m.pricing.completion },
+      context_length: m.context_length,
+      supported_parameters: m.supported_parameters,
+      top_provider: m.top_provider && {
+        context_length: m.top_provider.context_length,
+        max_completion_tokens: m.top_provider.max_completion_tokens
+      },
+      endpoints: ep ? [{
+        context_length: ep.context_length,
+        max_completion_tokens: ep.max_completion_tokens,
+        supported_parameters: ep.supported_parameters
+      }] : undefined
+    };
+  }
+
+  async _writeModelsCache(baseUrl, models) {
+    try {
+      const slim = {};
+      for (const [id, m] of Object.entries(models)) slim[id] = this._trimModelForCache(m);
+      await chrome.storage.local.set({
+        [MODELS_CACHE_KEY]: { ts: Date.now(), baseUrl, models: slim }
+      });
+    } catch (e) {
+      // Quota or serialization failure — the catalog still works in memory
+      // for this session, so this is not worth surfacing to the user.
+      D.warn('Could not persist model cache:', e);
+    }
+  }
+
+  async _clearModelsCache() {
+    try { await chrome.storage.local.remove([MODELS_CACHE_KEY]); } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Hydrate _modelsData from the persisted cache so the pickers have
+   * something to show on the very first frame. Returns true if the cache
+   * should still be revalidated (missing, or older than the soft TTL).
+   */
+  async _hydrateModelsFromCache(settings) {
+    if (Object.keys(this._modelsData || {}).length) return false;
+    const cached = await this._readModelsCache(this._getApiBaseUrl(settings));
+    if (!cached) return true;
+    this._modelsData = cached.models;
+    this._modelsState = 'ready';
+    this._modelsError = null;
+    D.log('models hydrated from cache', {
+      count: Object.keys(cached.models).length,
+      ageMin: Math.round(cached.age / 60000),
+      stale: cached.stale
+    });
+    return cached.stale;
+  }
+
+  /**
+   * Fetch the model catalog. Never rejects — resolves true on success,
+   * false on failure, so the many fire-and-forget callers can't produce
+   * unhandled rejections.
+   *
+   * Concurrent callers share one request: applySettings(), the settings
+   * panel and the quick switch all used to race and clobber _modelsData.
+   * `force` bypasses both the in-flight share and the persisted cache.
+   */
+  async loadModels(apiKey, settings = null, { force = false } = {}) {
+    if (this._modelsPromise && !force) return this._modelsPromise;
+    const p = this._fetchModels(apiKey, settings, force)
+      .finally(() => { if (this._modelsPromise === p) this._modelsPromise = null; });
+    this._modelsPromise = p;
+    return p;
+  }
+
+  async _fetchModels(apiKey, settings, force) {
+    const baseUrl = this._getApiBaseUrl(settings);
+    this._modelsState = 'loading';
+    this._refreshMqsList();   // swap the popover to "Loading models…" if it's open
+
+    try {
       const headers = {};
       if (!settings?.localLlmEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-      const res = await fetch(`${baseUrl}/models`, { headers });
+      const res = await fetch(`${baseUrl}/models`, {
+        headers,
+        // A forced refresh must beat Chrome's HTTP cache too, otherwise
+        // "refresh" can hand back the same stale catalog it just replaced.
+        cache: force ? 'reload' : 'default'
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+
+      const models = {};
+      (data.data || []).forEach(m => { models[m.id] = m; });
+      if (!Object.keys(models).length) throw new Error('Provider returned no models');
+
       // Cache model data for picker + vision checks
-      this._modelsData = {};
-      (data.data || []).forEach(m => { this._modelsData[m.id] = m; });
+      this._modelsData = models;
+      this._modelsState = 'ready';
+      this._modelsError = null;
+      await this._writeModelsCache(baseUrl, models);
 
       // Keep selected model info in sync
       const selectedId = this.els.settingsBody?.querySelector('#s-openrouter-model')?.value.trim();
@@ -3257,8 +3493,15 @@ class SNNSidePanel {
       }
       if (selectedId) this.fetchModelInfo();
       this._updateHeaderVisionBadge();
+      this._refreshMqsList();   // the whole point: repaint the quick switch
+      return true;
     } catch (e) {
       D.error('Failed to load models:', e);
+      this._modelsError = e.message;
+      // A failed revalidation must not throw away a catalog we already have.
+      this._modelsState = Object.keys(this._modelsData || {}).length ? 'ready' : 'error';
+      this._refreshMqsList();
+      return false;
     }
   }
 

@@ -687,6 +687,16 @@ body.theme-dark #welcome-screen .sp-model-tag {
   cursor: default;
   padding: 12px 10px;
 }
+.sp-mqs-retry {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-style: normal;
+  color: var(--sp-input-focus);
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 /* ── Input Area ───────────────────────────────────────────────── */
 .sp-input-area {
@@ -1343,6 +1353,42 @@ body.theme-dark #welcome-screen .sp-model-tag {
   background: rgba(128,128,128,0.1);
   border: 1px solid rgba(128,128,128,0.2);
   color: color-mix(in srgb, #555 20%, white);
+}
+.sp-model-picker-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.sp-model-picker-row .sp-model-picker {
+  flex: 1;
+  min-width: 0;
+}
+.sp-model-refresh {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  border: 1px solid var(--sp-input-border);
+  border-radius: 6px;
+  background: var(--sp-input-bg);
+  color: var(--sp-text-secondary);
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.sp-model-refresh:hover:not(:disabled) {
+  color: var(--sp-text);
+  border-color: var(--sp-input-focus);
+}
+.sp-model-refresh:disabled {
+  cursor: default;
+  opacity: .7;
+}
+.sp-model-refresh.spinning svg {
+  animation: sp-mqs-spin .8s linear infinite;
+}
+@keyframes sp-mqs-spin {
+  to { transform: rotate(360deg); }
 }
 .sp-model-picker {
   position: relative;
