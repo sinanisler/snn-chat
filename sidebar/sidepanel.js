@@ -33,6 +33,100 @@ var MODELS_CACHE_KEY  = 'snn_models_cache';
 var MODELS_CACHE_SOFT = 60 * 60 * 1000;        // 1 hour  → revalidate in background
 var MODELS_CACHE_HARD = 24 * 60 * 60 * 1000;   // 24 hours → don't serve at all
 
+// ── LOCAL LLM BASE URL ─────────────────────────────────────────────
+// LM Studio, Ollama & co. show people a host:port in their UI, never the
+// OpenAI-compatible base path — so "localhost:1234" is what actually gets
+// pasted here. normalizeLocalLlmUrl() turns whatever was pasted into a
+// real base URL, and if the guess is still wrong the /models probe
+// (see _probeLocalBase) tries the other spelling before giving up.
+var DEFAULT_LOCAL_LLM_URL = 'http://localhost:1234/v1';
+
+// Endpoints people paste instead of the base URL — copied out of a curl
+// example or a server's own log line.
+var LOCAL_LLM_ENDPOINT_SUFFIXES = [
+  'chat', 'completions', 'models', 'responses', 'embeddings',
+  'generate', 'tags', 'ps', 'version'   // Ollama's native (non-OpenAI) routes
+];
+
+/** Hosts that are obviously on this machine or the LAN — those get http://. */
+function isLocalHostname(host) {
+  const h = (host || '').toLowerCase().replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '::1' || h.endsWith('.local') || h.endsWith('.localhost')
+    || /^127\./.test(h) || /^0\.0\.0\.0$/.test(h)
+    || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+    || /^169\.254\./.test(h);
+}
+
+/**
+ * Turn whatever someone pasted into a usable OpenAI-compatible base URL.
+ *
+ *   localhost:1234                    → http://localhost:1234/v1
+ *   192.168.1.5:1234/                 → http://192.168.1.5:1234/v1
+ *   http://localhost:1234/v1/models   → http://localhost:1234/v1
+ *   http://localhost:11434/api/chat   → http://localhost:11434/v1
+ *   https://box/openai                → https://box/openai/v1
+ *
+ * Anything already carrying a version segment (/v1, /v1beta, …) is left
+ * alone, and an unparseable value is handed back untouched rather than
+ * replaced — a weird-but-working URL must keep working.
+ */
+function normalizeLocalLlmUrl(raw) {
+  const original = String(raw ?? '').trim().replace(/^["'<]+|["'>]+$/g, '').trim();
+  if (!original) return DEFAULT_LOCAL_LLM_URL;
+
+  // Just a port ("1234" or ":1234") — that's the only number LM Studio and
+  // friends ever show, so read it as a port on this machine.
+  if (/^:?\d{2,5}$/.test(original)) return `http://localhost:${original.replace(':', '')}/v1`;
+
+  // No scheme: assume http for anything on this machine or the LAN, https
+  // for a real hostname (a remote box almost always sits behind TLS).
+  let s = original;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    s = s.replace(/^\/+/, '');
+    const host = s.split(/[/?#]/)[0].replace(/:\d+$/, '');
+    s = (isLocalHostname(host) ? 'http://' : 'https://') + s;
+  }
+
+  // Anything we can't make sense of is handed back exactly as typed —
+  // never dress up a broken value as a URL we're about to call.
+  let u;
+  try { u = new URL(s); } catch (e) { return original.replace(/\/+$/, ''); }
+  if (!/^https?:$/.test(u.protocol) || !u.hostname || /\s/.test(u.host)) {
+    return original.replace(/\/+$/, '');
+  }
+
+  let segs = u.pathname.split('/').filter(Boolean);
+
+  // Drop a pasted endpoint (…/v1/chat/completions → …/v1).
+  while (segs.length && LOCAL_LLM_ENDPOINT_SUFFIXES.includes(segs[segs.length - 1].toLowerCase())) {
+    segs.pop();
+  }
+
+  const versioned = segs.some(seg => /^v\d/i.test(seg));
+  if (!versioned) {
+    // Ollama's native base is /api; its OpenAI-compatible one is /v1.
+    if (segs.length && segs[segs.length - 1].toLowerCase() === 'api') segs.pop();
+    segs.push('v1');
+  }
+
+  // Keep any user:pass@ — some people front their server with basic auth.
+  const auth = u.username ? `${u.username}${u.password ? ':' + u.password : ''}@` : '';
+  return `${u.protocol}//${auth}${u.host}${segs.length ? '/' + segs.join('/') : ''}`;
+}
+
+/**
+ * The base URLs worth trying, in order. Servers that mount the OpenAI
+ * routes at the root (some llama.cpp / LiteLLM setups) need the /v1-less
+ * spelling, so keep it as a fallback instead of guessing right once.
+ */
+function localLlmUrlCandidates(base) {
+  const clean = (base || '').replace(/\/+$/, '');
+  const alt = /\/v\d[^/]*$/i.test(clean)
+    ? clean.replace(/\/v\d[^/]*$/i, '')
+    : `${clean}/v1`;
+  return alt && alt !== clean ? [clean, alt] : [clean];
+}
+
 // ── DIAGRAM CAPABILITY ─────────────────────────────────────────────
 // Appended to every plain-chat system prompt. Without it the model has no way
 // to know the panel renders mermaid (see renderMermaid) and falls back to
@@ -1146,10 +1240,57 @@ class SNNSidePanel {
    */
   _getApiBaseUrl(settings) {
     if (settings?.localLlmEnabled) {
-      const url = (settings.localLlmUrl || 'http://localhost:1234/v1').trim();
-      return url.replace(/\/+$/, '');
+      // Normalized on every read, not just on save: settings stored by an
+      // older build (or edited by hand) still get the /v1 treatment.
+      return normalizeLocalLlmUrl(settings.localLlmUrl || DEFAULT_LOCAL_LLM_URL);
     }
     return 'https://openrouter.ai/api/v1';
+  }
+
+  /**
+   * Find the base URL a local server actually answers on by GETting
+   * /models against each candidate spelling. Returns the winner, or null
+   * if none responded (with the first failure in `lastError` for the UI).
+   * Adopting the winner is the caller's job — see _adoptLocalBase().
+   */
+  async _probeLocalBase(baseUrl, headers, { cache = 'default' } = {}) {
+    let lastError = null;
+    for (const candidate of localLlmUrlCandidates(baseUrl)) {
+      try {
+        const res = await fetch(`${candidate}/models`, { headers, cache });
+        if (res.ok) return { baseUrl: candidate, res, lastError };
+        // 401/403 means we found the server — it just wants a key. Report
+        // that instead of trying the other spelling and blaming the URL.
+        if (res.status === 401 || res.status === 403) {
+          return { baseUrl: null, res: null, lastError: new Error(`HTTP ${res.status} — the server wants an API key`) };
+        }
+        lastError = lastError || new Error(`HTTP ${res.status}`);
+      } catch (e) {
+        lastError = lastError || e;
+      }
+    }
+    return { baseUrl: null, res: null, lastError: lastError || new Error('No response') };
+  }
+
+  /**
+   * Persist a base URL the probe discovered so chat, the model catalog and
+   * the settings form all agree from here on. Silent by design: the user
+   * pasted a host:port and got a working connection, which is the point.
+   */
+  async _adoptLocalBase(settings, discovered) {
+    if (!settings?.localLlmEnabled || !discovered) return;
+    if (normalizeLocalLlmUrl(settings.localLlmUrl) === discovered) return;
+    D.log('local LLM base URL corrected', { from: settings.localLlmUrl, to: discovered });
+    settings.localLlmUrl = discovered;
+    try {
+      const stored = await this.getSettings();
+      if (stored.localLlmEnabled) {
+        await chrome.storage.local.set({ settings: { ...stored, localLlmUrl: discovered } });
+      }
+    } catch (e) { /* non-fatal — the in-memory fix still applies */ }
+    const input = this.els.settingsBody?.querySelector('#s-local-llm-url');
+    if (input && document.activeElement !== input) input.value = discovered;
+    this._updateLocalUrlHint?.();
   }
 
   /**
@@ -1181,6 +1322,35 @@ class SNNSidePanel {
   }
 
   /**
+   * POST to /chat/completions, tolerating a local base URL that's off by a
+   * /v1 — someone who pasted a host:port and never opened the model list
+   * would otherwise just see a 404. Only a connection failure or a 404
+   * counts as "wrong URL"; every other status is a genuine answer from the
+   * server and goes straight back to the caller.
+   */
+  async _postChatCompletions(baseUrl, headers, body, signal, settings) {
+    const payload = JSON.stringify(body);
+    const post = (base) => fetch(`${base}/chat/completions`, { method: 'POST', headers, body: payload, signal });
+    const candidates = settings?.localLlmEnabled ? localLlmUrlCandidates(baseUrl) : [baseUrl];
+
+    let firstError = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const isLast = i === candidates.length - 1;
+      try {
+        const res = await post(candidates[i]);
+        if (res.status === 404 && !isLast) continue;
+        if (i > 0 && res.status !== 404) await this._adoptLocalBase(settings, candidates[i]);
+        return res;
+      } catch (e) {
+        if (signal?.aborted || e.name === 'AbortError') throw e;
+        firstError = firstError || e;
+        if (isLast) throw firstError;
+      }
+    }
+    throw firstError || new Error('Request failed');
+  }
+
+  /**
    * POST to the chat/completions endpoint (OpenRouter, or a local
    * OpenAI-compatible server when enabled in settings).
    * Returns the raw Response on success — callers decide how to consume
@@ -1190,13 +1360,11 @@ class SNNSidePanel {
    * with images stripped.
    */
   async _fetchOpenRouter(apiKey, body, signal, _retriedCorrupted = false, settings = null) {
-    const baseUrl = this._getApiBaseUrl(settings);
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: this._openRouterHeaders(apiKey, settings),
-      body: JSON.stringify(body),
-      signal
-    });
+    const res = await this._postChatCompletions(
+      this._getApiBaseUrl(settings),
+      this._openRouterHeaders(apiKey, settings),
+      body, signal, settings
+    );
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
@@ -2716,7 +2884,7 @@ class SNNSidePanel {
           const s = result.settings || {};
           if (s.openrouterModel === undefined) s.openrouterModel = '';
           if (s.localLlmEnabled === undefined) s.localLlmEnabled = false;
-          if (s.localLlmUrl === undefined) s.localLlmUrl = 'http://localhost:1234/v1';
+          if (s.localLlmUrl === undefined) s.localLlmUrl = DEFAULT_LOCAL_LLM_URL;
           if (s.localLlmKeyEnabled === undefined) s.localLlmKeyEnabled = false;
           if (s.localLlmKey === undefined) s.localLlmKey = '';
           if (s.enableStreaming === undefined) s.enableStreaming = true;
@@ -2908,8 +3076,9 @@ class SNNSidePanel {
           </div>
           <div class="sp-field" id="s-local-llm-url-field" style="${s.localLlmEnabled ? '' : 'display:none'}">
             <label>Local Server URL</label>
-            <input type="text" id="s-local-llm-url" value="${this.escapeHtml(s.localLlmUrl || 'http://localhost:1234/v1')}" placeholder="http://localhost:1234/v1">
-            <p>Start your local OpenAI-compatible server and make sure CORS is enabled if it requires it.</p>
+            <input type="text" id="s-local-llm-url" value="${this.escapeHtml(s.localLlmUrl || DEFAULT_LOCAL_LLM_URL)}" placeholder="localhost:1234" spellcheck="false" autocapitalize="off" autocomplete="off">
+            <p class="sp-local-url-hint" id="s-local-llm-url-hint"></p>
+            <p>Paste whatever your server shows you — <code>localhost:1234</code> (LM Studio), <code>localhost:11434</code> (Ollama), <code>localhost:8080</code> (llama.cpp) — the <code>/v1</code> path is added for you. Make sure the server is running with CORS enabled if it requires it.</p>
           </div>
           <div class="sp-field" id="s-local-llm-key-toggle-field" style="${s.localLlmEnabled ? '' : 'display:none'}">
             ${this.toggleHtml('s-local-llm-key-enabled', 'This server requires an API key', 'Most local servers don\'t need one — only enable this if yours does', s.localLlmKeyEnabled === true)}
@@ -3120,6 +3289,18 @@ class SNNSidePanel {
       this.loadModels(key, fs, { force: true });
     };
 
+    // Show what the pasted value actually resolves to. Typing "localhost:1234"
+    // and seeing "→ http://localhost:1234/v1" appear is what stops people
+    // wondering whether they were supposed to add the path themselves.
+    const urlHint = this.els.settingsBody.querySelector('#s-local-llm-url-hint');
+    this._updateLocalUrlHint = () => {
+      if (!urlHint || !urlInput) return;
+      const raw = urlInput.value.trim();
+      const resolved = normalizeLocalLlmUrl(raw);
+      urlHint.textContent = (raw && raw.replace(/\/+$/, '') === resolved) ? '' : `→ ${resolved}`;
+    };
+    this._updateLocalUrlHint();
+
     localToggle.addEventListener('change', () => {
       const enabled = localToggle.checked;
       keyField.style.display = enabled ? 'none' : '';
@@ -3132,8 +3313,20 @@ class SNNSidePanel {
       reloadModels();
     });
     urlInput.addEventListener('input', () => {
+      this._updateLocalUrlHint();
       clearTimeout(this._modelTimeout);
       this._modelTimeout = setTimeout(reloadModels, 1000);
+    });
+    // Commit the normalized form once they're done typing, so the field
+    // matches what every request will actually use.
+    urlInput.addEventListener('blur', () => {
+      const resolved = normalizeLocalLlmUrl(urlInput.value);
+      if (urlInput.value.trim() !== resolved) {
+        urlInput.value = resolved;
+        clearTimeout(this._modelTimeout);
+        this._modelTimeout = setTimeout(reloadModels, 250);
+      }
+      this._updateLocalUrlHint();
     });
     localKeyToggle.addEventListener('change', () => {
       localKeyField.style.display = localKeyToggle.checked ? '' : 'none';
@@ -3186,7 +3379,7 @@ class SNNSidePanel {
     const localKeyEnabled = !!el('s-local-llm-key-enabled')?.checked;
     return {
       localLlmEnabled: !!el('s-local-llm-enabled')?.checked,
-      localLlmUrl: el('s-local-llm-url')?.value?.trim() || 'http://localhost:1234/v1',
+      localLlmUrl: normalizeLocalLlmUrl(el('s-local-llm-url')?.value),
       localLlmKeyEnabled: localKeyEnabled,
       localLlmKey: localKeyEnabled ? (el('s-local-llm-key')?.value?.trim() || '') : ''
     };
@@ -3455,20 +3648,30 @@ class SNNSidePanel {
   }
 
   async _fetchModels(apiKey, settings, force) {
-    const baseUrl = this._getApiBaseUrl(settings);
+    let baseUrl = this._getApiBaseUrl(settings);
     this._modelsState = 'loading';
     this._refreshMqsList();   // swap the popover to "Loading models…" if it's open
 
     try {
       const headers = {};
       if (!settings?.localLlmEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-      const res = await fetch(`${baseUrl}/models`, {
-        headers,
-        // A forced refresh must beat Chrome's HTTP cache too, otherwise
-        // "refresh" can hand back the same stale catalog it just replaced.
-        cache: force ? 'reload' : 'default'
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // A forced refresh must beat Chrome's HTTP cache too, otherwise
+      // "refresh" can hand back the same stale catalog it just replaced.
+      const cache = force ? 'reload' : 'default';
+
+      let res;
+      if (settings?.localLlmEnabled) {
+        // The catalog fetch doubles as the probe: whichever spelling of the
+        // base URL answers here is the one chat should use too.
+        const probe = await this._probeLocalBase(baseUrl, headers, { cache });
+        if (!probe.baseUrl) throw probe.lastError;
+        await this._adoptLocalBase(settings, probe.baseUrl);
+        baseUrl = probe.baseUrl;
+        res = probe.res;
+      } else {
+        res = await fetch(`${baseUrl}/models`, { headers, cache });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
       const data = await res.json();
 
       const models = {};
@@ -3649,6 +3852,18 @@ class SNNSidePanel {
       const baseUrl = this._getApiBaseUrl(formSettings);
       const headers = {};
       if (!formSettings.localLlmEnabled || apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+      if (formSettings.localLlmEnabled) {
+        const probe = await this._probeLocalBase(baseUrl, headers);
+        if (!probe.baseUrl) throw probe.lastError;
+        await this._adoptLocalBase(formSettings, probe.baseUrl);
+        statusEl.className = 'sp-status success';
+        // Naming the URL that worked is the whole point — it's how someone
+        // learns their server lives at /v1 without reading any docs.
+        statusEl.textContent = `Connected to ${probe.baseUrl}`;
+        return;
+      }
+
       const res = await fetch(`${baseUrl}/models`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       statusEl.className = 'sp-status success';
@@ -3780,7 +3995,7 @@ class SNNSidePanel {
       openrouterKey: getVal('s-openrouter-key'),
       openrouterModel: getVal('s-openrouter-model'),
       localLlmEnabled: getChecked('s-local-llm-enabled') === true,
-      localLlmUrl: getVal('s-local-llm-url') || 'http://localhost:1234/v1',
+      localLlmUrl: normalizeLocalLlmUrl(getVal('s-local-llm-url')),
       localLlmKeyEnabled: getChecked('s-local-llm-key-enabled') === true,
       localLlmKey: getVal('s-local-llm-key'),
       maxTokens: parseInt(getVal('s-max-tokens')) || 16000,

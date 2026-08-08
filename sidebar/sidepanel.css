@@ -1159,6 +1159,25 @@ body.theme-dark #welcome-screen .sp-model-tag {
 .sp-field textarea { resize: vertical; min-height: 70px; }
 .sp-field input[type="range"] { padding: 0; height: 28px; }
 
+/* Resolved local-LLM base URL, shown live under the input while typing.
+   Empty (and so invisible) whenever the typed value needs no fixing up. */
+.sp-section .sp-local-url-hint {
+  font-size: 13px;
+  font-family: var(--sp-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  color: var(--sp-accent);
+  margin: 4px 0 0;
+  word-break: break-all;
+}
+.sp-section .sp-local-url-hint:empty { display: none; }
+.sp-field p code {
+  font-family: var(--sp-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--sp-input-bg);
+  border: 1px solid var(--sp-border);
+}
+
 .sp-field-range { display: flex; align-items: center; gap: 10px; }
 .sp-field-range label { min-width: 100px; font-size: 14px; }
 .sp-field-range input[type="range"] { flex: 1; }
