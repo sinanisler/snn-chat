@@ -488,7 +488,15 @@ class SNNSidePanel {
           }
           this._contextConsumedInSession = false;
           this.refreshActiveContext();
-          toastMsg = 'Page attached — ask your question';
+          // A quick action picked from the context-menu submenu carries its
+          // prompt with it — prefill it (and send it, if it's a quick action).
+          if (entry.suggestedPrompt) {
+            this.els.userInput.value = entry.suggestedPrompt;
+            this.autoResize();
+            toastMsg = entry.autoSend ? '' : 'Edit or confirm, then send';
+          } else {
+            toastMsg = 'Page attached — ask your question';
+          }
           break;
         }
 

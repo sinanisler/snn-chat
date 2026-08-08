@@ -171,48 +171,61 @@ async function getQuickActions() {
   }
 }
 
-// The prompt text is carried in the menu id (indices would go stale as
-// soon as the user reorders their quick actions in settings).
+// Quick-action menu ids carry their scope and the prompt text itself —
+// indices would go stale as soon as the user reorders their quick actions.
+// Format: snn-qa:<scope>:<prompt>
 const QA_PREFIX = 'snn-qa:';
+
+// Builds "<title> ▸ [Ask a question… | ─── | <quick actions>]" for one context.
+function buildAskMenu({ parentId, title, context, scope, openLabel }, actions) {
+  chrome.contextMenus.create({ id: parentId, title, contexts: [context] });
+
+  // A parent with children is not clickable itself, so the original
+  // "attach context and let me type" behaviour becomes its first child.
+  chrome.contextMenus.create({
+    id: `${parentId}-open`,
+    parentId,
+    title: openLabel,
+    contexts: [context]
+  });
+  chrome.contextMenus.create({
+    id: `${parentId}-separator`,
+    parentId,
+    type: 'separator',
+    contexts: [context]
+  });
+  for (const action of actions) {
+    if (!action?.text || !action?.prompt) continue;
+    chrome.contextMenus.create({
+      id: `${QA_PREFIX}${scope}:${action.prompt}`,
+      parentId,
+      title: action.text,
+      contexts: [context]
+    });
+  }
+}
 
 async function buildContextMenus() {
   await chrome.contextMenus.removeAll();
 
-  // Parent item — a parent with children is not clickable itself, so the
-  // original "attach selection and let me type" behaviour becomes its
-  // first child.
-  chrome.contextMenus.create({
-    id: 'snn-ask-selection',
-    title: 'Ask SNN about "%s"',
-    contexts: ['selection']
-  });
-  chrome.contextMenus.create({
-    id: 'snn-ask-selection-open',
-    parentId: 'snn-ask-selection',
-    title: 'Ask a question…',
-    contexts: ['selection']
-  });
-  chrome.contextMenus.create({
-    id: 'snn-qa-separator',
-    parentId: 'snn-ask-selection',
-    type: 'separator',
-    contexts: ['selection']
-  });
-  for (const action of await getQuickActions()) {
-    if (!action?.text || !action?.prompt) continue;
-    chrome.contextMenus.create({
-      id: QA_PREFIX + action.prompt,
-      parentId: 'snn-ask-selection',
-      title: action.text,
-      contexts: ['selection']
-    });
-  }
+  const actions = await getQuickActions();
 
-  chrome.contextMenus.create({
-    id: 'snn-ask-page',
+  buildAskMenu({
+    parentId: 'snn-ask-selection',
+    title: 'Ask SNN about "%s"',
+    context: 'selection',
+    scope: 'selection',
+    openLabel: 'Ask a question…'
+  }, actions);
+
+  buildAskMenu({
+    parentId: 'snn-ask-page',
     title: 'Ask SNN about this page',
-    contexts: ['page']
-  });
+    context: 'page',
+    scope: 'page',
+    openLabel: 'Ask a question…'
+  }, actions);
+
   chrome.contextMenus.create({
     id: 'snn-explain-image',
     title: 'Ask SNN to describe this image',
@@ -315,13 +328,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   // waits for the user to type/confirm their question instead of auto-sending.
   let intent = null;
 
-  // Quick action picked from the "Ask SNN about …" submenu: attach the
-  // selection AND run the action's prompt straight away.
+  // Quick action picked from an "Ask SNN about …" submenu: attach the
+  // relevant context AND run the action's prompt straight away.
   if (typeof info.menuItemId === 'string' && info.menuItemId.startsWith(QA_PREFIX)) {
+    const rest = info.menuItemId.slice(QA_PREFIX.length);
+    const sep = rest.indexOf(':');
+    const scope = rest.slice(0, sep);          // 'selection' | 'page'
+    const prompt = rest.slice(sep + 1);        // prompts may contain ':'
     intent = {
-      type: 'selection',
+      type: scope === 'page' ? 'page' : 'selection',
       selectionText: info.selectionText || '',
-      suggestedPrompt: info.menuItemId.slice(QA_PREFIX.length),
+      suggestedPrompt: prompt,
       autoSend: true
     };
     _openSidePanelForTab(tab);
@@ -336,7 +353,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       // Attach the highlighted text as context; user asks what they want.
       intent = { type: 'selection', selectionText: info.selectionText || '' };
       break;
-    case 'snn-ask-page':
+    case 'snn-ask-page-open':
       // Attach the page as context; user asks what they want about it.
       intent = { type: 'page' };
       break;
