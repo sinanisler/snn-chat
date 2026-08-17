@@ -1053,6 +1053,20 @@ class SNNSidePanel {
           return;
         }
 
+        // ── Failed: the agent already reported it. Do NOT fall through. ──
+        // The loop categorized this error and rendered the card itself.
+        // Retrying it as plain chat costs a second request that fails the
+        // same way (a rejected key or an empty account cannot succeed on
+        // attempt two) and stacks a duplicate card underneath the first.
+        // When it DOES succeed — a transient 429 — the user gets a red
+        // error card followed by a perfectly good answer, which is worse.
+        if (agentResult?.type === 'failed') {
+          D.log('agent run failed — not falling through to plain chat', { code: agentResult.error?.code });
+          this.removeLoadingMsg();
+          this._finishSendMessage();
+          return;
+        }
+
         // Session guard. Stale means "don't draw this into the session the
         // user is looking at now" — NOT "throw the answer away". The reply
         // was requested and paid for, so it is still written to the session
@@ -1094,18 +1108,28 @@ class SNNSidePanel {
           return;
         }
 
-        // agentResult null or type:'chat' without content (e.g. no API key) →
-        // fall through to plain chat so the user gets a proper error message.
+        // agentResult type:'chat' without content (e.g. no API key) → fall
+        // through to plain chat so the user gets a proper error message.
       } catch (agentErr) {
-        // Agent loop threw an unhandled error — surfaced via onError callback.
-        // Fall through to plain chat as last resort so the user isn't left hanging.
-        D.warn('Agent loop failed, falling back to plain chat:', agentErr.message);
+        // run() handles its own API failures and returns type:'failed', so
+        // reaching here means the loop itself broke outside that guard —
+        // a real extension bug. Show it rather than papering over it with a
+        // silent second request the user never asked for and still pays for.
+        D.error('Agent loop threw outside its own error handling', { error: agentErr?.message });
+        if (agentErr?.name === 'AbortError') {
+          this._resetLoadingState();
+          return;
+        }
+        if (!this._isStaleTurn(sendRef)) this.showErrorCard(agentErr);
+        this.removeLoadingMsg();
+        this._finishSendMessage();
+        return;
       }
     }
 
     // ── PLAIN CHAT FALLBACK ─────────────────────────────────────
     // Only reached when: agent is unavailable, agent is busy,
-    // multimodal attachments are present, or agent errored out.
+    // multimodal attachments are present, or no API key is set.
     try {
       const settings = await this.getSettings();
       let context = '';

@@ -462,6 +462,14 @@ Be honest. The user will see if you claim to have done something you did not.`
       };
       if (this.onError) this.onError(failData);
       this._transition('FAILED', failData);
+
+      // Same reasoning as _cancelledResult(): falling out of this catch
+      // returned undefined, which sendMessage could not tell apart from
+      // "agent unavailable / no API key". So every failure fell through to
+      // the plain-chat fallback and fired a SECOND billed request for the
+      // same message — which then failed the same way and painted a second
+      // identical error card. A handled failure has to be a value too.
+      return { type: 'failed', error: failData.error };
     } finally {
       // Runs on EVERY exit — success, crash, and every cancellation return.
       // Without this the agent stays busy forever after a single Escape and
