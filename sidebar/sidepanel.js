@@ -2759,6 +2759,57 @@ class SNNSidePanel {
     }
   }
 
+  /**
+   * Flatten a model's name + id into a space-separated haystack so that
+   * separators (`/`, `-`, `_`, `.`) don't hide word boundaries:
+   * "google/gemini-3.5-flash" → "gemini 3 5 flash google gemini 3 5 flash".
+   */
+  _modelSearchHaystack(m) {
+    return `${m.name || ''} ${m.id || ''}`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Multi-word model search. The query is split on whitespace *and* the same
+   * separators as the haystack, and every token must match somewhere — in any
+   * order — so "gemini flash 3.5" finds "google/gemini-3.5-flash".
+   * Returns models ordered by relevance, or null when the query is empty
+   * (meaning: no filtering, caller keeps its own ordering).
+   */
+  _filterModelsByQuery(models, filterText) {
+    const tokens = (filterText || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+    if (!tokens.length) return null;
+
+    const phrase = tokens.join(' ');
+    const scored = [];
+
+    for (const m of models) {
+      const hay = this._modelSearchHaystack(m);
+      const words = hay.split(' ');
+      let score = 0;
+      let matchedAll = true;
+
+      for (const t of tokens) {
+        if (words.includes(t)) score += 10;            // whole-word hit
+        else if (words.some(w => w.startsWith(t))) score += 6;  // word prefix
+        else if (hay.includes(t)) score += 2;          // anywhere
+        else { matchedAll = false; break; }
+      }
+      if (!matchedAll) continue;
+
+      if (hay.includes(phrase)) score += 8;            // tokens appear together
+      if (hay.startsWith(tokens[0])) score += 3;       // leading match
+      score -= Math.min(words.length / 8, 3);          // mild bias to tighter names
+
+      scored.push({ m, score, tie: m.name || m.id || '' });
+    }
+
+    scored.sort((a, b) => b.score - a.score || a.tie.localeCompare(b.tie));
+    return scored.map(s => s.m);
+  }
+
   /** Repaint the quick-switch list from current state. Safe to call anytime. */
   _refreshMqsList() {
     if (!this.els?.mqsList) return;
@@ -2777,21 +2828,17 @@ class SNNSidePanel {
       return;
     }
 
-    const q = (filterText || '').toLowerCase().trim();
-    let filtered = models;
-    if (q) {
-      filtered = models.filter(m =>
-        (m.id || '').toLowerCase().includes(q) ||
-        (m.name || '').toLowerCase().includes(q)
-      );
-    }
+    const ranked = this._filterModelsByQuery(models, filterText);
 
-    // Sort: selected first, then alpha by name
-    filtered = filtered.slice().sort((a, b) => {
-      if (a.id === selectedId) return -1;
-      if (b.id === selectedId) return 1;
-      return (a.name || a.id).localeCompare(b.name || b.id);
-    }).slice(0, 80);
+    // Searching: keep relevance order. Browsing: alpha by name.
+    let filtered = ranked
+      ? ranked.slice()
+      : models.slice().sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+
+    // Selected model always floats to the top when it survived the filter.
+    const selIdx = filtered.findIndex(m => m.id === selectedId);
+    if (selIdx > 0) filtered.unshift(filtered.splice(selIdx, 1)[0]);
+    filtered = filtered.slice(0, 80);
 
     if (!filtered.length) {
       list.innerHTML = '<div class="sp-mqs-option muted">No models match.</div>';
@@ -3485,24 +3532,17 @@ class SNNSidePanel {
       return;
     }
 
-    const q = (filterText || '').toLowerCase();
-    let list = models;
-    if (q) {
-      list = models.filter(m =>
-        (m.id || '').toLowerCase().includes(q) ||
-        (m.name || '').toLowerCase().includes(q)
-      );
-    }
+    const ranked = this._filterModelsByQuery(models, filterText);
 
-    // Prefer popular / free-ish first when no filter, otherwise alpha by name
-    list = list.slice().sort((a, b) => {
-      const av = this._modelHasVision(a) ? 1 : 0;
-      const bv = this._modelHasVision(b) ? 1 : 0;
-      if (q) return (a.name || a.id).localeCompare(b.name || b.id);
-      // mild boost for vision models when browsing
-      if (bv !== av) return bv - av;
-      return (a.name || a.id).localeCompare(b.name || b.id);
-    }).slice(0, 80);
+    // Searching: keep relevance order. Browsing: vision models first, then alpha.
+    let list = ranked
+      ? ranked.slice(0, 80)
+      : models.slice().sort((a, b) => {
+        const av = this._modelHasVision(a) ? 1 : 0;
+        const bv = this._modelHasVision(b) ? 1 : 0;
+        if (bv !== av) return bv - av;
+        return (a.name || a.id).localeCompare(b.name || b.id);
+      }).slice(0, 80);
 
     if (!list.length) {
       dropdown.innerHTML = '<div class="sp-model-option muted">No models match.</div>';
