@@ -415,9 +415,6 @@ class SNNSidePanel {
         if (this.els.settingsOverlay.classList.contains('visible')) this.closeSettings();
         else if (this.els.historyOverlay.classList.contains('visible')) this.closeHistory();
       }
-      if (e.ctrlKey && e.key === 's' && this.els.settingsOverlay.classList.contains('visible')) {
-        e.preventDefault(); this.saveSettings();
-      }
     });
   }
 
