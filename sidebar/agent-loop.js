@@ -45,6 +45,7 @@ class SNNAgentLoop {
     this._attemptCount = 0;
     this._sendTabId = null;
     this._stepResults = [];
+    this._tokenAudit = this._newTokenAudit();
     this._cancelled = false;
     this._cancelReason = null;  // 'user' | 'tab-switch' | null
     this._abortController = null; // for cancelling in-flight LLM fetch
@@ -367,6 +368,8 @@ class SNNAgentLoop {
                 content: typeof sanitizedResult === 'string' ? sanitizedResult : JSON.stringify(sanitizedResult)
               });
             }
+
+            this._recordToolCost(fnName, messages[messages.length - 1], messages);
           }
 
           // Inject deferred screenshot image AFTER all tool results (keeps contiguity)
@@ -474,6 +477,7 @@ Be honest. The user will see if you claim to have done something you did not.`
       // Runs on EVERY exit — success, crash, and every cancellation return.
       // Without this the agent stays busy forever after a single Escape and
       // silently degrades to tool-less chat.
+      this._logTokenAudit();
       this._running = false;
       this._abortController = null;
       this._runRef = null;
@@ -834,13 +838,9 @@ CRITICAL RULES:
       const prompt = json.usage.prompt_tokens || 0;
       // Per-call, not accumulated: a run whose first iteration misses and
       // whose remaining 20 hit is healthy, and only the per-call number shows
-      // that. Without this line the cache is invisible from inside the app.
-      D.log('CACHE', {
-        prompt,
-        cached: cache.cached,
-        written: cache.written,
-        hitRate: prompt ? Math.round((100 * cache.cached) / prompt) + '%' : 'n/a'
-      });
+      // that. Without this the cache — and the per-step cost — is invisible
+      // from inside the app.
+      this._recordCallCost(json.usage, cache);
 
       if (!this.sp.lastTokenUsage || !this.sp.lastTokenUsage.total_tokens) {
         this.sp.lastTokenUsage = {
@@ -1511,6 +1511,7 @@ CRITICAL RULES:
     this._expectNavigation = false;
     this._budgetWarned = false;
     this._compactedMsgs = new WeakSet();
+    this._tokenAudit = this._newTokenAudit();
     // NOTE: _running is deliberately NOT reset here — it is owned by run()'s
     // try/finally, and _reset() is called from inside a live run.
   }
@@ -1543,6 +1544,117 @@ CRITICAL RULES:
       }
     } catch (e) { /* tab might not be accessible */ }
     return rawText;
+  }
+
+  //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  // TOKEN ACCOUNTING  (surfaced only through debug logging)
+  //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+  // An agent run makes one LLM call per iteration and re-sends the WHOLE
+  // conversation every time, so a single 40k-token page read is billed again
+  // on every iteration after it. The billed totals alone never say WHICH tool
+  // caused that — this ledger does, per call and per tool, and dumps a
+  // breakdown when the run ends. Two arrays of small numbers; the cost of
+  // keeping it is nothing next to what it makes visible.
+
+  _newTokenAudit() {
+    return { calls: [], tools: [], prevPrompt: 0, totalTokens: 0, cost: 0 };
+  }
+
+  /**
+   * One LLM call's BILLED usage → ledger + a per-step debug line.
+   *
+   * promptGrowth is the number that matters when tuning an agent: it is how
+   * much bigger the prompt got since the previous iteration, i.e. what the
+   * tool result in between actually cost — billed, not estimated.
+   */
+  _recordCallCost(usage, cache) {
+    const audit = this._tokenAudit || (this._tokenAudit = this._newTokenAudit());
+    const prompt = usage.prompt_tokens || 0;
+    const completion = usage.completion_tokens || 0;
+    const total = usage.total_tokens || (prompt + completion);
+    const growth = audit.calls.length ? prompt - audit.prevPrompt : prompt;
+    const cost = this.sp._calcMessageCost?.({ prompt_tokens: prompt, completion_tokens: completion });
+
+    audit.prevPrompt = prompt;
+    audit.totalTokens += total;
+    if (cost) audit.cost += cost;
+    audit.calls.push({
+      call: audit.calls.length + 1,
+      prompt, completion, total, growth,
+      cached: cache.cached,
+      cost: cost || 0
+    });
+
+    D.log('TOKENS', {
+      call: audit.calls.length,
+      prompt,
+      completion,
+      total,
+      promptGrowth: (growth >= 0 ? '+' : '') + growth,
+      cached: cache.cached,
+      written: cache.written,
+      hitRate: prompt ? Math.round((100 * cache.cached) / prompt) + '%' : 'n/a',
+      runTotal: audit.totalTokens,
+      runCost: this.sp._formatCost?.(audit.cost) || 'n/a'
+    });
+  }
+
+  /**
+   * Size of one tool result the moment it lands, plus what the conversation
+   * now weighs in total.
+   *
+   * Estimated (chars ÷ 4), not billed — the billed figure for this same
+   * result arrives as promptGrowth on the NEXT call's TOKENS line. Both earn
+   * their place: this one is exact about WHICH tool produced the payload and
+   * appears immediately after it, before another LLM call has to happen.
+   */
+  _recordToolCost(fnName, toolMsg, messages) {
+    const audit = this._tokenAudit;
+    if (!audit || !toolMsg) return;
+    const chars = this._msgChars(toolMsg);
+    const estTokens = Math.round(chars / this.CHARS_PER_TOKEN);
+    audit.tools.push({ tool: fnName, chars, estTokens });
+    D.log('TOOL RESULT SIZE', {
+      tool: fnName,
+      chars,
+      estTokens,
+      ctxEstTokens: Math.round(this._estimateContextChars(messages) / this.CHARS_PER_TOKEN)
+    });
+  }
+
+  /** End-of-run breakdown: where the tokens went, heaviest tool first. */
+  _logTokenAudit() {
+    const audit = this._tokenAudit;
+    if (!D.enabled || !audit || !audit.calls.length) return;
+
+    const billed = this.sp.lastTokenUsage || {};
+    D.log('▣ TOKEN AUDIT', {
+      llmCalls: audit.calls.length,
+      prompt: billed.prompt_tokens || 0,
+      completion: billed.completion_tokens || 0,
+      total: billed.total_tokens || 0,
+      cached: billed.cached_tokens || 0,
+      hitRate: billed.prompt_tokens
+        ? Math.round((100 * (billed.cached_tokens || 0)) / billed.prompt_tokens) + '%'
+        : 'n/a',
+      toolResults: audit.tools.length,
+      cost: this.sp._formatCost?.(audit.cost) || 'n/a'
+    });
+
+    // Per tool, so a run that read the same 40k page five times is obvious.
+    const byTool = new Map();
+    for (const r of audit.tools) {
+      const e = byTool.get(r.tool) || { tool: r.tool, results: 0, chars: 0, estTokens: 0 };
+      e.results++;
+      e.chars += r.chars;
+      e.estTokens += r.estTokens;
+      byTool.set(r.tool, e);
+    }
+    const rows = [...byTool.values()].sort((a, b) => b.estTokens - a.estTokens);
+    if (console.table) {
+      if (rows.length) console.table(rows);
+      console.table(audit.calls);
+    }
   }
 
   /**
