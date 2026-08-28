@@ -266,7 +266,13 @@ class SNNAgentLoop {
           ? context.detail.substring(0, limit) + '\n\n[... truncated to ' + limit + ' chars ...]'
           : context.detail;
         const prefix = '[PAGE CONTENT — ALREADY PROVIDED. DO NOT use any tools to re-read it — answer directly. Answer directly from this content.]';
-        finalUserContent = `${prefix}\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.summary || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}\n\n─────────\n\n${userMessage}`;
+        finalUserContent = `${prefix}\n\nTitle: ${context.title || 'Unknown'}\nURL: ${context.url || ''}\nWord count: ${context.wordCount || 0}\n\nContent:\n${detail}\n\n─────────\n\n${userMessage}`;
+
+        // This exact text is now in the prompt. Remember it so a snn_readPage
+        // on the same unchanged page returns a stub instead of a second copy
+        // — the instruction above asks the model not to re-read, but a prompt
+        // is a request, not a mechanism, and the model re-read anyway.
+        this._rememberPageText(context.url, context.detail);
       }
 
       if (context?.type === 'selection' && context?.detail) {
@@ -288,6 +294,10 @@ class SNNAgentLoop {
 
         // No-op unless the conversation genuinely exceeds this model's window.
         this._fitContextToBudget(messages, settings, iteration);
+
+        // Order matters: the budget check may hand breakpoints back, so claim
+        // the new one after it, never before.
+        this._slideCacheBreakpoint(messages, modelId);
 
         const response = await this._callLLMWithTools(messages, tools, settings);
         if (this._cancelled) return this._cancelledResult();
@@ -533,7 +543,7 @@ Be honest. The user will see if you claim to have done something you did not.`
       { name: 'snn_navigate', desc: 'Navigate the CURRENT tab to a URL and wait for the page to fully load. After navigating, you can read the page content with snn_readPage, interact with elements (click, type, scroll), or navigate to another page. Use this for ALL web visits — everything happens in ONE tab like a human browsing. For research: navigate to a search engine → snn_type your query → snn_click search → snn_wait → snn_readPage → then navigate to result links.', params: {
         url: { type: 'string', desc: 'Full URL to navigate to (e.g., "https://google.com/search?q=..."). If you provide just link text, the agent will scan page links to find a match.' }
       }, required: ['url'] },
-      { name: 'snn_readPage', desc: 'Read the full text content of the CURRENT page (title, URL, word count, and all extracted text). Use this after snn_navigate to read what the page says. Also use it after clicking a search result or link to read the destination page. The content is returned as plain text — analyze it to find information, links, or decide your next navigation.', params: {}, required: [] },
+      { name: 'snn_readPage', desc: 'Read the full text content of the CURRENT page (title, URL, word count, and all extracted text). Use this after snn_navigate to read what the page says. Also use it after clicking a search result or link to read the destination page. The content is returned as plain text — analyze it to find information, links, or decide your next navigation. Call it ONCE per page: if the text is already in this conversation the result comes back as {"unchanged": true} instead of a second copy, which means scroll back and read the copy you were already given — calling again will not produce new text unless the page itself changed.', params: {}, required: [] },
       { name: 'snn_goBack', desc: 'Go back to the previous page (browser back button). Use this after reading a page to return to search results or the previous page.', params: {}, required: [] },
       { name: 'snn_reload', desc: 'Reload/refresh the current page', params: {}, required: [] },
 
@@ -1511,6 +1521,11 @@ CRITICAL RULES:
     this._expectNavigation = false;
     this._budgetWarned = false;
     this._compactedMsgs = new WeakSet();
+    // Both are per-run: page text is only "already in context" for the
+    // conversation that put it there, and a breakpoint refers to a message
+    // object in that run's array.
+    this._pageTextSeen = new Map();
+    this._slidingBps = [];
     this._tokenAudit = this._newTokenAudit();
     // NOTE: _running is deliberately NOT reset here — it is owned by run()'s
     // try/finally, and _reset() is called from inside a live run.
@@ -1723,10 +1738,73 @@ CRITICAL RULES:
    * the array orphans its tool_call_id and providers reject the request — so
    * only the CONTENT is replaced, never the message itself.
    */
+  /**
+   * Walk the cache breakpoint forward with the tool loop.
+   *
+   * The two static breakpoints (system prompt, end of settled history) sit
+   * ABOVE every tool result, so the whole growing tail was re-billed uncached
+   * on each iteration. Tool results never leave the array, which makes the
+   * run cost quadratic in what the tools returned: five page reads over a
+   * dozen iterations bill the same text a dozen times.
+   *
+   * Marking the newest tool result moves the cacheable prefix down to include
+   * everything the loop has accumulated so far. Two marks are kept, not one:
+   * the older one is the prefix that HITS on this call, while the newer is
+   * being written for the next. Anthropic allows four and the two static ones
+   * take the rest, so the oldest is unwrapped as a third arrives.
+   *
+   * Restricted to Anthropic: OpenRouter maps `role:'tool'` onto tool_result
+   * blocks there and honours cache_control on them. Providers on the strict
+   * OpenAI schema want a plain string for a tool message, and Gemini caches
+   * implicitly anyway, so there is nothing to gain by risking the shape.
+   */
+  _slideCacheBreakpoint(messages, modelId) {
+    if (!/anthropic|claude/i.test(modelId || '')) return;
+
+    const bps = this._slidingBps || (this._slidingBps = []);
+
+    let target = null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'tool') { target = messages[i]; break; }
+    }
+    if (!target || typeof target.content !== 'string') return;
+    if (bps.includes(target)) return; // already the active breakpoint
+
+    // Below the provider's minimum the mark is ignored but still counts
+    // against the cap of four, so only spend one on a prefix big enough.
+    const prefixChars = this._estimateContextChars(messages);
+    if (prefixChars < this.sp._cacheMinChars(modelId)) return;
+
+    target.content = [{ type: 'text', text: target.content, cache_control: { type: 'ephemeral' } }];
+    bps.push(target);
+
+    while (bps.length > 2) this._unwrapBreakpoint(bps.shift());
+
+    D.log('CACHE BREAKPOINT slid to newest tool result', {
+      prefixChars, activeBreakpoints: bps.length + 2
+    });
+  }
+
+  /**
+   * Undo _slideCacheBreakpoint on one message, restoring the plain string.
+   * Only ever called on messages this class wrapped — a screenshot's
+   * image_url blocks must survive untouched.
+   */
+  _unwrapBreakpoint(msg) {
+    if (!msg || !Array.isArray(msg.content)) return;
+    msg.content = msg.content.map(b => (b && b.text) || '').join('');
+  }
+
   _fitContextToBudget(messages, settings, iteration) {
     const budget = this._contextBudgetChars(settings);
     let size = this._estimateContextChars(messages);
     if (size <= budget) return; // The common case — nothing is touched.
+
+    // Compaction below only rewrites string content. Give back any tool
+    // message currently holding a breakpoint so it can be trimmed like the
+    // rest — at this point fitting in the window beats a cache hit.
+    for (const m of (this._slidingBps || [])) this._unwrapBreakpoint(m);
+    this._slidingBps = [];
 
     if (!this._compactedMsgs) this._compactedMsgs = new WeakSet();
     D.warn('CONTEXT OVER BUDGET — trimming oldest tool results', { size, budget, iteration });
@@ -1769,6 +1847,54 @@ CRITICAL RULES:
   }
 
   /**
+   * Identity of a page for de-dupe purposes: the URL without its hash.
+   *
+   * A fragment scrolls the page, it does not change the text, so #section-3
+   * must not read as a different document and buy a second full copy.
+   */
+  _pageKey(url) {
+    if (!url) return '';
+    try { const u = new URL(url); u.hash = ''; return u.href; }
+    catch (e) { return String(url).split('#')[0]; }
+  }
+
+  /**
+   * Cheap content fingerprint (FNV-1a over the text).
+   *
+   * Compared instead of the text itself so an unchanged 60k-char page costs
+   * one integer to recognise. Length is mixed into the result, so a
+   * same-hash-different-length collision cannot pass.
+   */
+  _contentSignature(text) {
+    const s = String(text || '');
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return s.length + ':' + h.toString(36);
+  }
+
+  /** Record page text the model has already been shown, keyed by URL. */
+  _rememberPageText(url, text) {
+    if (!text) return;
+    if (!this._pageTextSeen) this._pageTextSeen = new Map();
+    this._pageTextSeen.set(this._pageKey(url), this._contentSignature(text));
+  }
+
+  /**
+   * Has this exact page text already been put in front of the model?
+   *
+   * True only when the URL and the full text both match — so a re-read after
+   * the page actually changed (a search that loaded more results, an SPA view
+   * swap) still returns the new text, which is the whole point of re-reading.
+   */
+  _pageTextAlreadySeen(url, text) {
+    if (!this._pageTextSeen || !text) return false;
+    return this._pageTextSeen.get(this._pageKey(url)) === this._contentSignature(text);
+  }
+
+  /**
    * Strip large payloads (base64 images, etc.) from tool results before
    * sending them to the LLM. The LLM can't process raw image data —
    * it just wastes tokens and causes timeouts.
@@ -1777,6 +1903,28 @@ CRITICAL RULES:
     if (!result || typeof result === 'string') return result;
 
     const sanitized = { ...result };
+
+    // ── Page text the model already has → send a pointer, not a second copy ──
+    // Two ways the same text used to arrive twice: the page context injected
+    // into the opening user turn and then re-read by snn_readPage, and the
+    // model calling snn_readPage twice on one page. Both cost a full copy at
+    // the time AND on every later iteration, since tool results never leave
+    // the array. Measured on real pages, one copy runs 1k-15k tokens.
+    if (fnName === 'snn_readPage' && sanitized.content) {
+      if (this._pageTextAlreadySeen(sanitized.url, sanitized.content)) {
+        D.log('READPAGE DEDUPE — identical text already in context', {
+          url: sanitized.url, chars: sanitized.content.length
+        });
+        return {
+          url: sanitized.url,
+          title: sanitized.title,
+          wordCount: sanitized.wordCount,
+          unchanged: true,
+          content: '[Unchanged — this page\'s full text is already in the conversation above. Read it from there; it has not been repeated here.]'
+        };
+      }
+      this._rememberPageText(sanitized.url, sanitized.content);
+    }
 
     // Strip base64 screenshot data
     if (sanitized.screenshot && typeof sanitized.screenshot === 'string' && sanitized.screenshot.startsWith('data:')) {

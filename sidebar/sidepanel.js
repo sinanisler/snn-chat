@@ -676,6 +676,10 @@ class SNNSidePanel {
                  (this.pageContext.wordCount || 0).toLocaleString() + ' words',
         detail: this.pageContext.content,
         title: this.pageContext.title,
+        // The agent loop keys its readPage de-dupe on this, and prints it to
+        // the model. Without it the prompt's "URL:" line showed `summary`,
+        // i.e. "Some Title · 1,234 words" — labelled as a URL.
+        url: this.pageContext.url,
         wordCount: this.pageContext.wordCount
       };
     } else if (this.pageContext?.content && this._contextConsumedInSession) {
