@@ -168,6 +168,9 @@ class SNNSidePanel {
     // call, i.e. roughly what the next request has to carry. Deliberately not
     // accumulated — an agent run makes many calls over the same context.
     this._contextTokens = 0;
+    // Prompt/completion/cache split of the most recent LLM call, kept for the
+    // context-ring tooltip. Null until a call reports usage.
+    this._lastCallUsage = null;
     // Tokens/cost already folded into the running totals by live updates
     // during the current turn, so addTokenInfo doesn't count them twice.
     this._liveCountedTokens = 0;
@@ -2063,6 +2066,12 @@ class SNNSidePanel {
         // No live tracking ran (e.g. restoring a saved session) — this message
         // is the best available reading of current context occupancy.
         this._contextTokens = total;
+        this._lastCallUsage = {
+          prompt: tokenUsage.prompt_tokens || 0,
+          completion: tokenUsage.completion_tokens || 0,
+          cached: tokenUsage.cached_tokens || 0,
+          written: tokenUsage.cache_write_tokens || 0
+        };
       }
       this._resetLiveUsage();
       this.updateTokenCounter();
@@ -2505,6 +2514,7 @@ class SNNSidePanel {
     } else {
       this.els.tokenCounter.style.display = 'none';
       this._contextTokens = 0;   // counter cleared → session reset
+      this._lastCallUsage = null;
     }
     this.updateContextRing();
   }
@@ -2544,12 +2554,52 @@ class SNNSidePanel {
     const pctText = pct >= 0.995 ? '100' : (pct * 100).toFixed(pct < 0.1 ? 1 : 0);
     const remaining = Math.max(0, limit - used);
     if (this.els.contextRingTip) {
-      this.els.contextRingTip.textContent =
-        `Context: ${pctText}% used\n` +
-        `${used.toLocaleString()} / ${limit.toLocaleString()} tokens\n` +
-        `${remaining.toLocaleString()} left`;
+      this._renderContextTip(pctText, used, limit, remaining);
     }
+    // Screen readers get the one-line summary, not the whole breakdown.
     ring.setAttribute('aria-label', `Context window ${pctText}% used, ${remaining.toLocaleString()} tokens left`);
+  }
+
+  /**
+   * Fill the ring tooltip: what the window holds, what the last call cost in
+   * tokens, and the session running total.
+   *
+   * The context figures are the last *response's* reading, so anything typed
+   * since (the pending message, fresh attachments) is not in them yet - hence
+   * the "as of last call" note. Cached tokens are shown under the call, not the
+   * context: a cache hit means the provider skipped recomputing that prefix, it
+   * still occupies the window in full, so it never buys back headroom.
+   */
+  _renderContextTip(pctText, used, limit, remaining) {
+    const n = (v) => v.toLocaleString();
+    const group = (label, note, rows) => {
+      const lines = rows.filter(Boolean).map((r) => `<div class="sp-ctx-tip-row">${r}</div>`).join('');
+      if (!lines) return '';
+      const noteEl = note ? ` <span class="sp-ctx-tip-note">${note}</span>` : '';
+      return `<div class="sp-ctx-tip-group"><div class="sp-ctx-tip-label">${label}${noteEl}</div>${lines}</div>`;
+    };
+
+    const call = this._lastCallUsage;
+    let cachedRow = '';
+    if (call && call.prompt > 0 && call.cached > 0) {
+      const share = Math.round((100 * call.cached) / call.prompt);
+      cachedRow = `Cached ${n(call.cached)} <span class="sp-ctx-tip-note">(${share}% of prompt)</span>`;
+    }
+
+    let sessionRow = `${n(this.totalTokensUsed)} tokens`;
+    if (this.totalCost > 0) sessionRow += ` · ${this._formatCost(this.totalCost)}`;
+
+    this.els.contextRingTip.innerHTML =
+      group('Context', 'as of last call', [
+        `${pctText}% used · ${n(used)} / ${n(limit)}`,
+        `${n(remaining)} left`
+      ]) +
+      (call ? group('Last call', '', [
+        `Prompt ${n(call.prompt)} · Output ${n(call.completion)}`,
+        cachedRow,
+        call.written > 0 ? `Cache writes ${n(call.written)}` : ''
+      ]) : '') +
+      group('Session', '', [sessionRow]);
   }
 
   /**
@@ -2577,6 +2627,8 @@ class SNNSidePanel {
     }
     // Latest call only: the context is reused across agent iterations, not summed.
     this._contextTokens = total;
+    const cache = this._readCacheUsage(usage);
+    this._lastCallUsage = { prompt, completion, cached: cache.cached, written: cache.written };
     this.updateTokenCounter();
   }
 

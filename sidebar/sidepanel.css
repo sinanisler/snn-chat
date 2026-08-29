@@ -800,15 +800,16 @@ body.theme-dark #welcome-screen .sp-model-tag {
   bottom: calc(100% + 8px);
   right: 0;
   z-index: 40;
-  min-width: 150px;
-  padding: 6px 9px;
+  min-width: 200px;
+  max-width: min(260px, calc(100vw - 24px));
+  padding: 9px 12px;
   border-radius: 8px;
   background: var(--sp-bg);
   border: 1px solid var(--sp-border);
   color: var(--sp-text);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre;
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: normal;
   text-align: left;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   opacity: 0;
@@ -816,6 +817,30 @@ body.theme-dark #welcome-screen .sp-model-tag {
   transform: translateY(3px);
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
+/* Groups: a small dim label over full-size number rows, so the figures lead. */
+.sp-ctx-tip-group + .sp-ctx-tip-group {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--sp-border);
+}
+.sp-ctx-tip-label {
+  font-size: 11px;
+  color: var(--sp-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.sp-ctx-tip-row {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.sp-ctx-tip-note {
+  font-size: 11px;
+  color: var(--sp-text-secondary);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .sp-ctx-ring:hover .sp-ctx-tip,
 .sp-ctx-ring:focus-visible .sp-ctx-tip {
   opacity: 1;
