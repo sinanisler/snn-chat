@@ -1458,7 +1458,8 @@ class SNNSidePanel {
       completion_tokens: data.usage?.completion_tokens || 0,
       total_tokens: data.usage?.total_tokens || 0,
       cached_tokens: cache.cached,
-      cache_write_tokens: cache.written
+      cache_write_tokens: cache.written,
+      cost: this._reportedCost(data.usage)
     };
     this._recordLiveUsage(data.usage);
     D.log('callAPI OK', { tokens: this.lastTokenUsage, cacheHit: this._cacheHitRate(this.lastTokenUsage), contentLen: (data.choices?.[0]?.message?.content || '').length });
@@ -1561,7 +1562,8 @@ class SNNSidePanel {
               completion_tokens: parsed.usage.completion_tokens || 0,
               total_tokens: parsed.usage.total_tokens || 0,
               cached_tokens: cache.cached,
-              cache_write_tokens: cache.written
+              cache_write_tokens: cache.written,
+              cost: this._reportedCost(parsed.usage)
             };
             this._recordLiveUsage(parsed.usage);
             D.log('stream usage', { tokens: this.lastTokenUsage, cacheHit: this._cacheHitRate(this.lastTokenUsage) });
@@ -2005,7 +2007,27 @@ class SNNSidePanel {
     this._ttsActiveUtterance = null;
   }
 
+  /**
+   * Cost the provider actually charged for one call, when it says so.
+   *
+   * OpenRouter reports `usage.cost` in credits. It is the only figure that
+   * accounts for cache-read discounts: two calls of near-identical token counts
+   * can differ 4x on a cache hit, which per-token math cannot see. Returns null
+   * for providers that omit it (local LLMs), leaving the flat estimate in play.
+   */
+  _reportedCost(usage) {
+    const c = usage?.cost;
+    return typeof c === 'number' && Number.isFinite(c) && c >= 0 ? c : null;
+  }
+
+  /**
+   * Cost of one call: the provider's own number when available, otherwise a
+   * per-token estimate from the model's list pricing. The estimate ignores
+   * cache discounts and so overstates cached calls — it is a fallback only.
+   */
   _calcMessageCost(tokenUsage) {
+    const reported = this._reportedCost(tokenUsage);
+    if (reported !== null) return reported;
     const p = this._selectedModelInfo?.pricing;
     if (!p || !tokenUsage) return null;
     const promptPrice = parseFloat(p.prompt);
@@ -2052,7 +2074,9 @@ class SNNSidePanel {
       }
       if (cost !== null) {
         text += ` · ${this._formatCost(cost)}`;
-        title += `\nCost: ${this._formatCost(cost)}`;
+        // Flag the fallback: a per-token estimate can't see cache discounts.
+        const estimated = this._reportedCost(tokenUsage) === null;
+        title += `\nCost: ${this._formatCost(cost)}${estimated ? ' (estimated)' : ''}`;
       }
       info.textContent = text;
       info.title = title;
@@ -2617,7 +2641,11 @@ class SNNSidePanel {
     const total = prompt + completion;
     if (total <= 0) return;
 
-    const cost = this._calcMessageCost({ prompt_tokens: prompt, completion_tokens: completion });
+    const cost = this._calcMessageCost({
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      cost: this._reportedCost(usage)
+    });
 
     this.totalTokensUsed += total;
     this._liveCountedTokens += total;
