@@ -1078,15 +1078,6 @@ class SNNSidePanel {
         const stale = this._isStaleTurn(sendRef);
 
         if (agentResult && agentResult.type === 'action') {
-          // ── Handle capability queries ────────────────────
-          if (agentResult.subtype === 'capabilities' && agentResult.results?.length > 0) {
-            const capData = agentResult.results[0].result;
-            if (!stale) this._renderCapabilitiesInChat(capData);
-            sendRef.messages.push(
-              { role: 'assistant', content: this._formatCapabilitiesForHistory(capData) }
-            );
-            await this.saveChatHistory(sendRef);
-          }
           // ── Render LLM's synthesized response if present ──
           if (agentResult.llmResponse) {
             if (!stale) await this.streamRenderMessage(agentResult.llmResponse);
@@ -5997,50 +5988,6 @@ class SNNSidePanel {
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  /**
-   * Render the SNN capabilities list in the chat as a rich message.
-   */
-  _renderCapabilitiesInChat(capData) {
-    if (!capData || !capData.pageActions) return;
-
-    const div = document.createElement('div');
-    div.className = 'snn-result-card';
-
-    let actionsHtml = '<div class="snn-capabilities-grid">';
-    const allActions = [...(capData.pageActions || []), ...(capData.browserActions || [])];
-    for (const a of allActions.slice(0, 12)) {
-      actionsHtml += `<div class="snn-capability-chip"><strong>${a.action}</strong><span>${a.description}</span></div>`;
-    }
-    actionsHtml += `<div class="snn-capability-chip snn-capability-more">+${allActions.length - 12} more actions available</div>`;
-    actionsHtml += '</div>';
-
-    if (capData.selectorFormats) {
-      actionsHtml += '<div class="snn-capabilities-selectors"><strong>Selector formats:</strong> ';
-      actionsHtml += capData.selectorFormats.map(s => `<code>${this.escapeHtml(s)}</code>`).join(' · ');
-      actionsHtml += '</div>';
-    }
-
-    div.innerHTML = `
-      <div class="snn-result-card-header">
-        <span class="snn-result-card-icon"><i class="fas fa-robot"></i></span>
-        <span class="snn-result-card-title">${this.escapeHtml(capData.description || 'Here\'s what I can do:')}</span>
-      </div>
-      <div class="snn-result-card-body">
-        ${actionsHtml}
-        <p style="margin-top:12px;font-size:14px;">Try saying: <em>"click the login button"</em>, <em>"scroll down"</em>, <em>"highlight all links"</em>, <em>"fill this form"</em>, or <em>"screenshot this page"</em>.</p>
-      </div>
-    `;
-
-    this.els.chatMessages.appendChild(div);
-    this.smartScrollToBottom();
-  }
-
-  _formatCapabilitiesForHistory(capData) {
-    if (!capData) return 'SNN Chat capabilities listed.';
-    const count = (capData.pageActions?.length || 0) + (capData.browserActions?.length || 0);
-    return `[SNN Capabilities — ${count} actions available]\n\n${capData.description || ''}\n\nTry: "click the login button", "scroll down", "highlight all links", "fill this form", or "screenshot this page".`;
-  }
-
   _initAgentLoop() {
     if (typeof SNNAgentLoop === 'undefined' || typeof SNNAgentUI === 'undefined') {
       D.warn('Agent loop classes not loaded.');
@@ -6101,15 +6048,6 @@ class SNNSidePanel {
         // summarizes the actions in proper Markdown.  Don't push a
         // redundant [Agent Actions] placeholder — it fragments the
         // collapsible group and creates duplicate content on restore.
-      }
-      if (resultData.type === 'capabilities') {
-        const ref = this.sessionRef();
-        ref.messages.push(
-          { role: 'assistant', content: this._formatCapabilitiesForHistory(resultData.data), tokenUsage: null }
-        );
-        this.saveChatHistory(ref).catch((err) => {
-          D.error('capabilities save failed', err?.message || String(err));
-        });
       }
     };
 

@@ -37,11 +37,6 @@ var D = SNN_D;
 
 class SNNPageActor {
   constructor() {
-    this._highlights = [];
-    this._pickerActive = false;
-    this._pickerResolve = null;
-    this._pickerHandlers = null;
-    this._monitors = new Map();
     this._setupListener();
     D.log('INIT', { url: location.href, readyState: document.readyState });
   }
@@ -66,30 +61,10 @@ class SNNPageActor {
         case 'agent:click':            result = await this.click(payload.selector, payload.options); break;
         case 'agent:type':             result = await this.type(payload.selector, payload.text, payload.options); break;
         case 'agent:scroll':           result = await this.scroll(payload.direction, payload.amount, payload.options); break;
-        case 'agent:scrollToElement':  result = await this.scrollToElement(payload.selector, payload.options); break;
-        case 'agent:highlight':        result = await this.highlight(payload.selector, payload.options); break;
-        case 'agent:clearHighlights':  this.clearHighlights(); result = { cleared: true }; break;
-        case 'agent:findElements':     result = this.findElements(payload.selector, payload.options); break;
-        case 'agent:getPageInfo':      result = this.getPageInfo(); break;
-        case 'agent:startPicker':      result = await this.startPicker(payload.options); break;
-        case 'agent:stopPicker':       this.stopPicker(); result = { stopped: true }; break;
-        case 'agent:fillForm':         result = await this.fillForm(payload.fields, payload.options); break;
-        case 'agent:selectDropdown':   result = await this.selectDropdown(payload.selector, payload.value, payload.options); break;
-        case 'agent:checkToggle':      result = await this.checkToggle(payload.selector, payload.checked, payload.options); break;
         case 'agent:pressKey':         result = this.pressKey(payload.key, payload.selector, payload.options); break;
-        case 'agent:hover':            result = await this.hoverElement(payload.selector, payload.options); break;
         case 'agent:waitForElement':   result = await this.waitForElement(payload.selector, payload.timeout); break;
         case 'agent:wait':             result = await this.wait(payload.ms || 1000); break;
-        case 'agent:extractTable':     result = this.extractTable(payload.selector, payload.options); break;
-        case 'agent:getElementText':   result = this.getElementText(payload.selector); break;
-        case 'agent:page_script':       result = await this.page_script(payload.code, payload.options); break;
-        case 'agent:getClipboard':     result = { text: await this.getClipboard() }; break;
-        case 'agent:copyToClipboard':  await this.copyToClipboard(payload.text); result = { copied: true }; break;
-        case 'agent:getViewportInfo':  result = this.getViewportInfo(); break;
         case 'agent:mapPage':          result = this.mapPage(); break;
-        case 'agent:startMonitoring':  result = this.startMonitoring(payload.selector, payload.options); break;
-        case 'agent:stopMonitoring':   this.stopMonitoring(); result = { stopped: true }; break;
-        case 'agent:scrollAndAct':     result = await this.scrollAndAct(payload.selector, payload.options); break;
         default:
           return this._respond(sendResponse, false, { code: 'UNKNOWN_ACTION', message: `Unknown action: "${action}"`, retryable: false, suggestion: 'Check available actions.' }, stepId);
       }
@@ -432,34 +407,6 @@ class SNNPageActor {
     return `<${tag}${id}${cls}> "${text}"`;
   }
 
-  _buildSelector(el) {
-    if (el.id) return `#${CSS.escape(el.id)}`;
-    const parts = []; let current = el;
-    while (current && current !== document.body && current !== document.documentElement && parts.length < 4) {
-      let part = current.tagName.toLowerCase();
-      if (current.id) { parts.unshift(`#${CSS.escape(current.id)}`); break; }
-      if (typeof current.className === 'string') {
-        const cls = current.className.trim().split(/\s+/).filter(c => c && !c.startsWith('snn-')).slice(0, 2);
-        for (const c of cls) part += '.' + CSS.escape(c);
-      }
-      if (current.parentElement) {
-        const same = Array.from(current.parentElement.children).filter(c => c.tagName === current.tagName);
-        if (same.length > 1) part += `:nth-child(${same.indexOf(current) + 1})`;
-      }
-      parts.unshift(part);
-      current = current.parentElement;
-    }
-    return parts.join(' > ');
-  }
-
-  _getKeyAttributes(el) {
-    const a = {};
-    for (const k of ['aria-label','title','role','name','data-testid','data-id','href','src','alt','type','placeholder','value']) {
-      const v = el.getAttribute(k); if (v) a[k] = v;
-    }
-    return a;
-  }
-
   _snapshotPageState() {
     return {
       url: location.href, title: document.title, domain: location.hostname,
@@ -562,6 +509,31 @@ class SNNPageActor {
     const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
     D.log('type resolved element', { tag: el.tagName, isContentEditable, type: el.type, placeholder: el.placeholder, name: el.name, id: el.id });
     await this._ensureInteractable(el, options);
+
+    // ── <select> — the one control a click cannot operate ──────────
+    // The option popup a native <select> opens is drawn by the OS, not the
+    // DOM, so there is nothing for a follow-up click to target and nothing
+    // for mapPage to see. Setting the value here is the only way in.
+    if (el.tagName === 'SELECT') {
+      await this._setSelectValue(el, String(text));
+      await this.wait(150);
+      return { action: 'type', element: this._describeElement(el), selector, contentType: 'select', selectedValue: el.value };
+    }
+
+    // ── Checkbox / radio — "type" the desired state ────────────────
+    // Click toggles, which means the model has to know the current state to
+    // reach a target state. Setting it directly is idempotent: asking for
+    // "true" twice leaves it checked, where two clicks would undo the first.
+    if (el.type === 'checkbox' || el.type === 'radio') {
+      const want = text === true || /^(true|yes|on|checked|1)$/i.test(String(text));
+      if (el.checked !== want) {
+        el.click();
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await this.wait(150);
+      return { action: 'type', element: this._describeElement(el), selector, contentType: el.type, checked: el.checked };
+    }
+
     el.focus();
     const str = String(text);
 
@@ -652,195 +624,6 @@ class SNNPageActor {
     return { action: 'scroll', direction, amount, scrollY: window.scrollY, maxScroll: document.documentElement.scrollHeight - window.innerHeight };
   }
 
-  async scrollToElement(selector, options = {}) {
-    const el = this._resolveElement(selector, { ...options, allowHidden: true });
-    el.scrollIntoView({ behavior: options.smooth ? 'smooth' : 'instant', block: 'center' });
-    await this.wait(300);
-    return { action: 'scrollToElement', element: this._describeElement(el), selector, scrollY: window.scrollY };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Highlight
-  // ═══════════════════════════════════════════════════════════════
-  async highlight(selector, options = {}) {
-    const el = this._resolveElement(selector, { ...options, allowHidden: true });
-    const color = options.color || '#0556c7';
-    const r = el.getBoundingClientRect();
-
-    const overlay = document.createElement('div');
-    overlay.dataset.snnHighlight = 'true';
-    overlay.style.cssText = `position:fixed;pointer-events:none;z-index:2147483646;left:${r.left+window.scrollX}px;top:${r.top+window.scrollY}px;width:${r.width}px;height:${r.height}px;border:3px solid ${color};border-radius:4px;background:${color}22;box-shadow:0 0 15px ${color}44;animation:snn-pulse 1.5s ease-in-out infinite;`;
-
-    const label = document.createElement('div');
-    label.style.cssText = `position:fixed;pointer-events:none;z-index:2147483647;left:${r.left+window.scrollX}px;top:${r.top+window.scrollY-28}px;background:${color};color:#fff;padding:3px 8px;border-radius:4px;font-size:12px;font-family:-apple-system,sans-serif;font-weight:600;white-space:nowrap;`;
-    label.textContent = options.label || el.tagName.toLowerCase() + (el.id ? '#' + el.id : '');
-
-    if (!document.getElementById('snn-highlight-css')) {
-      const s = document.createElement('style'); s.id = 'snn-highlight-css';
-      s.textContent = `@keyframes snn-pulse{0%,100%{box-shadow:0 0 10px ${color}44;}50%{box-shadow:0 0 25px ${color}88;}}`;
-      document.head.appendChild(s);
-    }
-
-    document.body.appendChild(overlay);
-    document.body.appendChild(label);
-
-    const up = () => {
-      const nr = el.getBoundingClientRect();
-      overlay.style.cssText = `position:fixed;pointer-events:none;z-index:2147483646;left:${nr.left+window.scrollX}px;top:${nr.top+window.scrollY}px;width:${nr.width}px;height:${nr.height}px;border:3px solid ${color};border-radius:4px;background:${color}22;box-shadow:0 0 15px ${color}44;animation:snn-pulse 1.5s ease-in-out infinite;`;
-      label.style.left = (nr.left + window.scrollX) + 'px';
-      label.style.top = (nr.top + window.scrollY - 28) + 'px';
-    };
-    const onScroll = () => requestAnimationFrame(up);
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onScroll, { passive: true });
-
-    this._highlights.push({ overlay, label, _cleanup: () => { window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); } });
-    return { action: 'highlight', element: this._describeElement(el), selector, count: this._highlights.length };
-  }
-
-  clearHighlights() {
-    for (const h of this._highlights) { h.overlay.remove(); h.label.remove(); if (h._cleanup) h._cleanup(); }
-    this._highlights = [];
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Find Elements
-  // ═══════════════════════════════════════════════════════════════
-  findElements(selector, options = {}) {
-    const limit = options.limit || 50;
-    const all = document.querySelectorAll(selector);
-    const results = [];
-    for (let i = 0; i < Math.min(all.length, limit); i++) {
-      const el = all[i], r = el.getBoundingClientRect();
-      results.push({
-        index: i + 1, tag: el.tagName.toLowerCase(), id: el.id || null,
-        className: typeof el.className === 'string' ? el.className.split(' ').slice(0, 3).join(' ') : null,
-        text: (el.textContent || '').trim().substring(0, 100),
-        href: el.href || null, type: el.type || null, placeholder: el.placeholder || null,
-        value: el.value || null, visible: el.offsetParent !== null,
-        rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
-        attributes: this._getKeyAttributes(el)
-      });
-    }
-    return { action: 'findElements', selector, total: all.length, returned: results.length, elements: results };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Page Info
-  // ═══════════════════════════════════════════════════════════════
-  getPageInfo() {
-    return {
-      action: 'getPageInfo', url: location.href, title: document.title, domain: location.hostname, readyState: document.readyState,
-      forms: document.forms.length, links: document.links.length, images: document.images.length,
-      inputs: document.querySelectorAll('input, textarea, select').length,
-      buttons: document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]').length,
-      headings: { h1: document.querySelectorAll('h1').length, h2: document.querySelectorAll('h2').length, h3: document.querySelectorAll('h3').length },
-      viewport: { width: window.innerWidth, height: window.innerHeight, scrollY: Math.round(window.scrollY), maxScroll: Math.round(document.documentElement.scrollHeight - window.innerHeight) }
-    };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Element Picker
-  // ═══════════════════════════════════════════════════════════════
-  async startPicker(options = {}) {
-    if (this._pickerActive) this.stopPicker();
-    this._pickerActive = true;
-    return new Promise((resolve) => {
-      this._pickerResolve = resolve;
-      const cursor = document.createElement('div');
-      cursor.id = 'snn-picker-cursor';
-      cursor.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;width:30px;height:30px;border:3px dashed #0556c7;border-radius:50%;transform:translate(-50%,-50%);display:none;';
-      document.body.appendChild(cursor);
-      let hoveredEl = null, hoverOverlay = null;
-
-      const onMove = (e) => {
-        cursor.style.display = 'block'; cursor.style.left = e.clientX + 'px'; cursor.style.top = e.clientY + 'px';
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        if (el && el !== hoveredEl && el !== cursor && !el.closest('#snn-picker-cursor')) {
-          if (hoverOverlay) hoverOverlay.remove();
-          hoveredEl = el;
-          const r = el.getBoundingClientRect();
-          hoverOverlay = document.createElement('div');
-          hoverOverlay.style.cssText = `position:fixed;pointer-events:none;z-index:2147483646;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;border:2px solid #0556c7;background:rgba(5,86,199,0.08);border-radius:3px;`;
-          document.body.appendChild(hoverOverlay);
-        }
-      };
-
-      const onClick = (e) => {
-        e.preventDefault(); e.stopPropagation();
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        if (el && el !== cursor) {
-          const info = { tag: el.tagName.toLowerCase(), id: el.id || null, className: typeof el.className === 'string' ? el.className : null, text: (el.textContent || '').trim().substring(0, 200), href: el.href || null, selector: this._buildSelector(el), attributes: this._getKeyAttributes(el), rect: el.getBoundingClientRect() };
-          this._cleanupPicker();
-          resolve({ action: 'startPicker', picked: info });
-        }
-      };
-
-      const onKey = (e) => { if (e.key === 'Escape') { this._cleanupPicker(); resolve({ action: 'startPicker', cancelled: true }); } };
-
-      this._pickerHandlers = { onMove, onClick, onKey, cursor, hoverOverlay: () => hoverOverlay };
-      document.addEventListener('mousemove', onMove, true);
-      document.addEventListener('click', onClick, true);
-      document.addEventListener('keydown', onKey, true);
-      document.body.style.cursor = 'crosshair';
-      setTimeout(() => { if (this._pickerActive) { this._cleanupPicker(); resolve({ action: 'startPicker', timeout: true }); } }, options.timeout || 30000);
-    });
-  }
-
-  _cleanupPicker() {
-    if (!this._pickerActive) return;
-    const h = this._pickerHandlers;
-    if (h) {
-      document.removeEventListener('mousemove', h.onMove, true);
-      document.removeEventListener('click', h.onClick, true);
-      document.removeEventListener('keydown', h.onKey, true);
-      if (h.cursor) h.cursor.remove();
-      const ho = h.hoverOverlay(); if (ho) ho.remove();
-    }
-    this._pickerHandlers = null;
-    this._pickerActive = false;
-    document.body.style.cursor = '';
-  }
-
-  stopPicker() {
-    if (this._pickerActive) {
-      this._cleanupPicker();
-      if (this._pickerResolve) { this._pickerResolve({ action: 'startPicker', cancelled: true }); this._pickerResolve = null; }
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Fill Form (batch)
-  // ═══════════════════════════════════════════════════════════════
-  async fillForm(fields, options = {}) {
-    if (!Array.isArray(fields)) throw new Error('fields must be an array');
-    const results = [];
-    for (const f of fields) {
-      try {
-        const el = this._resolveElement(f.selector, options);
-        await this._ensureInteractable(el, options);
-        if (el.tagName === 'SELECT') {
-          await this._setSelectValue(el, f.value);
-          results.push({ selector: f.selector, success: true, action: 'select' });
-        } else if (el.type === 'checkbox' || el.type === 'radio') {
-          const want = f.value === true || f.value === 'true' || f.value === 'checked';
-          if (el.checked !== want) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
-          results.push({ selector: f.selector, success: true, action: 'toggle' });
-        } else {
-          const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-          if (setter) setter.call(el, String(f.value));
-          else el.value = String(f.value);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          results.push({ selector: f.selector, success: true, action: 'type' });
-        }
-      } catch (err) { results.push({ selector: f.selector, success: false, error: err.message }); }
-    }
-    await this.wait(200);
-    return { action: 'fillForm', total: fields.length, succeeded: results.filter(r => r.success).length, failed: results.filter(r => !r.success).length, results };
-  }
-
   async _setSelectValue(selectEl, value) {
     const opts = Array.from(selectEl.options);
     let m = opts.find(o => o.value === value || o.textContent?.trim() === value);
@@ -853,47 +636,20 @@ class SNNPageActor {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ACTION: Select Dropdown
-  // ═══════════════════════════════════════════════════════════════
-  async selectDropdown(selector, value, options = {}) {
-    const el = this._resolveElement(selector, options);
-    await this._ensureInteractable(el, options);
-    await this._setSelectValue(el, value);
-    return { action: 'selectDropdown', element: this._describeElement(el), selector, selectedValue: el.value };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Check/Toggle
-  // ═══════════════════════════════════════════════════════════════
-  async checkToggle(selector, checked = true, options = {}) {
-    const el = this._resolveElement(selector, options);
-    await this._ensureInteractable(el, options);
-    if (el.checked !== checked) { el.click(); el.dispatchEvent(new Event('change', { bubbles: true })); }
-    return { action: 'checkToggle', element: this._describeElement(el), selector, checked: el.checked };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
   // ACTION: Press Key
   // ═══════════════════════════════════════════════════════════════
   pressKey(key, selector = null, options = {}) {
-    const target = selector ? this._resolveElement(selector, { ...options, allowHidden: true }) : document.body;
+    // No selector means "send it wherever the user's cursor is" — which is
+    // document.activeElement, not document.body. Enter after typing into a
+    // search box has to reach that box to submit it; dispatching on body
+    // bubbles to nothing and the form never fires.
+    const target = selector
+      ? this._resolveElement(selector, { ...options, allowHidden: true })
+      : (document.activeElement || document.body);
+    if (selector) target.focus?.();
     for (const evt of ['keydown', 'keypress', 'keyup'])
       target.dispatchEvent(new KeyboardEvent(evt, { key, code: key, bubbles: true, cancelable: true }));
-    return { action: 'pressKey', key, target: selector || 'body' };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Hover
-  // ═══════════════════════════════════════════════════════════════
-  async hoverElement(selector, options = {}) {
-    const el = this._resolveElement(selector, options);
-    await this._ensureInteractable(el, options);
-    const r = el.getBoundingClientRect();
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    for (const evt of ['mouseenter', 'mouseover', 'mousemove'])
-      el.dispatchEvent(new MouseEvent(evt, { bubbles: true, clientX: cx, clientY: cy }));
-    await this.wait(200);
-    return { action: 'hover', element: this._describeElement(el), selector };
+    return { action: 'pressKey', key, target: selector || this._describeElement(target) };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -909,81 +665,6 @@ class SNNPageActor {
       await this.wait(100);
     }
     throw new Error(`Element "${selector}" did not appear within ${timeout}ms`);
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Extract Table
-  // ═══════════════════════════════════════════════════════════════
-  extractTable(selector, options = {}) {
-    const table = selector ? this._resolveElement(selector, { allowHidden: true }) : document.querySelector('table');
-    if (!table || table.tagName !== 'TABLE') throw new Error(`No table found matching "${selector || 'table'}"`);
-    const headers = [];
-    const hRow = table.querySelector('thead tr, tr:first-child');
-    if (hRow) hRow.querySelectorAll('th, td').forEach(c => headers.push(c.textContent.trim()));
-    const rows = [];
-    const bRows = table.querySelectorAll('tbody tr, tr');
-    for (const row of bRows) {
-      if (row === hRow) continue;
-      const cells = []; row.querySelectorAll('td, th').forEach(c => cells.push(c.textContent.trim()));
-      if (cells.length) rows.push(cells);
-    }
-    return { action: 'extractTable', selector, headers, rowCount: rows.length, rows };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Get Element Text
-  // ═══════════════════════════════════════════════════════════════
-  getElementText(selector) {
-    const el = this._resolveElement(selector, { allowHidden: true });
-    return { action: 'getElementText', selector, text: el.textContent?.trim() || '', element: this._describeElement(el) };
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Page Script (content-script fallback)
-  // Primary execution path: agent:page_script is routed to background.js
-  // which uses chrome.scripting.executeScript(world:'MAIN') to bypass CSP.
-  // This method remains as a direct-call fallback for internal use.
-  // ═══════════════════════════════════════════════════════════════
-  async page_script(code, options = {}) {
-    if (!code) { D.warn('page_script: no code provided'); throw new Error('No code provided'); }
-    D.log('page_script EXECUTE', { codeLen: code.length, codePreview: code.substring(0, 200), options });
-    try {
-      const fn = new Function('document', 'window', 'options', code);
-      const result = await fn(document, window, options);
-      D.log('page_script OK', { resultType: typeof result, resultPreview: typeof result === 'string' ? result.substring(0, 200) : String(result).substring(0, 200) });
-      return { action: 'page_script', result };
-    } catch (e) {
-      D.error('page_script FAIL', { error: e.message, stack: e.stack?.split('\n').slice(0,4).join(' | '), codeSnippet: code.substring(0, 300) });
-      throw new Error(`Script error: ${e.message}`);
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Clipboard
-  // ═══════════════════════════════════════════════════════════════
-  async getClipboard() {
-    try { return await navigator.clipboard.readText(); }
-    catch (e) { throw new Error('Cannot read clipboard. The page may not have clipboard permission.'); }
-  }
-
-  async copyToClipboard(text) {
-    try { await navigator.clipboard.writeText(text); }
-    catch (e) { throw new Error('Cannot write to clipboard.'); }
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Viewport Info
-  // ═══════════════════════════════════════════════════════════════
-  getViewportInfo() {
-    return {
-      action: 'getViewportInfo',
-      width: window.innerWidth, height: window.innerHeight,
-      devicePixelRatio: window.devicePixelRatio,
-      scrollX: Math.round(window.scrollX), scrollY: Math.round(window.scrollY),
-      maxScrollX: Math.round(document.documentElement.scrollWidth - window.innerWidth),
-      maxScrollY: Math.round(document.documentElement.scrollHeight - window.innerHeight),
-      darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches
-    };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1146,291 +827,6 @@ class SNNPageActor {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Scroll & Act — autonomous scroll→find→act loop for
-  // virtual-list / infinite-scroll / lazy-rendering pages.
-  // Scrolls through the page, waits for new content to render,
-  // finds fresh matching elements, acts on them, tracks processed
-  // items to avoid duplicates. Returns summary when done.
-  // ═══════════════════════════════════════════════════════════════
-  async scrollAndAct(selector, options = {}) {
-    const {
-      maxItems     = 50,
-      maxScrolls   = 40,
-      clickDelay   = 400,          // ms between actions
-      clickJitter  = 600,          // random extra ms added to clickDelay
-      scrollPause  = 1200,         // ms to wait for render after scroll
-      scrollAmount = 0.75,         // fraction of viewport height per scroll
-      containerSelector = null,    // element to observe for mutations (auto-detect if null)
-      dedupAttr    = 'data-snn-done',
-      expandSelector = null,       // selector for "show more" / "load more" buttons to click
-      action       = 'click',      // 'click' | 'extract'
-      stopWhen     = null,         // optional JS expression run per item; return true to stop
-      maxEmptyScrolls = 3          // consecutive scrolls with zero new items before giving up
-    } = options;
-
-    let acted = 0, scrolls = 0, emptyStreak = 0;
-    const processed = new WeakSet(); // track elements across re-renders where possible
-
-    // ── Resolve container ──────────────────────────────────────
-    let container = containerSelector
-      ? document.querySelector(containerSelector)
-      : null;
-    if (!container) {
-      // Auto-detect: prefer a scrollable feed/thread container
-      const candidates = document.querySelectorAll(
-        '[role="feed"], [role="list"], [id*="content"], [id*="items"], [id*="results"], [class*="feed"], [class*="thread"], [class*="items"], main, article'
-      );
-      for (const c of candidates) {
-        if (c.scrollHeight > window.innerHeight * 2) { container = c; break; }
-      }
-      if (!container) container = document.body;
-    }
-
-    // ── Helpers ────────────────────────────────────────────────
-    const findFresh = () => {
-      const all = document.querySelectorAll(selector);
-      const fresh = [];
-      for (const el of all) {
-        if (processed.has(el)) continue;
-        if (!el.offsetParent) continue;
-        // Also skip if any ancestor is marked done (catches re-rendered subtrees)
-        let ancestor = el.parentElement;
-        let ancestorDone = false;
-        for (let i = 0; i < 8 && ancestor; i++) {
-          if (ancestor.hasAttribute?.(dedupAttr)) { ancestorDone = true; break; }
-          ancestor = ancestor.parentElement;
-        }
-        if (ancestorDone) continue;
-        fresh.push(el);
-      }
-      return fresh;
-    };
-
-    const markDone = (el) => {
-      processed.add(el);
-      try { el.setAttribute(dedupAttr, '1'); } catch (_) { /* SVG elements may not support setAttribute */ }
-      // Also mark the closest container row/card so re-renders of the same item are skipped
-      const row = el.closest('[class*="item"], [class*="row"], [class*="card"], [class*="post"], [class*="comment"], [class*="thread"], [class*="entry"], li, article');
-      if (row) {
-        try { row.setAttribute(dedupAttr, '1'); } catch (_) { /* ignore */ }
-      }
-    };
-
-    const doClick = async (el) => {
-      el.scrollIntoView({ behavior: 'instant', block: 'center' });
-      await this.wait(80);
-      const r = el.getBoundingClientRect();
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      // Fast synthetic click (single strategy for speed in batch loops)
-      try {
-        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 }));
-        el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 }));
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window }));
-      } catch (_) { /* continue */ }
-      try { if (el.focus) el.focus(); } catch (_) { /* SVG etc. */ }
-      try { el.click(); } catch (_) { /* some elements throw */ }
-    };
-
-    const doExtract = (el) => ({
-      tag: el.tagName?.toLowerCase() || '?',
-      id: el.id || null,
-      className: typeof el.className === 'string' ? el.className.split(/\s+/).slice(0, 3).join(' ') : null,
-      text: (el.textContent || '').trim().substring(0, 300),
-      href: el.href || null,
-      attributes: this._getKeyAttributes(el)
-    });
-
-    const sendProgress = () => {
-      try {
-        chrome.runtime.sendMessage({
-          action: 'agent:scrollAndActProgress',
-          selector, acted, scrolls, emptyStreak,
-          totalScrolled: Math.round(window.scrollY),
-          maxScroll: Math.round(document.documentElement.scrollHeight - window.innerHeight),
-          timestamp: Date.now()
-        }).catch(() => {});
-      } catch (_) { /* context invalidated */ }
-    };
-
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-    // ── Main scroll loop ───────────────────────────────────────
-    const extracted = [];
-
-    while (acted < maxItems && scrolls < maxScrolls && emptyStreak < maxEmptyScrolls) {
-      // ── Expand "show more" / "load more" if present ──────────
-      if (expandSelector) {
-        try {
-          const expandBtns = document.querySelectorAll(expandSelector);
-          for (const btn of expandBtns) {
-            if (btn.offsetParent) {
-              btn.scrollIntoView({ behavior: 'instant', block: 'center' });
-              await sleep(200);
-              try { btn.click(); } catch (_) { /* ignore */ }
-              await this._waitForRenderStability(container, scrollPause);
-            }
-          }
-        } catch (_) { /* ignore */ }
-      }
-
-      // ── Find fresh targets in current viewport ───────────────
-      const fresh = findFresh();
-      if (fresh.length === 0) {
-        // None in viewport — scroll to load more
-        window.scrollBy(0, Math.round(window.innerHeight * scrollAmount));
-        // Also try scrolling the container if it's the scrollable element
-        if (container !== document.body && container.scrollHeight > container.clientHeight) {
-          container.scrollBy(0, Math.round(container.clientHeight * scrollAmount));
-        }
-        scrolls++;
-        await this._waitForRenderStability(container, scrollPause);
-        emptyStreak++;
-        sendProgress();
-        continue;
-      }
-
-      emptyStreak = 0;
-
-      // ── Act on each fresh element ────────────────────────────
-      for (const el of fresh) {
-        if (acted >= maxItems) break;
-
-        // Optional early-stop condition — injected via <script> to avoid CSP unsafe-eval
-        if (stopWhen) {
-          try {
-            const uid = '__snn_stop_' + Math.random().toString(36).slice(2);
-            el.setAttribute('data-snn-stop', uid);
-
-            const stopScript = document.createElement('script');
-            stopScript.textContent = [
-              '(function(){',
-              'var _el=document.querySelector("[data-snn-stop=\\"' + uid + '\\"]");',
-              'if(_el){',
-              'window["' + uid + '"]=!!(' + stopWhen + ');',
-              '_el.removeAttribute("data-snn-stop");',
-              '}',
-              '})();'
-            ].join('\n');
-            (document.documentElement || document.head).appendChild(stopScript);
-            stopScript.remove();
-
-            const shouldStop = !!window[uid];
-            delete window[uid];
-            // Fallback cleanup if injected script didn't remove attribute
-            if (el.hasAttribute('data-snn-stop')) el.removeAttribute('data-snn-stop');
-
-            if (shouldStop) { acted = maxItems; break; }
-          } catch (_) { /* ignore bad expression */ }
-        }
-
-        markDone(el);
-
-        if (action === 'extract') {
-          extracted.push(doExtract(el));
-        } else {
-          await doClick(el);
-        }
-
-        acted++;
-        sendProgress();
-
-        // Human-like jittered delay between actions
-        const delay = clickDelay + Math.random() * clickJitter;
-        await sleep(delay);
-      }
-
-      // ── Scroll for next batch ────────────────────────────────
-      window.scrollBy(0, Math.round(window.innerHeight * scrollAmount));
-      if (container !== document.body && container.scrollHeight > container.clientHeight) {
-        container.scrollBy(0, Math.round(container.clientHeight * scrollAmount));
-      }
-      scrolls++;
-      await this._waitForRenderStability(container, scrollPause);
-      sendProgress();
-    }
-
-    // ── Build final summary ────────────────────────────────────
-    let terminatedBecause;
-    if (acted >= maxItems) terminatedBecause = 'maxItems';
-    else if (emptyStreak >= maxEmptyScrolls) terminatedBecause = 'noNewItems';
-    else terminatedBecause = 'maxScrolls';
-
-    return {
-      action: 'scrollAndAct',
-      selector,
-      acted,
-      scrolls,
-      emptyStreak,
-      terminatedBecause,
-      viewportHeight: window.innerHeight,
-      pageScrollY: Math.round(window.scrollY),
-      pageMaxScroll: Math.round(document.documentElement.scrollHeight - window.innerHeight),
-      ...(action === 'extract' ? { extracted } : {})
-    };
-  }
-
-  /**
-   * Wait for DOM mutations to settle after a scroll — signals that
-   * the virtual list / infinite scroll has finished rendering new items.
-   * Uses MutationObserver with a debounce window.
-   */
-  _waitForRenderStability(container, settleMs = 1200) {
-    return new Promise((resolve) => {
-      let timer;
-      const obs = new MutationObserver(() => {
-        clearTimeout(timer);
-        timer = setTimeout(() => { obs.disconnect(); resolve(); }, settleMs);
-      });
-      obs.observe(container, { childList: true, subtree: true });
-      // Fallback: resolve even if no mutations occur (static content)
-      timer = setTimeout(() => { obs.disconnect(); resolve(); }, settleMs + 200);
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // ACTION: Monitor DOM
-  // ═══════════════════════════════════════════════════════════════
-  startMonitoring(selector, options = {}) {
-    if (this._monitors.has(selector)) this.stopMonitoring(selector);
-    const config = {
-      pollMs: options.pollMs || 5000,
-      check: options.check || 'exists',
-      timeout: options.timeout || 60000,
-      onChange: (result) => {
-        chrome.runtime.sendMessage({
-          action: 'agent:monitorChange',
-          selector, result,
-          timestamp: Date.now()
-        }).catch(() => {});
-      }
-    };
-    const start = Date.now();
-    const interval = setInterval(() => {
-      try {
-        const el = document.querySelector(selector);
-        if (config.check === 'exists' && el) { config.onChange({ found: true, element: this._describeElement(el) }); clearInterval(interval); this._monitors.delete(selector); }
-        if (config.check === 'textChange' && el) {
-          const txt = el.textContent?.trim() || '';
-          if (txt !== config._lastText) { config._lastText = txt; config.onChange({ changed: true, text: txt }); }
-        }
-        if (Date.now() - start > config.timeout) { clearInterval(interval); this._monitors.delete(selector); }
-      } catch (e) { /* keep monitoring */ }
-    }, config.pollMs);
-    config._interval = interval;
-    this._monitors.set(selector, config);
-    return { action: 'startMonitoring', selector, pollMs: config.pollMs, check: config.check };
-  }
-
-  stopMonitoring(selector) {
-    if (selector) {
-      const m = this._monitors.get(selector);
-      if (m) { clearInterval(m._interval); this._monitors.delete(selector); }
-    } else {
-      for (const [k, m] of this._monitors) { clearInterval(m._interval); }
-      this._monitors.clear();
-    }
-  }
 }
 
 // ── Instantiate ────────────────────────────────────────────────────

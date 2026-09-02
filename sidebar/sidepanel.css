@@ -2067,57 +2067,6 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   font-size: 11px; opacity: 0.6; margin-left: auto;
 }
 
-/* ── Capabilities Grid ────────────────────────────────────────── */
-.snn-capabilities-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
-}
-.snn-capability-chip {
-  background: var(--sp-chip-bg);
-  border: 1px solid var(--sp-chip-border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1 1 calc(50% - 6px);
-  min-width: 130px;
-}
-.snn-capability-chip strong {
-  color: var(--sp-accent);
-  font-size: 13px;
-  font-family: monospace;
-}
-.snn-capability-chip span {
-  color: var(--sp-text-secondary);
-  font-size: 11px;
-  line-height: 1.3;
-}
-.snn-capability-more {
-  justify-content: center;
-  align-items: center;
-  font-weight: 500;
-  color: var(--sp-text-secondary);
-  font-style: italic;
-  font-size: 12px;
-}
-.snn-capabilities-selectors {
-  margin-top: 10px;
-  font-size: 12px;
-  color: var(--sp-text-secondary);
-  line-height: 1.6;
-}
-.snn-capabilities-selectors code {
-  background: rgba(128,128,128,0.12);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-
 /* ── Agent Status Entry (persistent state transitions in chat) ─ */
 .snn-status-entry {
   display: flex;

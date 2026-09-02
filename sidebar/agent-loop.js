@@ -81,11 +81,8 @@ class SNNAgentLoop {
 
     // ── Background-level actions (handled by SW, not forwarded to page) ──
     this._BG_ACTIONS = new Set([
-      'agent:navigate', 'agent:closeTab', 'agent:goBack',
-      'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
-      'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
-      'agent:listActions', 'agent:getCapabilities', 'agent:page_script',
-      'agent:readPage', 'agent:goBack'
+      'agent:navigate', 'agent:goBack', 'agent:reload', 'agent:screenshot',
+      'agent:page_script', 'agent:readPage'
     ]);
 
     // ── Callbacks (set by sidepanel) ───────────────────────────
@@ -189,10 +186,6 @@ class SNNAgentLoop {
     this.sp._resetLiveUsage?.();
 
     try {
-      //  - - - - CAPABILITY FAST-PATH  - - - -
-      const capResult = this._checkCapabilityQuery(userMessage);
-      if (capResult) return await this._handleCapabilityQuery();
-
       //  - - - - AGENTIC LOOP WITH TOOL CALLING  - - - -
       this._transition('PARSING', { message: userMessage });
 
@@ -515,11 +508,15 @@ Be honest. The user will see if you claim to have done something you did not.`
       { name: 'snn_click', desc: 'Click a button, link, or element on the page. Uses multi-strategy click (synthetic events + native click + ancestor click + keyboard) for SPA compatibility. Also use for checkboxes, radio buttons, and to open dropdowns before selecting options.', params: {
         selector: { type: 'string', desc: 'PREFERRED: :role("button","Submit") or :text("exact visible text") or :name("email") or :contains("partial"). CSS only as last resort.' }
       }, required: ['selector'] },
-      { name: 'snn_type', desc: 'Type text into an input field or textarea. Use after snn_click to focus the field.', params: {
-        selector: { type: 'string', desc: 'PREFERRED: :name("email"), :role("textbox","Search"), :text("placeholder/label"), or CSS as last resort' },
-        text: { type: 'string', desc: 'Text to type' },
-        clearFirst: { type: 'boolean', desc: 'Clear existing text first (default false)' }
+      { name: 'snn_type', desc: 'Set the value of any form control. For a text input, textarea or contenteditable, this types the text. For a <select> dropdown it picks the matching option — clicking a <select> does NOT work, because the option list is drawn by the operating system and is invisible to snn_mapPage, so ALWAYS use snn_type on a combobox. For a checkbox or radio, pass "true"/"false" to set the state (this is idempotent — unlike clicking, calling it twice does not toggle back).', params: {
+        selector: { type: 'string', desc: 'PREFERRED: :name("email"), :role("textbox","Search"), :role("combobox","Country"), :text("placeholder/label"), or CSS as last resort' },
+        text: { type: 'string', desc: 'Text to type; the option label/value for a <select>; "true" or "false" for a checkbox/radio' },
+        clearFirst: { type: 'boolean', desc: 'Clear existing text first (default false). Ignored for selects and checkboxes.' }
       }, required: ['selector', 'text'] },
+      { name: 'snn_pressKey', desc: 'Press a keyboard key. Use for keys that submit or dismiss rather than insert: Enter to submit a search or form, Escape to close a modal or dropdown, Tab to move to the next field, ArrowDown/ArrowUp to move through an autocomplete list. Pass a selector to send the key to a specific field, or omit it to send to whatever currently has focus.', params: {
+        key: { type: 'string', desc: 'Key name: Enter, Escape, Tab, ArrowDown, ArrowUp, ArrowLeft, ArrowRight, Backspace, Delete, Home, End, PageDown, PageUp — or a single character' },
+        selector: { type: 'string', desc: 'Optional. The field to send the key to. Omit to target the focused element.' }
+      }, required: ['key'] },
       { name: 'snn_scroll', desc: 'Scroll the page in a direction or to top/bottom', params: {
         direction: { type: 'string', desc: 'up, down, left, right, top, or bottom' },
         amount: { type: 'integer', desc: 'Pixels to scroll (ignored for top/bottom)' }
@@ -594,7 +591,7 @@ Be honest. The user will see if you claim to have done something you did not.`
 
     let prompt = `You are SNN Chat, a browser extension agent running inside the USER'S OWN BROWSER. You help the user interact with and customize web pages they are viewing. Modifying page styles, colors, or content via JavaScript in the user's own browser is perfectly legitimate — you are not hacking or altering anyone else's website; you are customizing the user's personal browsing experience, just like a browser extension or dev tools would.
 
-You can click buttons, type into fields, scroll, navigate to pages, read page content, go back, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), and reload pages. You also have snn_mapPage which builds a real-time accessibility map of the entire page — use it to "see" what's on screen before interacting. EVERYTHING happens in one browser tab — just like a human browsing.
+You can click buttons, type into fields, press keys, scroll, navigate to pages, read page content, go back, take screenshots, run page scripts (including modifying page styles, colors, layouts, and content), and reload pages. Your tools are a small, deliberate set — a mouse, a keyboard, and eyes. Anything you cannot do with them directly, do with snn_page_script. You also have snn_mapPage which builds a real-time accessibility map of the entire page — use it to "see" what's on screen before interacting. EVERYTHING happens in one browser tab — just like a human browsing.
 
 ═══════════════════════════════════════════════════════════
 PAGE INTERACTION: MAP-FIRST APPROACH (MANDATORY)
@@ -707,7 +704,16 @@ WHEN YOU DO USE TOOLS:
    e) CSS selectors only as LAST RESORT (classes/ids break often)
 5. snn_navigate auto-waits for page load. No need for snn_wait after navigate.
 6. snn_click uses multi-strategy (synthetic + native + ancestor + keyboard).
-7. snn_type types into inputs. Click the field first with snn_click, then type.
+7. snn_type sets ANY form control. Click the field first with snn_click, then type.
+   - <select> / combobox: ALWAYS snn_type with the option label. NEVER click a
+     select and then look for the options — the popup is drawn by the OS, so it
+     never appears in snn_mapPage and there is nothing to click.
+   - checkbox / radio: snn_type "true" or "false" to set the state. This is
+     idempotent; snn_click toggles and will undo itself if you call it twice.
+7b. snn_pressKey sends a key. Enter submits a search or form, Escape closes a
+   modal or dropdown, Tab moves to the next field, ArrowDown/ArrowUp move
+   through autocomplete suggestions. Typing into a search box usually needs a
+   following snn_pressKey "Enter" — typing alone does not submit.
 8. MODIFYING THE PAGE: Use snn_page_script to change colors, fonts, sizes, backgrounds, hide elements, add content. Example: document.querySelectorAll('button').forEach(b => b.style.backgroundColor = 'red')
 9. For ANY operation not covered by dedicated tools, use snn_page_script. CRITICAL: Your code runs via eval() at the TOP LEVEL — NEVER use bare "return". Make the last expression the return value, or wrap in IIFE: (function(){ ...; return x; })()
 
@@ -886,12 +892,6 @@ CRITICAL RULES:
     const actionName = fnName.startsWith('snn_') ? fnName.slice(4) : fnName;
     D.log('_executeToolCall', { fnName, actionName, iteration, args: fnArgs });
 
-    // Special handling for capability query
-    if (actionName === 'getCapabilities') {
-      const result = await this._dispatchAction({ action: 'getCapabilities', id: this._generateId(), params: {}, timeout: 5000 });
-      return result.success ? result.result : { error: 'Could not load capabilities' };
-    }
-
     // Special handling for task-continuity check — purely a local read of
     // this session's own persisted history, no dispatch to the page needed.
     if (actionName === 'checkPreviousTask') {
@@ -1032,7 +1032,6 @@ CRITICAL RULES:
     switch (actionName) {
       case 'navigate':       return this.NAV_SETTLE_MS + 8000;
       case 'reload':         return this.NAV_SETTLE_MS;
-      case 'scrollAndAct':   return 180000;
       case 'wait':           return (params.ms || 1000) + 5000;
       case 'waitForElement': return (params.timeout || 10000) + 5000;
       default:               return this.DEFAULT_TIMEOUT;
@@ -1047,6 +1046,7 @@ CRITICAL RULES:
       case 'navigate': return { url: args.url || '' };
       case 'click': return { selector: args.selector || '' };
       case 'type': return { selector: args.selector || '', text: args.text || '', options: args.clearFirst ? { clearFirst: true } : {} };
+      case 'pressKey': return { key: args.key || 'Enter', selector: args.selector || null };
       case 'scroll': return { direction: args.direction || 'down', amount: args.amount || 500 };
       case 'wait': return { ms: args.ms || 1000 };
       case 'readPage': return {};
@@ -1066,6 +1066,7 @@ CRITICAL RULES:
     switch (fnName) {
       case 'snn_click': return `Click ${a.selector || 'element'}`;
       case 'snn_type': return `Type "${(a.text || '').substring(0, 30)}" into ${a.selector || 'field'}`;
+      case 'snn_pressKey': return `Press ${a.key || 'key'}${a.selector ? ` in ${a.selector}` : ''}`;
       case 'snn_scroll': return a.direction === 'bottom' ? 'Scroll to bottom of page' : `Scroll ${a.direction || 'down'} ${a.amount || ''}`;
       case 'snn_wait': return `Wait ${a.ms || 1000}ms`;
       case 'snn_screenshot': return 'Take screenshot';
@@ -1078,41 +1079,6 @@ CRITICAL RULES:
       case 'snn_waitForElement': return `Wait for "${(a.selector || '').substring(0, 40)}" to appear`;
       default: return fnName;
     }
-  }
-
-  /**
-   * Fast-path capability query detection (no LLM needed).
-   */
-  _checkCapabilityQuery(msg) {
-    const patterns = [
-      /^what (can|do) you (do|help)/, /^(can|could) you (click|type|scroll|fill|navigate|help|do|interact)/,
-      /^help$/, /^(list|show) (your |available )?(actions|capabilities|commands|tools)/,
-      /^what (actions|capabilities|commands|tools)/, /^what can (i|we) (do|ask)/,
-      /^how (do|can) (i |you )?use you/, /^capabilities$/
-    ];
-    return patterns.some(p => p.test(msg.toLowerCase().trim()));
-  }
-
-  async _handleCapabilityQuery() {
-    // Transition FIRST so the action entry renders inside the group
-    this._transition('EXECUTING', { step: 1, total: 1, step: { description: 'Listing capabilities' } });
-    if (this.sp._agentUI) {
-      this.sp._agentUI.addActionHistoryEntry('getCapabilities', 'Listing what I can do', 'start');
-    }
-    const capResult = await this._dispatchAction({ action: 'getCapabilities', id: this._generateId(), params: {}, timeout: 5000 });
-    if (capResult.success) {
-      this._stepResults.push({ step: { action: 'getCapabilities', description: 'Capabilities' }, result: capResult.result, attempts: 1 });
-      if (this.sp._agentUI) {
-        const count = (capResult.result.pageActions?.length || 0) + (capResult.result.browserActions?.length || 0);
-        this.sp._agentUI.updateLastActionEntry('ok', `${count} actions available`);
-      }
-      this._transition('REPORTING', { results: this._stepResults });
-      if (this.onResult) this.onResult({ type: 'capabilities', data: capResult.result });
-    } else {
-      if (this.sp._agentUI) this.sp._agentUI.updateLastActionEntry('fail', 'Could not load capabilities');
-    }
-    this._transition('IDLE');
-    return { type: 'action', subtype: 'capabilities', results: this._stepResults };
   }
 
   /**
@@ -1202,10 +1168,7 @@ CRITICAL RULES:
   // DISPATCH ACTION TO CONTENT SCRIPT (via background)
   //  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
   async _dispatchAction(step) {
-    // scrollAndAct needs a long timeout — it's an autonomous scroll loop
-    const isLongRunning = step.action === 'scrollAndAct';
-    const defaultTimeout = isLongRunning ? 180000 : this.DEFAULT_TIMEOUT; // 3 min vs 15s
-    const timeout = step.timeout || defaultTimeout;
+    const timeout = step.timeout || this.DEFAULT_TIMEOUT;
 
     // Build message
     const message = {
@@ -1223,7 +1186,7 @@ CRITICAL RULES:
 
     // ── Inject tabId for background actions that need a target tab ──
     const TAB_DEPENDENT_ACTIONS = new Set([
-      'agent:navigate', 'agent:goBack', 'agent:goForward',
+      'agent:navigate', 'agent:goBack',
       'agent:reload', 'agent:screenshot', 'agent:page_script', 'agent:readPage'
     ]);
     if (TAB_DEPENDENT_ACTIONS.has(message.action) && this._sendTabId) {
@@ -1314,7 +1277,7 @@ CRITICAL RULES:
   // ═══════════════════════════════════════════════════════════════
   _selectorBasedAction(actionName) {
     return [
-      'click', 'type', 'scrollToElement', 'waitForElement'
+      'click', 'type', 'waitForElement'
     ].includes(actionName);
   }
 
@@ -1386,7 +1349,6 @@ CRITICAL RULES:
       if (match.selector && match.selector === failedSelector) return null;
 
       const params = { ...(step.params || {}), selector: match.selector };
-      // fillForm fields recovery is handled per-field only when top-level selector exists
       return {
         params,
         description: `${step.description || step.action} → ${match.label || match.selector}`
@@ -1482,7 +1444,7 @@ CRITICAL RULES:
       push(elements.selects, 'select', 5);
       push(elements.buttons, 'button', 0);
     } else {
-      // click / hover / highlight / getElementText / etc.
+      // click / waitForElement / etc.
       push(elements.buttons, 'button', 15);
       push(elements.links, 'link', 12);
       push(elements.clickables, 'clickable', 8);
@@ -1967,23 +1929,17 @@ CRITICAL RULES:
     if (!result) return '';
     switch (step.action) {
       case 'click': return `Clicked ${result.element || step.params?.selector || 'element'}`;
-      case 'type': return `Typed "${(step.params?.text || '').substring(0, 40)}" into ${result.element || step.params?.selector || 'field'}`;
+      case 'type':
+        if (result.contentType === 'select') return `Selected "${result.selectedValue || step.params?.text || ''}" in ${result.element || 'dropdown'}`;
+        if (result.contentType === 'checkbox' || result.contentType === 'radio') return `${result.checked ? 'Checked' : 'Unchecked'} ${result.element || step.params?.selector || 'control'}`;
+        return `Typed "${(step.params?.text || '').substring(0, 40)}" into ${result.element || step.params?.selector || 'field'}`;
       case 'scroll':
         if (step.params?.direction === 'bottom') return 'Scrolled to bottom of page';
         if (step.params?.direction === 'top') return 'Scrolled to top of page';
         return `Scrolled ${step.params?.direction || 'down'} ${step.params?.amount ? step.params.amount + 'px' : ''}`.trim();
-      case 'scrollToElement': return `Scrolled to ${result.element || step.params?.selector || 'element'}`;
-      case 'highlight': return `Highlighted ${result.element || step.params?.selector || 'element'}`;
-      case 'findElements': return `Found ${result.total || 0} elements matching "${step.params?.selector || ''}"`;
-      case 'getPageInfo': return `Page: ${result.title || ''} — ${result.links || 0} links, ${result.forms || 0} forms`;
-      case 'extractTable': return `Extracted table with ${result.rowCount || 0} rows`;
       case 'navigate': return `Navigated to ${result.url || step.params?.url || ''}`;
       case 'screenshot': return `Screenshot captured`;
-      case 'fillForm': return `Filled ${result.succeeded || 0}/${result.total || 0} fields`;
-      case 'selectDropdown': return `Selected "${step.params?.value || ''}" in dropdown`;
-      case 'checkToggle': return `${result.checked ? 'Checked' : 'Unchecked'} toggle`;
       case 'pressKey': return `Pressed ${step.params?.key || 'key'}`;
-      case 'getCapabilities': return `Listed capabilities (${(result.pageActions?.length || 0) + (result.browserActions?.length || 0)} actions)`;
       case 'waitForElement': return `Waited for "${step.params?.selector || 'element'}" (${result.timeMs || '?'}ms)`;
       case 'wait': return `Waited ${step.params?.ms || 1000}ms`;
       default: return `${step.action} completed`;

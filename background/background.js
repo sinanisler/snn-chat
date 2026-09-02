@@ -2,8 +2,8 @@
 // Coordinates between content script (page context) and side panel (chat UI)
 // Tracks active tab so the side panel can maintain per-tab chat sessions.
 //
-// v2.1 — Extended with agent action relay, tab management, screenshots,
-// context menus, notifications, alarms, and download support.
+// v2.1 — Extended with agent action relay, navigation, screenshots and
+// context menus.
 
 // ── DEBUG LOGGING ──────────────────────────────────────────────────
 var SNN_D = {
@@ -386,20 +386,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// NOTIFICATION HELPERS
-// ═══════════════════════════════════════════════════════════════════
-function showNotification(title, message, options = {}) {
-  chrome.notifications.create({
-    type: 'basic',
-    iconUrl: 'assets/icons/icon128.png',
-    title: title,
-    message: message,
-    priority: options.priority || 0,
-    ...options
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════
 // HELPER: Resolve a potentially-relative URL against a tab's origin
 // ═══════════════════════════════════════════════════════════════════
 async function _makeAbsoluteUrl(rawUrl, tabId) {
@@ -436,11 +422,6 @@ async function _handleBgAgentAction(message, sendResponse) {
 
   try {
     switch (message.action) {
-      case 'agent:listActions':
-      case 'agent:getCapabilities':
-        sendResponse({ success: true, result: _getCapabilities() });
-        return;
-
       case 'agent:navigate': {
         const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
         if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No target tab for navigation.', retryable: false } }); return; }
@@ -481,13 +462,6 @@ async function _handleBgAgentAction(message, sendResponse) {
         return;
       }
 
-      case 'agent:openTab': {
-        // Open in background by default — never steal focus from the user's session
-        const tab = await chrome.tabs.create({ url: p.url, active: false, index: p.index });
-        sendResponse({ success: true, result: { tabId: tab.id, url: tab.url, title: tab.title } });
-        return;
-      }
-
       case 'agent:readPage': {
         const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
         if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No active tab to read.', retryable: false } }); return; }
@@ -513,24 +487,11 @@ async function _handleBgAgentAction(message, sendResponse) {
         return;
       }
 
-      case 'agent:closeTab':
-        await chrome.tabs.remove(p.tabId);
-        sendResponse({ success: true, result: { closed: true } });
-        return;
-
       case 'agent:goBack': {
         const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
         if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
         await chrome.tabs.goBack(tabId);
         sendResponse({ success: true, result: { wentBack: true } });
-        return;
-      }
-
-      case 'agent:goForward': {
-        const tabId = p.tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
-        if (!tabId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab.', retryable: false } }); return; }
-        await chrome.tabs.goForward(tabId);
-        sendResponse({ success: true, result: { wentForward: true } });
         return;
       }
 
@@ -549,46 +510,6 @@ async function _handleBgAgentAction(message, sendResponse) {
         if (!tab?.windowId) { sendResponse({ success: false, error: { code: 'NO_TAB', message: 'No tab window.', retryable: false } }); return; }
         const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: p.format || 'png' });
         sendResponse({ success: true, result: { screenshot: dataUrl, format: p.format || 'png' } });
-        return;
-      }
-
-      case 'agent:download':
-        chrome.downloads.download({ url: p.url, filename: p.filename, saveAs: p.saveAs || false }, (downloadId) => {
-          if (chrome.runtime.lastError) {
-            sendResponse({ success: false, error: { code: 'DOWNLOAD_FAILED', message: chrome.runtime.lastError.message, retryable: false } });
-          } else {
-            sendResponse({ success: true, result: { downloadId } });
-          }
-        });
-        return;
-
-      case 'agent:notify':
-        showNotification(p.title || 'SNN Chat', p.message || '');
-        sendResponse({ success: true, result: { notified: true } });
-        return;
-
-      case 'agent:setAlarm': {
-        const name = p.name || 'snn-alarm';
-        chrome.alarms.create(name, {
-          delayInMinutes: p.delayMs ? p.delayMs / 60000 : undefined,
-          periodInMinutes: (p.periodMs || 60000) / 60000
-        });
-        await chrome.storage.session.set({ [`snn_alarm_${name}`]: { name, periodMs: p.periodMs || 60000, action: p.onTrigger || null, created: Date.now() } });
-        sendResponse({ success: true, result: { alarmSet: true, name } });
-        return;
-      }
-
-      case 'agent:clearAlarm': {
-        const name = p.name || 'snn-alarm';
-        const wasCleared = await chrome.alarms.clear(name);
-        await chrome.storage.session.remove([`snn_alarm_${name}`]);
-        sendResponse({ success: true, result: { cleared: wasCleared } });
-        return;
-      }
-
-      case 'agent:listAlarms': {
-        const alarms = await chrome.alarms.getAll();
-        sendResponse({ success: true, result: { alarms: alarms.map(a => ({ name: a.name, scheduledTime: a.scheduledTime, periodInMinutes: a.periodInMinutes })) } });
         return;
       }
 
@@ -663,62 +584,6 @@ async function _executePageScriptInMainWorld(tabId, code, options) {
     throw new Error(outcome.error || 'Unknown script error');
   }
   return outcome.value;
-}
-
-/**
- * Returns the full capability manifest — all actions the agent can perform.
- */
-function _getCapabilities() {
-  return {
-    agent: 'SNN Chat v2.1',
-    description: 'I can interact with web pages in real-time. I can click buttons, type into forms, scroll, highlight elements, extract data, take screenshots, navigate, manage tabs, fill forms, monitor pages, and more.',
-    pageActions: [
-      { action: 'click', description: 'Click any button, link, or element on the page', params: ['selector'] },
-      { action: 'type', description: 'Type text into input fields and textareas', params: ['selector', 'text'] },
-      { action: 'scroll', description: 'Scroll the page up, down, left, right, to top, or to bottom', params: ['direction', 'amount'] },
-      { action: 'scrollToElement', description: 'Scroll to bring a specific element into view', params: ['selector'] },
-      { action: 'highlight', description: 'Highlight an element with a colored overlay', params: ['selector', 'color'] },
-      { action: 'clearHighlights', description: 'Remove all highlight overlays', params: [] },
-      { action: 'findElements', description: 'Find all elements matching a CSS selector, returns info about each', params: ['selector'] },
-      { action: 'getPageInfo', description: 'Get summary of the page (title, URL, form count, link count, etc.)', params: [] },
-      { action: 'extractTable', description: 'Extract a table as structured data (headers + rows)', params: ['selector'] },
-      { action: 'getElementText', description: 'Get the text content of a specific element', params: ['selector'] },
-      { action: 'pressKey', description: 'Press a keyboard key (Enter, Escape, Tab, etc.)', params: ['key', 'selector'] },
-      { action: 'hover', description: 'Hover over an element (trigger tooltips, dropdowns)', params: ['selector'] },
-      { action: 'waitForElement', description: 'Wait until an element appears on the page', params: ['selector', 'timeout'] },
-      { action: 'wait', description: 'Wait for a specified number of milliseconds', params: ['ms'] },
-      { action: 'fillForm', description: 'Fill multiple form fields at once', params: ['fields'] },
-      { action: 'selectDropdown', description: 'Select an option from a dropdown/select element', params: ['selector', 'value'] },
-      { action: 'checkToggle', description: 'Check or uncheck a checkbox/radio', params: ['selector', 'checked'] },
-      { action: 'getClipboard', description: 'Read text from clipboard', params: [] },
-      { action: 'copyToClipboard', description: 'Copy text to clipboard', params: ['text'] },
-      { action: 'startPicker', description: 'Enter element picker mode — hover to highlight, click to select', params: [] },
-      { action: 'getViewportInfo', description: 'Get viewport dimensions and scroll position', params: [] },
-      { action: 'page_script', description: 'Run a script on the page to read or modify content and styles', params: ['code'] },
-      { action: 'startMonitoring', description: 'Watch for a DOM element to appear or change', params: ['selector', 'options'] }
-    ],
-    browserActions: [
-      { action: 'navigate', description: 'Navigate the current tab to a URL', params: ['url'] },
-      { action: 'openTab', description: 'Open a URL in a new tab', params: ['url'] },
-      { action: 'closeTab', description: 'Close a tab', params: ['tabId'] },
-      { action: 'goBack', description: 'Go back in browser history', params: [] },
-      { action: 'goForward', description: 'Go forward in browser history', params: [] },
-      { action: 'reload', description: 'Reload the current page', params: [] },
-      { action: 'screenshot', description: 'Capture a screenshot of the visible tab', params: [] },
-      { action: 'download', description: 'Download a file from a URL', params: ['url', 'filename'] },
-      { action: 'notify', description: 'Show a system notification', params: ['title', 'message'] },
-      { action: 'setAlarm', description: 'Set a periodic alarm (for monitoring)', params: ['name', 'periodMs'] },
-      { action: 'clearAlarm', description: 'Clear a previously set alarm', params: ['name'] }
-    ],
-    selectorFormats: [
-      '"#id" or ".class" — standard CSS selectors',
-      '":text(\'exact button text\')" — find element by exact text',
-      '":contains(\'partial text\')" — find element containing text',
-      '":nth(\'selector\', 3)" — pick the Nth matching element',
-      '":xpath(\'//div[@data-testid=\"foo\"]\')" — XPath selector',
-      '":role(\'button\', \'Submit\')" — find by ARIA role + accessible name'
-    ]
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════// MAIN MESSAGE ROUTER
@@ -848,15 +713,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // ═══════════════════════════════════════════════════════════════
   // BACKGROUND-LEVEL AGENT ACTIONS (handled here, NOT forwarded to page)
-  // These actions: navigate, openTab, closeTab, goBack, goForward,
-  // reload, screenshot, download, notify, setAlarm, clearAlarm, listAlarms
+  // These actions: navigate, goBack, reload, screenshot, page_script, readPage
   // ═══════════════════════════════════════════════════════════════
   const BG_AGENT_ACTIONS = [
-    'agent:navigate', 'agent:openTab', 'agent:closeTab', 'agent:goBack',
-    'agent:goForward', 'agent:reload', 'agent:screenshot', 'agent:download',
-    'agent:notify', 'agent:setAlarm', 'agent:clearAlarm', 'agent:listAlarms',
-    'agent:listActions', 'agent:getCapabilities', 'agent:page_script',
-    'agent:readPage'
+    'agent:navigate', 'agent:goBack', 'agent:reload', 'agent:screenshot',
+    'agent:page_script', 'agent:readPage'
   ];
 
   if (BG_AGENT_ACTIONS.includes(message.action)) {
@@ -913,42 +774,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// ALARM HANDLER — Periodic monitoring & SW keep-alive
-// ═══════════════════════════════════════════════════════════════════
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  const key = `snn_alarm_${alarm.name}`;
-  const { [key]: alarmData } = await chrome.storage.session.get(key);
-
-  if (alarmData?.action) {
-    // Notify side panel that the alarm fired
-    chrome.runtime.sendMessage({
-      action: 'agent:alarmFired',
-      name: alarm.name,
-      alarmData
-    }).catch(() => {});
-
-    // If the alarm has a monitoring action, request content extraction
-    if (alarmData.action === 'checkPage') {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'extractContent' }).catch(() => {});
-      }
-    }
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// NOTIFICATION CLICK HANDLER — Open side panel when notification clicked
-// ═══════════════════════════════════════════════════════════════════
-chrome.notifications.onClicked.addListener((notificationId) => {
-  chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-    if (tab?.id) {
-      _openSidePanelForTab(tab);
-    }
-  });
 });
 
 // ── Cleanup on tab close ──────────────────────────────────────────
