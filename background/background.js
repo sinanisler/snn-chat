@@ -29,19 +29,6 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => D.error('Side panel setup:', error));
 
-// Also toggle via keyboard shortcut
-chrome.commands.onCommand.addListener((command) => {
-  if (command === 'toggle-sidebar') {
-    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-      if (!tab?.id) {
-        D.warn('toggle-sidebar: no active tab available');
-        return;
-      }
-      _openSidePanelForTab(tab);
-    });
-  }
-});
-
 // ── Tab Tracking ──────────────────────────────────────────────────
 const CONTEXT_KEY = 'snn_page_context';
 const SELECTION_KEY = 'snn_selection';
@@ -254,7 +241,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // ── Robust side-panel opener ──────────────────────────────────
 // MUST be called synchronously from a user-gesture handler
-// (contextMenus.onClicked, action.onClicked, commands.onCommand).
+// (contextMenus.onClicked, action.onClicked).
 // Tries windowId first, falls back to tabId, then tries the
 // focused window as a last resort.
 async function _openSidePanelForTab(tab) {

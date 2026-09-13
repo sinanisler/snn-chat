@@ -13,7 +13,6 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 - **Per-Domain Chat History**: Separate chat history for each website domain with session management
 - **Intelligent Page Detection**: Monitors SPA navigation and dynamic content changes
 - **Customizable Interface**: Adjustable font size, theme (Light/Dark/Auto), and layout
-- **Flexible Shortcuts**: Customizable keyboard shortcuts (default: Ctrl+Shift+Y)
 - **Export Functionality**: Export chat history for backup and analysis
 - **Model Switching**: Real-time model indicator with easy switching between AI models
 - **Selection Preview**: Visual preview of selected text with context management
@@ -28,7 +27,7 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 
 ## Setup
 
-1. Click the extension icon or press `Ctrl+Shift+Y` to open the sidebar
+1. Click the extension icon to open the sidebar
 2. Click "Settings" in the sidebar to configure your API
 3. Get your API key from [OpenRouter](https://openrouter.ai/keys)
 4. Select your preferred AI model from the dynamically loaded list
@@ -37,8 +36,6 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 
 ### Opening the Sidebar
 - Click the extension icon in the toolbar
-- Use the keyboard shortcut `Ctrl+Shift+Y`
-- Use the popup menu
 
 ### Chat Features
 - Type your message and click "Send" or press `Enter`
@@ -50,7 +47,6 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 - **Export Functionality**: Export your chat history for backup or analysis
 
 ### Keyboard Shortcuts
-- **Customizable Toggle**: Default `Ctrl+Shift+Y` (customizable in settings)
 - `Enter` - Send message (when typing in the chat input)
 - **Smart Context**: Automatic page content extraction and selection monitoring
 
@@ -60,7 +56,7 @@ SNN Chat is a Chrome extension that provides an AI-powered chat sidebar with adv
 chrome-extension/
 ├── manifest.json           # Manifest V3 configuration
 ├── background/
-│   └── background.js      # Service worker for extension lifecycle and shortcuts
+│   └── background.js      # Service worker for extension lifecycle
 ├── content/
 │   ├── content.js         # Main SNNChat class with sidebar logic and API integration
 │   └── content.css        # Complete sidebar styling with themes and responsive design
@@ -92,7 +88,6 @@ The extension provides comprehensive settings accessible directly from the sideb
 - **Theme**: Light, Dark, or Auto (follows system preference)
 - **Font Size**: Adjustable from 12px to 20px
 - **Sidebar Width**: Customizable width from 300px to 900px
-- **Keyboard Shortcuts**: Fully customizable keyboard combinations
 
 ### Data Management
 - **Chat History**: Per-domain automatic saving
@@ -136,14 +131,14 @@ This is a vanilla JavaScript Chrome extension with no build process required:
 
 ### Key Architecture Components
 - **SNNChat Class**: Main application logic in `content/content.js`
-- **Background Service Worker**: Extension lifecycle and keyboard shortcuts
+- **Background Service Worker**: Extension lifecycle
 - **Chrome Storage API**: Settings sync and local chat history storage
 - **Dynamic Model Loading**: Real-time API integration with OpenRouter
 
 ### Testing
 Test the extension manually by:
 - Loading on various websites to verify context extraction
-- Testing keyboard shortcuts and UI interactions
+- Testing UI interactions
 - Verifying API provider switching and model selection
 - Checking responsive behavior across different screen sizes
 - Testing per-domain chat history and session management

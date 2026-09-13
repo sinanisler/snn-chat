@@ -42,14 +42,6 @@
       "run_at": "document_end"
     }
   ],
-  "commands": {
-    "toggle-sidebar": {
-      "suggested_key": {
-        "default": "Ctrl+Shift+Y"
-      },
-      "description": "Toggle SNN Chat side panel"
-    }
-  },
   "web_accessible_resources": [
     {
       "resources": ["sidebar/*", "assets/*", "offscreen/*"],
