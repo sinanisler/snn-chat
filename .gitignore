@@ -1,2 +1,5 @@
 # Ignore Windows Zone.Identifier files
 *.Identifier
+
+# Store listing assets
+store-assets/
