@@ -680,15 +680,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // ── Voice Relay ──────────────────────────────────────────────
   if (message.action === 'voice:start' || message.action === 'voice:stop') {
-    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-      if (tab?.id) {
-        chrome.tabs.sendMessage(tab.id, message).then((response) => {
-          sendResponse(response);
-        }).catch(() => {
-          sendResponse({ success: false, error: 'content-script-unavailable' });
-        });
-      } else {
+    // Target the side panel's own tab. "currentWindow" in a service worker is
+    // the last-focused window, which with multiple windows can be the wrong one.
+    const resolveTab = message.tabId
+      ? Promise.resolve(message.tabId)
+      : chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => tab?.id);
+    resolveTab.then(async (targetTabId) => {
+      if (!targetTabId) {
         sendResponse({ success: false, error: 'no-active-tab' });
+        return;
+      }
+      try {
+        sendResponse(await chrome.tabs.sendMessage(targetTabId, message));
+      } catch (e) {
+        // No live content script (tab opened before install/update) — inject and retry
+        if (message.action === 'voice:stop') { sendResponse({ success: true }); return; }
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: targetTabId },
+            files: ['content/content.js', 'content/page-actor.js']
+          });
+          sendResponse(await chrome.tabs.sendMessage(targetTabId, message));
+        } catch (err) {
+          sendResponse({ success: false, error: 'content-script-unavailable' });
+        }
       }
     });
     return true;

@@ -6171,8 +6171,15 @@ class SNNSidePanel {
             case 'network':
               this.showToast('Network error. Speech recognition requires an internet connection.', 'error');
               break;
+            case 'aborted':
+              break;
+            case 'service-not-allowed':
+            case 'language-not-supported':
+              this.showToast(`Speech recognition unavailable (${message.error}).`, 'error');
+              break;
             default:
               D.warn('Voice error:', message.error);
+              this.showToast(`Voice error: ${message.error}`, 'error');
               break;
           }
           break;
@@ -6196,7 +6203,7 @@ class SNNSidePanel {
     const gen = this._voiceGen;
 
     try {
-      const response = await chrome.runtime.sendMessage({ action: 'voice:start', gen });
+      const response = await chrome.runtime.sendMessage({ action: 'voice:start', gen, tabId: this.currentTabId });
       if (!response?.success) {
         this.els.voiceBtn.classList.remove('listening');
         this._voiceActive = false;
@@ -6221,7 +6228,7 @@ class SNNSidePanel {
   _stopVoice() {
     this._voiceActive = false;
     this.els.voiceBtn.classList.remove('listening');
-    chrome.runtime.sendMessage({ action: 'voice:stop' }).catch(() => {});
+    chrome.runtime.sendMessage({ action: 'voice:stop', tabId: this.currentTabId }).catch(() => {});
   }
 
   // ── Toast ───────────────────────────────────────────────────────
