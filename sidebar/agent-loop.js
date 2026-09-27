@@ -437,11 +437,12 @@ class SNNAgentLoop {
       };
 
     } catch (err) {
-      D.error('▶ run CRASHED', { error: err.message, stack: err.stack?.split('\n').slice(0,3).join(' | ') });
       // A cancel aborts the in-flight fetch, which surfaces here as an
       // AbortError. That is not a crash — report it as a cancellation so the
       // caller doesn't treat it as "agent unavailable" and retry the message.
+      // Checked before logging, or every Stop is logged as a crash.
       if (this._cancelled) return this._cancelledResult();
+      D.error('▶ run CRASHED', { error: err.message, stack: err.stack?.split('\n').slice(0,3).join(' | ') });
 
       // A crash here is most often the LLM call failing (bad key, no
       // credit, rate limit). Route it through the shared categorizer so
