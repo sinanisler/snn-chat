@@ -160,6 +160,7 @@ class SNNSidePanel {
     // storage listener (_setupCrossPanelSync) can tell its own save events
     // apart from a save made by another window's panel — see that method.
     this._instanceId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    this._tts = new SNNOpenRouterTTS();
     this.chatHistory = [];
     this.isLoading = false;
     this.totalTokensUsed = 0;
@@ -1878,6 +1879,7 @@ class SNNSidePanel {
     actions.innerHTML = `
       <button class="sp-msg-action copy" title="Copy">Copy</button>
       <button class="sp-msg-action speak" title="Read aloud">▶ Read</button>
+      <button class="sp-msg-action tts-gen" title="Generate an audio file with an OpenRouter speech model">🎧 Audio</button>
       <button class="sp-msg-action regenerate" title="Regenerate response"><i class="fa-solid fa-arrows-rotate"></i></button>
     `;
 
@@ -1889,6 +1891,9 @@ class SNNSidePanel {
     actions.querySelector('.regenerate').addEventListener('click', () => {
       this.regenerateLastAnswer();
     });
+
+    const ttsBtn = actions.querySelector('.tts-gen');
+    ttsBtn.addEventListener('click', () => this._ttsGenerate(msgDiv, content, ttsBtn));
 
     const speakBtn = actions.querySelector('.speak');
 
@@ -2112,6 +2117,297 @@ class SNNSidePanel {
       this._ttsSpeakingMsgEl = null;
     }
     this._ttsActiveUtterance = null;
+  }
+
+  // ── OpenRouter TTS (🎧 Audio button) ─────────────────────────────
+
+  /**
+   * Answer → (optional podcast-style rewrite by the chat model) → OpenRouter
+   * speech model → inline player with a download link. Clicking the button
+   * while it's working cancels; clicking it afterwards generates a new take.
+   */
+  async _ttsGenerate(msgDiv, content, btn) {
+    if (btn._ttsAbort) { btn._ttsAbort.abort(); return; }
+
+    const settings = await this.getSettings();
+    const source = this._stripMarkdownForTTS(content);
+    if (!source.trim()) { this.showToast('Nothing to turn into audio.', 'warning'); return; }
+
+    const ctrl = new AbortController();
+    btn._ttsAbort = ctrl;
+    btn.classList.add('active-speak');
+    btn.title = 'Click to cancel';
+    const setLabel = (t) => { btn.textContent = t; };
+
+    try {
+      setLabel('⏳ Picking voice…');
+      const { model, voice, fellBack } = await this._tts.resolve(settings);
+      if (fellBack) {
+        this.showToast(`Speech model "${this.escapeHtml(settings.ttsModel)}" is no longer available — using ${this.escapeHtml(model.name)} instead.`, 'warning');
+      }
+
+      let script = source;
+      if (settings.ttsMode !== 'exact') {
+        setLabel('✍️ Writing script…');
+        script = await this._ttsWriteScript(source, settings, model.maxChars, ctrl.signal);
+      }
+
+      setLabel('🎧 Generating audio…');
+      const { blob, ext } = await this._tts.synthesize(script, {
+        apiKey: settings.openrouterKey,
+        model, voice,
+        speed: settings.ttsSpeed,
+        style: settings.ttsStyle,
+        signal: ctrl.signal
+      });
+      D.log('TTS generated', { model: model.id, voice, chars: script.length, bytes: blob.size });
+      this._ttsShowPlayer(msgDiv, blob, ext, `${model.name}${voice ? ' · ' + voice : ''}`);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        D.warn('TTS generate failed', err);
+        this.showToast(`Audio failed: ${this.escapeHtml(err.message || 'unknown error')}`, 'error');
+      }
+    } finally {
+      btn._ttsAbort = null;
+      btn.classList.remove('active-speak');
+      btn.title = 'Generate an audio file with an OpenRouter speech model';
+      setLabel('🎧 Audio');
+    }
+  }
+
+  /**
+   * Rewrite the answer into a spoken script with the user's chat model and
+   * TTS system prompt. Falls back to the plain text if the model returns
+   * nothing usable (e.g. a reasoning model that spent its budget thinking).
+   */
+  async _ttsWriteScript(text, settings, maxChars, signal) {
+    const apiKey = this._getEffectiveApiKey(settings);
+    if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
+    this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
+    const limit = Math.min(maxChars, 12000);
+    const system = (settings.ttsPrompt || SNN_TTS_DEFAULT_PROMPT).replace(/\{maxChars\}/g, String(limit));
+    const res = await this._fetchOpenRouter(apiKey, {
+      model: await this._getEffectiveModel(),
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: text }
+      ],
+      max_tokens: Math.max(2048, Math.ceil(limit / 2)),
+      stream: false
+    }, signal, false, settings);
+    const data = await res.json();
+    const out = this._stripMarkdownForTTS(data?.choices?.[0]?.message?.content || '');
+    if (!out) {
+      D.warn('TTS script rewrite returned nothing — reading the answer as-is');
+      return text;
+    }
+    return out;
+  }
+
+  /** Put (or replace) the audio player + download link under a message. */
+  _ttsShowPlayer(msgDiv, blob, ext, label) {
+    const old = msgDiv.querySelector('.sp-tts-player');
+    if (old) {
+      URL.revokeObjectURL(old.dataset.url);
+      old.remove();
+    }
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    const wrap = document.createElement('div');
+    wrap.className = 'sp-tts-player';
+    wrap.dataset.url = url;
+    wrap.innerHTML = `
+      <audio controls preload="auto"></audio>
+      <div class="sp-tts-player-meta">
+        <span>${this.escapeHtml(label)}</span>
+        <a download="snn-audio-${stamp}.${ext}">⬇ Download .${ext}</a>
+      </div>`;
+    const audio = wrap.querySelector('audio');
+    audio.src = url;
+    wrap.querySelector('a').href = url;
+    msgDiv.insertBefore(wrap, msgDiv.querySelector('.sp-msg-meta'));
+    audio.play().catch(() => { /* autoplay may be blocked; controls remain */ });
+    this.smartScrollToBottom();
+  }
+
+  /** Wire the TTS settings tab: model/voice pickers, prompt reset, preview. */
+  _bindTtsSettings(s) {
+    const root = this.els.settingsBody;
+    const modelSel = root.querySelector('#s-tts-model');
+    const voiceSel = root.querySelector('#s-tts-voice');
+    const hint = root.querySelector('#s-tts-model-hint');
+    const status = root.querySelector('#s-tts-status');
+    const modeSel = root.querySelector('#s-tts-mode');
+    const promptField = root.querySelector('#s-tts-prompt-field');
+    let models = [];
+    let wantedVoice = s.ttsVoice;
+
+    const dropdown = root.querySelector('#s-tts-model-dropdown');
+
+    // The input holds a model id, or "auto". Anything typed that isn't in
+    // the catalog resolves to Auto at generation time, same as a retired id.
+    const current = () => {
+      const v = modelSel.value.trim();
+      if (!v || v === SNN_TTS_AUTO) return this._tts.pickAutoModel(models);
+      return models.find(m => m.id === v) || null;
+    };
+
+    const badgesFor = (m) => {
+      const n = m.voices.length;
+      return [
+        m.free ? '<span class="sp-model-badge tts-free">Free</span>' : '',
+        `<span class="sp-model-badge vision">${n ? `${n} voice${n === 1 ? '' : 's'}` : 'Default voice'}</span>`,
+        m.limitKnown ? `<span class="sp-model-badge ctx">${Math.round(m.maxChars / 1000)}K chars</span>` : '',
+        this._tts.isPcmOnly(m.id) ? '<span class="sp-model-badge ctx">WAV</span>' : '',
+        m.free ? '' : `<span class="sp-model-badge price">${this.escapeHtml(this._tts.priceLabel(m))}</span>`
+      ].filter(Boolean).join('');
+    };
+
+    const renderDropdown = (filterText) => {
+      if (!models.length) {
+        dropdown.innerHTML = '<div class="sp-model-option muted">Loading speech models…</div>';
+        return;
+      }
+      const q = filterText === SNN_TTS_AUTO ? '' : filterText;
+      const ranked = this._filterModelsByQuery(models, q);
+      // Browsing: free first, then cheapest per character, then by name.
+      const list = ranked || [...models].sort((a, b) =>
+        (b.free - a.free) ||
+        ((a.pricedPerToken ? 1 : 0) - (b.pricedPerToken ? 1 : 0)) ||
+        (a.pricePerChar - b.pricePerChar) ||
+        a.name.localeCompare(b.name));
+      const auto = this._tts.pickAutoModel(models);
+      const autoRow = !q ? `<button type="button" class="sp-model-option" data-id="${SNN_TTS_AUTO}">
+          <div class="sp-model-option-main">
+            <span class="sp-model-option-name">Auto (best free model)</span>
+            <span class="sp-model-option-id">currently → ${this.escapeHtml(auto?.id || 'none')}</span>
+          </div>
+          <div class="sp-model-option-badges"><span class="sp-model-badge tts-free">Recommended</span></div>
+        </button>` : '';
+      if (!list.length && !autoRow) {
+        dropdown.innerHTML = '<div class="sp-model-option muted">No speech models match.</div>';
+        return;
+      }
+      dropdown.innerHTML = autoRow + list.map(m => `
+        <button type="button" class="sp-model-option" data-id="${this.escapeHtml(m.id)}">
+          <div class="sp-model-option-main">
+            <span class="sp-model-option-name">${this.escapeHtml(m.name)}</span>
+            <span class="sp-model-option-id">${this.escapeHtml(m.id)}</span>
+          </div>
+          <div class="sp-model-option-badges">${badgesFor(m)}</div>
+        </button>`).join('');
+      dropdown.querySelectorAll('.sp-model-option[data-id]').forEach(btn => {
+        btn.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          wantedVoice = voiceSel.value;
+          modelSel.value = btn.dataset.id;
+          dropdown.style.display = 'none';
+          fillVoices();
+        });
+      });
+    };
+
+    const fillVoices = () => {
+      const m = current();
+      const voices = m?.voices || [];
+      // Models without a voice list still get the row (and its Preview
+      // button) — the select just shows the provider's default voice.
+      voiceSel.disabled = !voices.length;
+      voiceSel.innerHTML = voices.length
+        ? voices.map(v =>
+          `<option value="${this.escapeHtml(v)}" ${v === wantedVoice ? 'selected' : ''}>${this.escapeHtml(v)}</option>`
+        ).join('')
+        : '<option value="">Default voice</option>';
+      if (!m) {
+        hint.style.display = 'none';
+        return;
+      }
+      const isAuto = !models.some(x => x.id === modelSel.value.trim());
+      hint.style.display = '';
+      hint.innerHTML = `
+        <div><strong>${isAuto ? 'Auto → ' : ''}${this.escapeHtml(m.name)}</strong></div>
+        <div class="sp-model-option-badges" style="margin:6px 0">${badgesFor(m)}</div>
+        ${m.description ? `<small>${this.escapeHtml(m.description)}</small>` : ''}`;
+    };
+
+    const load = async (force) => {
+      renderDropdown('');
+      try {
+        models = await this._tts.getModels({ force });
+      } catch (e) {
+        hint.style.display = '';
+        hint.textContent = `Could not load speech models: ${e.message}`;
+        return;
+      }
+      const saved = modelSel.value.trim() || SNN_TTS_AUTO;
+      if (saved !== SNN_TTS_AUTO && !models.some(m => m.id === saved)) {
+        status.textContent = `Saved model "${saved}" is no longer available — switched to Auto.`;
+        modelSel.value = SNN_TTS_AUTO;
+      }
+      if (dropdown.style.display !== 'none') renderDropdown(modelSel.value.trim());
+      fillVoices();
+    };
+
+    modelSel.addEventListener('focus', () => {
+      renderDropdown(modelSel.value.trim());
+      dropdown.style.display = 'block';
+      modelSel.select();
+    });
+    modelSel.addEventListener('input', () => {
+      renderDropdown(modelSel.value.trim());
+      dropdown.style.display = 'block';
+    });
+    modelSel.addEventListener('blur', () => {
+      setTimeout(() => {
+        dropdown.style.display = 'none';
+        if (!modelSel.value.trim()) modelSel.value = SNN_TTS_AUTO;
+        fillVoices();
+      }, 180);
+    });
+    modelSel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        dropdown.style.display = 'none';
+        fillVoices();
+      }
+    });
+    voiceSel.addEventListener('change', () => { wantedVoice = voiceSel.value; });
+    root.querySelector('#s-tts-refresh').addEventListener('click', () => load(true));
+    modeSel.addEventListener('change', () => {
+      promptField.style.display = modeSel.value === 'exact' ? 'none' : '';
+    });
+    root.querySelector('#s-tts-prompt-reset').addEventListener('click', () => {
+      root.querySelector('#s-tts-prompt').value = SNN_TTS_DEFAULT_PROMPT;
+    });
+
+    const previewBtn = root.querySelector('#s-tts-preview');
+    previewBtn.addEventListener('click', async () => {
+      const m = current();
+      if (!m) { status.textContent = 'No speech model available yet.'; return; }
+      previewBtn.disabled = true;
+      status.textContent = `Generating a sample with ${m.name}…`;
+      try {
+        const { blob } = await this._tts.synthesize('Hi! This is how I sound. I can turn any answer into audio for you.', {
+          apiKey: root.querySelector('#s-openrouter-key')?.value.trim(),
+          model: m,
+          voice: voiceSel.value,
+          speed: parseFloat(root.querySelector('#s-tts-speed').value) || 1,
+          style: root.querySelector('#s-tts-style').value
+        });
+        if (this._ttsPreviewAudio) {
+          this._ttsPreviewAudio.pause();
+          URL.revokeObjectURL(this._ttsPreviewAudio.src);
+        }
+        this._ttsPreviewAudio = new Audio(URL.createObjectURL(blob));
+        await this._ttsPreviewAudio.play();
+        status.textContent = '';
+      } catch (e) {
+        status.textContent = `Preview failed: ${e.message}`;
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+
+    load(false);
   }
 
   /**
@@ -3149,6 +3445,13 @@ class SNNSidePanel {
           if (s.enableStreaming === undefined) s.enableStreaming = true;
           if (s.debugLogging === undefined) s.debugLogging = false;
           if (s.ttsLanguage === undefined) s.ttsLanguage = 'auto';
+          if (s.ttsEnabled === undefined) s.ttsEnabled = false;
+          if (!s.ttsModel) s.ttsModel = SNN_TTS_AUTO;
+          if (s.ttsVoice === undefined) s.ttsVoice = '';
+          if (!(s.ttsSpeed > 0)) s.ttsSpeed = 1;
+          if (s.ttsStyle === undefined) s.ttsStyle = '';
+          if (s.ttsMode !== 'exact') s.ttsMode = 'podcast';
+          if (!s.ttsPrompt) s.ttsPrompt = SNN_TTS_DEFAULT_PROMPT;
           if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
           resolve(s);
         });
@@ -3168,6 +3471,9 @@ class SNNSidePanel {
 
     const theme = settings.theme || 'auto';
     document.body.className = `theme-${theme}`;
+    // 🎧 Audio buttons are always rendered and shown/hidden by this class,
+    // so toggling the setting also affects answers already on screen.
+    document.body.classList.toggle('tts-enabled', settings.ttsEnabled === true);
     document.documentElement.style.setProperty('--sp-font-size', `${settings.fontSize || 16}px`);
     this.updateModelDisplay(settings);
     // Cache agent prompt for chat augmentation
@@ -3319,6 +3625,7 @@ class SNNSidePanel {
         <button class="sp-tab active" data-tab="api">API</button>
         <button class="sp-tab" data-tab="chat">Chat</button>
         <button class="sp-tab" data-tab="quickactions">Quick Actions</button>
+        <button class="sp-tab" data-tab="tts">TTS</button>
         <button class="sp-tab" data-tab="appearance">Appearance</button>
       </div>
 
@@ -3404,9 +3711,81 @@ class SNNSidePanel {
           ${this.toggleHtml('s-debug-logging', 'Debug Logging', 'Show detailed [SNN:*] console logs for troubleshooting', s.debugLogging === true)}
         </div>
         <div class="sp-section">
-          <h4>Text-to-Speech</h4>
+          <h4>Data</h4>
+          <button class="sp-btn sp-btn-secondary" id="s-export-history">Export Chat History</button>
+          <button class="sp-btn sp-btn-danger" id="s-clear-history" style="margin-left:8px">Clear All History</button>
+        </div>
+      </div>
+
+      <div class="sp-tab-content" data-tab-content="quickactions">
+        <div class="sp-section">
+          <h4>Manage Quick Actions</h4>
+          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:8px">Customize the quick action buttons shown when you start a new chat.</p>
+          <div class="sp-qa-list" id="s-qa-list"></div>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="sp-btn sp-btn-secondary" id="s-add-qa">+ Add Action</button>
+            <button class="sp-btn sp-btn-secondary" id="s-reset-qa">Reset Defaults</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sp-tab-content" data-tab-content="tts">
+        <div class="sp-section">
+          <h4>OpenRouter Text-to-Speech</h4>
+          ${this.toggleHtml('s-tts-enabled', 'Enable audio generation', 'Adds a 🎧 Audio button to answers that turns them into a downloadable audio file with an OpenRouter speech model. Uses your OpenRouter API key.', s.ttsEnabled === true)}
           <div class="sp-field">
-            <label>TTS Language</label>
+            <label>Speech Model</label>
+            <div class="sp-model-picker-row">
+              <div class="sp-model-picker" id="s-tts-model-picker">
+                <input type="text" id="s-tts-model" value="${this.escapeHtml(s.ttsModel)}" placeholder="Search speech models…" autocomplete="off" spellcheck="false">
+                <div class="sp-model-dropdown" id="s-tts-model-dropdown" style="display:none"></div>
+              </div>
+              <button type="button" class="sp-model-refresh" id="s-tts-refresh" title="Refresh speech model list">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+              </button>
+            </div>
+            <small>Search by name. Pick <strong>Auto</strong> to always use the best free speech model from OpenRouter's live list — it keeps working when models are retired.</small>
+          </div>
+          <div id="s-tts-model-hint" class="sp-model-info"></div>
+          <div class="sp-field" id="s-tts-voice-field">
+            <label>Voice</label>
+            <div class="sp-model-picker-row">
+              <select id="s-tts-voice"></select>
+              <button type="button" class="sp-btn sp-btn-secondary sp-tts-preview-btn" id="s-tts-preview" title="Hear a short sample with the selected model, voice, speed and style">▶ Preview</button>
+            </div>
+            <div class="sp-status" id="s-tts-status"></div>
+          </div>
+          <div class="sp-field-range">
+            <label style="min-width:90px">Speed</label>
+            <input type="range" id="s-tts-speed" min="0.5" max="2" step="0.05" value="${s.ttsSpeed}">
+            <span id="s-tts-speed-val">${s.ttsSpeed}</span>
+          </div>
+          <div class="sp-field">
+            <label>Delivery Style</label>
+            <input type="text" id="s-tts-style" value="${this.escapeHtml(s.ttsStyle)}" placeholder="e.g. excited, or: warm and friendly">
+            <small>Optional. Used by models that support it (MAI-Voice-2: one word like <code>excited</code> or <code>sad</code>, depends on the voice; Gemini TTS: free text). Ignored by others.</small>
+          </div>
+        </div>
+        <div class="sp-section">
+          <h4>Script</h4>
+          <div class="sp-field">
+            <label>Mode</label>
+            <select id="s-tts-mode">
+              <option value="podcast" ${s.ttsMode !== 'exact' ? 'selected' : ''}>Podcast script — rewrite with the chat model first</option>
+              <option value="exact" ${s.ttsMode === 'exact' ? 'selected' : ''}>Exact — read the answer as-is</option>
+            </select>
+          </div>
+          <div class="sp-field" id="s-tts-prompt-field" style="${s.ttsMode === 'exact' ? 'display:none' : ''}">
+            <label>TTS System Prompt</label>
+            <textarea id="s-tts-prompt" rows="8">${this.escapeHtml(s.ttsPrompt)}</textarea>
+            <small>Your chat model rewrites the answer with this prompt before it's spoken. <code>{maxChars}</code> is replaced with the speech model's input limit.</small>
+            <button class="sp-btn sp-btn-secondary" id="s-tts-prompt-reset" style="margin-top:6px">Reset to default</button>
+          </div>
+        </div>
+        <div class="sp-section">
+          <h4>Browser Voice (▶ Read button)</h4>
+          <div class="sp-field">
+            <label>Language</label>
             <select id="s-tts-lang">
               <option value="auto" ${(s.ttsLanguage || 'auto') === 'auto' ? 'selected' : ''}>Auto-detect</option>
               <option value="en" ${s.ttsLanguage === 'en' ? 'selected' : ''}>English</option>
@@ -3423,23 +3802,6 @@ class SNNSidePanel {
               <option value="it" ${s.ttsLanguage === 'it' ? 'selected' : ''}>Italiano</option>
             </select>
             <small>Auto-detect uses Chrome's language detector. Override to force a specific voice when reading.</small>
-          </div>
-        </div>
-        <div class="sp-section">
-          <h4>Data</h4>
-          <button class="sp-btn sp-btn-secondary" id="s-export-history">Export Chat History</button>
-          <button class="sp-btn sp-btn-danger" id="s-clear-history" style="margin-left:8px">Clear All History</button>
-        </div>
-      </div>
-
-      <div class="sp-tab-content" data-tab-content="quickactions">
-        <div class="sp-section">
-          <h4>Manage Quick Actions</h4>
-          <p style="font-size:12px;color:var(--sp-text-secondary);margin-bottom:8px">Customize the quick action buttons shown when you start a new chat.</p>
-          <div class="sp-qa-list" id="s-qa-list"></div>
-          <div style="margin-top:8px;display:flex;gap:8px">
-            <button class="sp-btn sp-btn-secondary" id="s-add-qa">+ Add Action</button>
-            <button class="sp-btn sp-btn-secondary" id="s-reset-qa">Reset Defaults</button>
           </div>
         </div>
       </div>
@@ -3485,6 +3847,8 @@ class SNNSidePanel {
     this.bindRange('s-temperature', 's-temperature-val');
     this.bindRange('s-top-p', 's-top-p-val');
     this.bindRange('s-font-size', 's-font-size-val', 'px');
+    this.bindRange('s-tts-speed', 's-tts-speed-val');
+    this._bindTtsSettings(s);
 
     // Save
     this.els.settingsBody.querySelector('#s-save').addEventListener('click', () => this.saveSettings());
@@ -4260,6 +4624,13 @@ class SNNSidePanel {
       enableStreaming: getChecked('s-enable-streaming'),
       debugLogging: getChecked('s-debug-logging'),
       ttsLanguage: getVal('s-tts-lang') || 'auto',
+      ttsEnabled: getChecked('s-tts-enabled') === true,
+      ttsModel: getVal('s-tts-model') || SNN_TTS_AUTO,
+      ttsVoice: getVal('s-tts-voice'),
+      ttsSpeed: parseFloat(getVal('s-tts-speed')) || 1,
+      ttsStyle: getVal('s-tts-style').trim(),
+      ttsMode: getVal('s-tts-mode') === 'exact' ? 'exact' : 'podcast',
+      ttsPrompt: getVal('s-tts-prompt').trim() || SNN_TTS_DEFAULT_PROMPT,
       quickActions: this.getQuickActionsFromEditor()
     };
 

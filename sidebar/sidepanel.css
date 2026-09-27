@@ -2408,3 +2408,33 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
 .sp-msg-ai > .snn-reasoning-details {
   margin-bottom: 10px;
 }
+
+/* ── OpenRouter TTS (🎧 Audio) ───────────────────────────────── */
+.sp-msg-action.tts-gen { display: none; }
+body.tts-enabled .sp-msg-action.tts-gen { display: inline-block; }
+
+
+
+.sp-tts-player {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sp-tts-player audio { width: 100%; height: 36px; }
+.sp-tts-player-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--sp-text-secondary);
+}
+.sp-tts-player-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-tts-player-meta a { color: inherit; white-space: nowrap; }
+.sp-tts-player-meta a:hover { color: var(--sp-text); }
+.sp-model-badge.tts-free {
+  background: rgba(30,126,52,0.18);
+  color: color-mix(in srgb, #1e7e34 30%, white);
+}
+.sp-model-picker-row > #s-tts-voice { flex: 1; min-width: 0; }
+.sp-tts-preview-btn { flex: 0 0 auto; white-space: nowrap; }
