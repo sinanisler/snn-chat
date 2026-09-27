@@ -2147,8 +2147,9 @@ class SNNSidePanel {
       }
 
       let script = source;
-      if (settings.ttsMode !== 'exact') {
-        setLabel('✍️ Writing script…');
+      const mode = snnTtsMode(settings.ttsMode);
+      if (mode.prompt) {
+        setLabel(`✍️ Writing ${mode.label.toLowerCase()} script…`);
         script = await this._ttsWriteScript(source, settings, model.maxChars, ctrl.signal);
       }
 
@@ -2185,7 +2186,8 @@ class SNNSidePanel {
     if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
     this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
     const limit = Math.min(maxChars, 12000);
-    const system = (settings.ttsPrompt || SNN_TTS_DEFAULT_PROMPT).replace(/\{maxChars\}/g, String(limit));
+    const mode = snnTtsMode(settings.ttsMode);
+    const system = (settings.ttsPrompts?.[mode.id] || mode.prompt || SNN_TTS_DEFAULT_PROMPT).replace(/\{maxChars\}/g, String(limit));
     const res = await this._fetchOpenRouter(apiKey, {
       model: await this._getEffectiveModel(),
       messages: [
@@ -2372,12 +2374,37 @@ class SNNSidePanel {
     });
     voiceSel.addEventListener('change', () => { wantedVoice = voiceSel.value; });
     root.querySelector('#s-tts-refresh').addEventListener('click', () => load(true));
-    modeSel.addEventListener('change', () => {
-      promptField.style.display = modeSel.value === 'exact' ? 'none' : '';
+    // One editable prompt per mode. Edits are kept in a draft map while
+    // switching modes and written out by saveSettings(); only prompts that
+    // differ from the built-in default are stored, so improved defaults
+    // still reach users who never customized them.
+    const promptEl = root.querySelector('#s-tts-prompt');
+    const modeDesc = root.querySelector('#s-tts-mode-desc');
+    const resetBtn = root.querySelector('#s-tts-prompt-reset');
+    this._ttsPromptDrafts = { ...(s.ttsPrompts || {}) };
+    let shownMode = modeSel.value;
+    const stash = () => {
+      const def = snnTtsMode(shownMode);
+      if (!def.prompt) return;
+      const v = promptEl.value.trim();
+      if (v && v !== def.prompt.trim()) this._ttsPromptDrafts[def.id] = v;
+      else delete this._ttsPromptDrafts[def.id];
+    };
+    const showMode = () => {
+      const def = snnTtsMode(modeSel.value);
+      shownMode = def.id;
+      modeDesc.textContent = def.desc;
+      promptField.style.display = def.prompt ? '' : 'none';
+      if (def.prompt) promptEl.value = this._ttsPromptDrafts[def.id] || def.prompt;
+      resetBtn.textContent = this._ttsPromptDrafts[def.id] ? 'Reset to default (customized)' : 'Reset to default';
+    };
+    modeSel.addEventListener('change', () => { stash(); showMode(); });
+    promptEl.addEventListener('input', () => { stash(); resetBtn.textContent = this._ttsPromptDrafts[shownMode] ? 'Reset to default (customized)' : 'Reset to default'; });
+    resetBtn.addEventListener('click', () => {
+      delete this._ttsPromptDrafts[shownMode];
+      showMode();
     });
-    root.querySelector('#s-tts-prompt-reset').addEventListener('click', () => {
-      root.querySelector('#s-tts-prompt').value = SNN_TTS_DEFAULT_PROMPT;
-    });
+    showMode();
 
     const previewBtn = root.querySelector('#s-tts-preview');
     previewBtn.addEventListener('click', async () => {
@@ -3450,8 +3477,13 @@ class SNNSidePanel {
           if (s.ttsVoice === undefined) s.ttsVoice = '';
           if (!(s.ttsSpeed > 0)) s.ttsSpeed = 1;
           if (s.ttsStyle === undefined) s.ttsStyle = '';
-          if (s.ttsMode !== 'exact') s.ttsMode = 'podcast';
-          if (!s.ttsPrompt) s.ttsPrompt = SNN_TTS_DEFAULT_PROMPT;
+          s.ttsMode = snnTtsMode(s.ttsMode).id;
+          if (!s.ttsPrompts || typeof s.ttsPrompts !== 'object') s.ttsPrompts = {};
+          // Migrate the single-prompt setting from before modes existed.
+          if (s.ttsPrompt && s.ttsPrompt !== SNN_TTS_DEFAULT_PROMPT && !s.ttsPrompts.podcast) {
+            s.ttsPrompts.podcast = s.ttsPrompt;
+          }
+          delete s.ttsPrompt;
           if (!s.quickActions?.length) s.quickActions = this.getDefaultQuickActions();
           resolve(s);
         });
@@ -3771,14 +3803,14 @@ class SNNSidePanel {
           <div class="sp-field">
             <label>Mode</label>
             <select id="s-tts-mode">
-              <option value="podcast" ${s.ttsMode !== 'exact' ? 'selected' : ''}>Podcast script — rewrite with the chat model first</option>
-              <option value="exact" ${s.ttsMode === 'exact' ? 'selected' : ''}>Exact — read the answer as-is</option>
+              ${SNN_TTS_MODES.map(m => `<option value="${m.id}" ${s.ttsMode === m.id ? 'selected' : ''}>${this.escapeHtml(m.label)}</option>`).join('')}
             </select>
+            <small id="s-tts-mode-desc"></small>
           </div>
-          <div class="sp-field" id="s-tts-prompt-field" style="${s.ttsMode === 'exact' ? 'display:none' : ''}">
-            <label>TTS System Prompt</label>
-            <textarea id="s-tts-prompt" rows="8">${this.escapeHtml(s.ttsPrompt)}</textarea>
-            <small>Your chat model rewrites the answer with this prompt before it's spoken. <code>{maxChars}</code> is replaced with the speech model's input limit.</small>
+          <div class="sp-field" id="s-tts-prompt-field">
+            <label>System Prompt for this mode</label>
+            <textarea id="s-tts-prompt" rows="9"></textarea>
+            <small>Your chat model rewrites the answer with this prompt before it's spoken. Each mode keeps its own prompt. <code>{maxChars}</code> is replaced with the speech model's input limit.</small>
             <button class="sp-btn sp-btn-secondary" id="s-tts-prompt-reset" style="margin-top:6px">Reset to default</button>
           </div>
         </div>
@@ -4629,8 +4661,8 @@ class SNNSidePanel {
       ttsVoice: getVal('s-tts-voice'),
       ttsSpeed: parseFloat(getVal('s-tts-speed')) || 1,
       ttsStyle: getVal('s-tts-style').trim(),
-      ttsMode: getVal('s-tts-mode') === 'exact' ? 'exact' : 'podcast',
-      ttsPrompt: getVal('s-tts-prompt').trim() || SNN_TTS_DEFAULT_PROMPT,
+      ttsMode: snnTtsMode(getVal('s-tts-mode')).id,
+      ttsPrompts: { ...(this._ttsPromptDrafts || {}) },
       quickActions: this.getQuickActionsFromEditor()
     };
 

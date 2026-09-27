@@ -29,18 +29,87 @@ const SNN_TTS_PCM_DEFAULT = { rate: 24000, channels: 1 };
 // no context_length (reported as 0 for most per-character-priced models).
 const SNN_TTS_DEFAULT_MAX_CHARS = 4000;
 
-const SNN_TTS_DEFAULT_PROMPT = `You turn text into a script that will be read aloud by a text-to-speech voice, in the style of a friendly, engaging podcast host.
-
-Rules:
-- Summarize and explain; don't read the text word for word. Keep the key facts, numbers and conclusions.
-- Start with a short, natural intro line and end with a brief wrap-up.
+// Rules every rewrite needs regardless of style: TTS voices read symbols
+// and markup literally, and the script must fit the model's input limit.
+const SNN_TTS_SPOKEN_RULES = `
 - Write only what should be spoken: no markdown, headings, bullet points, emojis, URLs, code or tables.
 - Say numbers, symbols, units and abbreviations the way a person would say them out loud.
-- Use short sentences, natural transitions and a conversational tone.
 - Write in the same language as the original text.
 - Keep the script under {maxChars} characters.
 
 Output only the script.`;
+
+// Script modes for the 🎧 Audio button. "exact" skips the rewrite; every
+// other mode has a default prompt the user can override per mode in
+// Settings → TTS (stored in settings.ttsPrompts, only when customized).
+const SNN_TTS_MODES = [
+  {
+    id: 'podcast', label: 'Podcast', desc: 'Friendly host explains it with a short intro and outro',
+    prompt: `You turn text into a script that will be read aloud by a text-to-speech voice, in the style of a friendly, engaging podcast host.
+
+Rules:
+- Summarize and explain; don't read the text word for word. Keep the key facts, numbers and conclusions.
+- Start with a short, natural intro line and end with a brief wrap-up.
+- Use short sentences, natural transitions and a conversational tone.` + SNN_TTS_SPOKEN_RULES
+  },
+  {
+    id: 'brief', label: 'Quick summary', desc: 'The key points in under a minute',
+    prompt: `You turn text into a very short spoken summary for a text-to-speech voice, like a voice assistant giving the gist.
+
+Rules:
+- Cover only the most important points and the bottom line. Aim for three to six sentences.
+- No intro or outro; start directly with the main point.
+- Be clear and neutral. Skip examples and side details.` + SNN_TTS_SPOKEN_RULES
+  },
+  {
+    id: 'news', label: 'News anchor', desc: 'Crisp, professional news-bulletin delivery',
+    prompt: `You turn text into a script for a text-to-speech voice, in the style of a professional news anchor reading a bulletin.
+
+Rules:
+- Lead with the headline: the single most important fact, in one sentence.
+- Follow with the key details in order of importance: who, what, when, where, why.
+- Keep a neutral, confident, authoritative tone. No opinions, jokes or filler.
+- Use short, crisp sentences. End with a one-line sign-off that sums up the story.` + SNN_TTS_SPOKEN_RULES
+  },
+  {
+    id: 'teacher', label: 'Teacher', desc: 'Patient, step-by-step explanation in simple words',
+    prompt: `You turn text into a script for a text-to-speech voice, in the style of a patient, encouraging teacher explaining to a curious beginner.
+
+Rules:
+- Explain the ideas in simple words, one step at a time. Define any jargon the first time it appears.
+- Use a quick everyday analogy or example where it helps understanding.
+- Briefly recap the main takeaway at the end.
+- Warm, calm and clear; never condescending.` + SNN_TTS_SPOKEN_RULES
+  },
+  {
+    id: 'story', label: 'Storyteller', desc: 'Narrated like an audiobook, with a sense of story',
+    prompt: `You turn text into a script for a text-to-speech voice, in the style of an engaging audiobook narrator.
+
+Rules:
+- Present the content as a narrative with a beginning, a middle and an end, while staying faithful to the facts. Don't invent events or details.
+- Use vivid but simple language, varied sentence rhythm and natural pauses (commas, full stops, the occasional short sentence for effect).
+- Draw the listener in at the start and close with a satisfying final line.` + SNN_TTS_SPOKEN_RULES
+  },
+  {
+    id: 'casual', label: 'Casual friend', desc: 'Relaxed chat, like a friend telling you about it',
+    prompt: `You turn text into a script for a text-to-speech voice, as if a friend is casually telling you about it over coffee.
+
+Rules:
+- Relaxed, warm and informal. Contractions and light everyday expressions are fine, but keep it clear.
+- Get to the interesting part quickly and keep only what a friend would actually mention.
+- A little humor is fine when it fits the topic; skip it for serious subjects.` + SNN_TTS_SPOKEN_RULES
+  },
+  {
+    id: 'exact', label: 'Exact', desc: 'Read the answer as-is, no rewrite', prompt: null
+  }
+];
+const SNN_TTS_DEFAULT_MODE = 'podcast';
+const SNN_TTS_DEFAULT_PROMPT = SNN_TTS_MODES[0].prompt;
+
+/** The mode entry for an id, falling back to the default mode. */
+function snnTtsMode(id) {
+  return SNN_TTS_MODES.find(m => m.id === id) || SNN_TTS_MODES.find(m => m.id === SNN_TTS_DEFAULT_MODE);
+}
 
 class SNNOpenRouterTTS {
   constructor() {
