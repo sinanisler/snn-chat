@@ -2403,3 +2403,8 @@ body.theme-dark .sp-msg-ai pre.mermaid svg .edgeLabel span {
   color: var(--sp-text-secondary);
   margin-left: 4px;
 }
+
+/* Reasoning box inside an answer bubble (live, then collapsed) */
+.sp-msg-ai > .snn-reasoning-details {
+  margin-bottom: 10px;
+}

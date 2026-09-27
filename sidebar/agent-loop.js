@@ -91,6 +91,9 @@ class SNNAgentLoop {
     this.onError = null;         // (errorCardData)
     this.onResult = null;        // (reportData)
     this.onReasoning = null;     // (text, iteration) - interleaved thinking/reasoning between tools
+    this.onStreamText = null;    // (fullText) - answer text so far, while an LLM call streams
+    this.onStreamReasoning = null; // (fullReasoning) - model reasoning so far, while an LLM call streams
+    this.onStreamEnd = null;     // ({ hasToolCalls }) - one streamed LLM call finished
   }
 
   /**
@@ -281,6 +284,7 @@ class SNNAgentLoop {
       const MAX_ITERATIONS = this.MAX_ITERATIONS;
       let iteration = 0;
       let finalContent = null;
+      let finalReasoning = null;
 
       while (iteration < MAX_ITERATIONS && !this._cancelled) {
         iteration++;
@@ -398,28 +402,8 @@ class SNNAgentLoop {
         // instead of omitting the field — an empty array is truthy, so this
         // must check length, not just presence, or the content is dropped.
         if (msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
-          // ── LLM SELF-AUDIT ────────────────────────────────────
-          // No regex. No language assumptions. The LLM reads the
-          // original request and decides if it actually fulfilled it
-          // or just hallucinated actions in prose.
-          if (!this._selfAuditDone) {
-            this._selfAuditDone = true;
-            D.log('SELF-AUDIT', { iteration, contentPreview: msg.content.substring(0, 100) });
-            messages.push({
-              role: 'user',
-              content: `[SYSTEM SELF-AUDIT — read the user's original request and answer honestly.]
-
-User's original request: """${userMessage}"""
-
-Based on this request and everything that has happened so far:
-- If the user asked you to PERFORM any action (click something, type something, navigate somewhere, scroll, search, fill a form, modify the page, etc.) that you have NOT yet executed with a tool → call the appropriate tool NOW. Do NOT describe it in text — actually call snn_click, snn_type, snn_navigate, etc.
-- If the user only asked a QUESTION or for information (summarize, explain, what is, etc.) → you may respond with text.
-
-Be honest. The user will see if you claim to have done something you did not.`
-            });
-            continue; // Give the LLM one chance to self-correct
-          }
           finalContent = msg.content;
+          finalReasoning = msg.reasoning || null;
           break;
         }
 
@@ -438,17 +422,18 @@ Be honest. The user will see if you claim to have done something you did not.`
       this._transition('IDLE');
 
       // If LLM produced a final answer without using tools,
-      // return the content so the sidepanel can stream it directly.
+      // return the content so the sidepanel can render it directly.
       if (finalContent && this._stepResults.length === 0) {
         D.log('▶ run DONE (chat)', { contentLen: finalContent.length });
-        return { type: 'chat', content: finalContent };
+        return { type: 'chat', content: finalContent, reasoning: finalReasoning };
       }
 
       D.log('▶ run DONE (action)', { stepResults: this._stepResults.length, llmResponseLen: (finalContent || '').length });
       return {
         type: 'action',
         results: this._stepResults,
-        llmResponse: finalContent || null
+        llmResponse: finalContent || null,
+        reasoning: finalReasoning
       };
 
     } catch (err) {
@@ -830,7 +815,8 @@ CRITICAL RULES:
       tool_choice: 'auto',
       parallel_tool_calls: false,  // one tool per response — prevents tool-result interleaving issues
       max_tokens: settings.maxTokens || 16000,
-      temperature: settings.temperature ?? 0.7
+      temperature: settings.temperature ?? 0.7,
+      stream: settings.enableStreaming !== false
     };
     if (!settings.localLlmEnabled) {
       body.usage = { include: true }; // needed for prompt_tokens_details.cached_tokens (OpenRouter-only)
@@ -843,7 +829,10 @@ CRITICAL RULES:
     // Headers, error parsing, and the Gemini "corrupted thought signature"
     // retry are shared with the plain-chat paths — see SNNSidePanel._fetchOpenRouter.
     const res = await this.sp._fetchOpenRouter(apiKey, body, this._abortController?.signal, false, settings);
-    const json = await res.json();
+    // Some local servers ignore stream:true and answer with plain JSON, so
+    // the response type decides how to read it, not the request.
+    const isStream = (res.headers.get('content-type') || '').includes('text/event-stream');
+    const json = isStream ? await this._readToolStream(res) : await res.json();
     const choice = json.choices?.[0];
     const toolCalls = choice?.message?.tool_calls;
     D.log('← LLM OK', { finishReason: choice?.finish_reason, contentLen: (choice?.message?.content || '').length, toolCallCount: toolCalls?.length || 0, toolNames: toolCalls?.map(tc => tc.function?.name).join(',') || 'none' });
@@ -881,6 +870,99 @@ CRITICAL RULES:
     }
 
     return json;
+  }
+
+  /**
+   * Read a streamed chat completion and rebuild the same shape a
+   * non-streamed call returns ({ choices: [{ message, finish_reason }], usage }),
+   * so the loop consumes both identically. Text and reasoning are pushed to
+   * the UI as they arrive.
+   *
+   * Tool calls and reasoning_details arrive in fragments keyed by index and
+   * must be reassembled exactly: the assistant message goes back to the
+   * provider on the next iteration, and Gemini/Claude/Grok reject reasoning
+   * that doesn't match what they produced.
+   */
+  async _readToolStream(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let content = '';
+    let reasoning = '';
+    const reasoningDetails = [];
+    const toolCalls = [];
+    let finishReason = null;
+    let usage = null;
+
+    const handle = (line) => {
+      line = line.trim();
+      if (!line || line.startsWith(':') || !line.startsWith('data:')) return;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') return;
+      let chunk;
+      try { chunk = JSON.parse(data); } catch (e) { return; }
+
+      // An error after the 200 has been sent arrives inside the stream.
+      if (chunk.error) {
+        const err = new Error(chunk.error.message || 'The provider failed mid-response');
+        err.status = chunk.error.code;
+        throw err;
+      }
+      if (chunk.usage) usage = chunk.usage;
+
+      const choice = chunk.choices?.[0];
+      if (!choice) return;
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta || {};
+
+      if (delta.content) {
+        content += delta.content;
+        this.onStreamText?.(content);
+      }
+      if (delta.reasoning) {
+        reasoning += delta.reasoning;
+        this.onStreamReasoning?.(reasoning);
+      }
+      for (const part of delta.reasoning_details || []) {
+        const i = part.index ?? reasoningDetails.length;
+        const cur = reasoningDetails[i];
+        if (!cur) { reasoningDetails[i] = { ...part }; continue; }
+        for (const [k, v] of Object.entries(part)) {
+          if (k === 'index' || v == null) continue;
+          if ((k === 'text' || k === 'summary' || k === 'data') && typeof v === 'string') cur[k] = (cur[k] || '') + v;
+          else cur[k] = v;
+        }
+      }
+      for (const tc of delta.tool_calls || []) {
+        const i = tc.index ?? toolCalls.length;
+        const cur = toolCalls[i] ??= { id: '', type: 'function', function: { name: '', arguments: '' } };
+        if (tc.id) cur.id = tc.id;
+        if (tc.function?.name) cur.function.name += tc.function.name;
+        if (tc.function?.arguments) cur.function.arguments += tc.function.arguments;
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        handle(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    if (buffer) handle(buffer);
+
+    const calls = toolCalls.filter(Boolean);
+    const message = { role: 'assistant', content: content || null };
+    if (calls.length) message.tool_calls = calls;
+    if (reasoning) message.reasoning = reasoning;
+    const details = reasoningDetails.filter(Boolean);
+    if (details.length) message.reasoning_details = details;
+
+    this.onStreamEnd?.({ hasToolCalls: calls.length > 0 });
+    return { choices: [{ message, finish_reason: finishReason }], usage };
   }
 
   /**

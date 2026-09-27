@@ -1037,6 +1037,7 @@ class SNNSidePanel {
 
     if (this._agentLoop && !this._agentLoop.isBusy && !hasMultimodalAttachments) {
       try {
+        this._discardAgentLive();
         const agentResult = await this._agentLoop.run(message || displayMessage, contextSnapshot, this.currentTabId, sendRef);
 
         // ── Cancelled: stop here. Do NOT fall through. ───────────
@@ -1047,10 +1048,33 @@ class SNNSidePanel {
         // that looks unfinished and the model re-runs the whole thing.
         if (agentResult?.type === 'cancelled') {
           D.log('agent run cancelled — not falling through to plain chat', { reason: agentResult.reason });
+          // Keep whatever answer text had already streamed in, as the
+          // plain-chat path does — the user saw it and it was paid for.
+          const partial = (this._streamPartial || '').trim();
+          this._streamPartial = '';
+          let partialReasoning = null;
+          if (partial) {
+            const live = this._agentLive;
+            this._agentLive = null;
+            if (live?.frame) cancelAnimationFrame(live.frame);
+            if (live?.div.isConnected) {
+              this._collapseLiveReasoning(live);
+              live.contentDiv.innerHTML = this.parseMarkdown(partial);
+            }
+            if (live?.reasoning) partialReasoning = live.reasoning;
+          } else {
+            this._discardAgentLive();
+          }
           sendRef.messages.push({
             role: 'assistant',
-            content: '[Task stopped by the user before completion.]',
-            cancelled: true
+            content: partial
+              ? `${partial}
+
+[Task stopped by the user before completion.]`
+              : '[Task stopped by the user before completion.]',
+            cancelled: true,
+            ...(partial && { partialText: partial }),
+            ...(partialReasoning && { reasoning: partialReasoning })
           });
           await this.saveChatHistory(sendRef);
           this._resetLoadingState();
@@ -1066,6 +1090,8 @@ class SNNSidePanel {
         // error card followed by a perfectly good answer, which is worse.
         if (agentResult?.type === 'failed') {
           D.log('agent run failed — not falling through to plain chat', { code: agentResult.error?.code });
+          this._streamPartial = '';
+          this._discardAgentLive();
           this.removeLoadingMsg();
           this._finishSendMessage();
           return;
@@ -1080,9 +1106,9 @@ class SNNSidePanel {
         if (agentResult && agentResult.type === 'action') {
           // ── Render LLM's synthesized response if present ──
           if (agentResult.llmResponse) {
-            if (!stale) await this.streamRenderMessage(agentResult.llmResponse);
+            if (!stale) this._finalizeAgentLive(agentResult.llmResponse);
             sendRef.messages.push(
-              { role: 'assistant', content: agentResult.llmResponse, tokenUsage: this.lastTokenUsage }
+              { role: 'assistant', content: agentResult.llmResponse, tokenUsage: this.lastTokenUsage, ...(agentResult.reasoning && { reasoning: agentResult.reasoning }) }
             );
             await this.saveChatHistory(sendRef);
           }
@@ -1091,11 +1117,11 @@ class SNNSidePanel {
           return;
         }
 
-        // ── Agent returned { type:'chat', content } — stream it ──
+        // ── Agent returned { type:'chat', content } — render it ──
         if (agentResult && agentResult.type === 'chat' && agentResult.content) {
-          if (!stale) await this.streamRenderMessage(agentResult.content);
+          if (!stale) this._finalizeAgentLive(agentResult.content);
           sendRef.messages.push(
-            { role: 'assistant', content: agentResult.content, tokenUsage: this.lastTokenUsage }
+            { role: 'assistant', content: agentResult.content, tokenUsage: this.lastTokenUsage, ...(agentResult.reasoning && { reasoning: agentResult.reasoning }) }
           );
           await this.saveChatHistory(sendRef);
           if (stale) { this._resetLoadingState(); return; }
@@ -1639,52 +1665,142 @@ class SNNSidePanel {
   }
 
   /**
-   * Stream-render an AI message character by character.
-   * Used for agent loop final responses to give a streaming feel
-   * without making an extra API call.
+   * Render a finished agent answer in one go. The agent loop returns
+   * complete text, so there is nothing left to stream.
    */
-  async streamRenderMessage(content) {
+  renderFinalMessage(content) {
     this.els.welcomeScreen.style.display = 'none';
 
     const div = document.createElement('div');
     div.className = 'sp-msg sp-msg-ai';
     const contentDiv = document.createElement('div');
     contentDiv.className = 'sp-msg-content';
+    contentDiv.innerHTML = this.parseMarkdown(content);
     div.appendChild(contentDiv);
     this.els.chatMessages.appendChild(div);
 
-    // Render in chunks for smooth visual streaming
-    const CHUNK_SIZE = 3; // characters per frame
-    let pos = 0;
+    this.renderMermaid(div);
+    this.addMsgActions(div, content);
+    this.addTokenInfo(div, this.lastTokenUsage);
+    this.smartScrollToBottom();
+  }
 
-    return new Promise((resolve) => {
-      const renderChunk = () => {
-        if (pos >= content.length) {
-          // Final render — parse full markdown
-          contentDiv.innerHTML = this.parseMarkdown(content);
-          this.renderMermaid(div);
-          this.addMsgActions(div, content);
-          this.addTokenInfo(div, this.lastTokenUsage);
-          this.smartScrollToBottom();
-          resolve();
-          return;
-        }
+  // ── Live agent bubble ────────────────────────────────────────
+  // One bubble per streamed LLM call. It shows the model's reasoning and
+  // answer as they arrive. If the call ends in a tool call the bubble is
+  // dropped (its text is persisted as a reasoning entry by the agent UI);
+  // if it ends in a final answer, _finalizeAgentLive turns it into the
+  // normal answer bubble.
 
-        const chunk = content.substring(0, pos + CHUNK_SIZE);
-        pos += CHUNK_SIZE;
+  _agentLiveEl() {
+    if (!this._agentUI?._isLive()) return null;
+    let live = this._agentLive;
+    if (live && !live.div.isConnected) live = null; // session re-rendered under us
+    if (!live) {
+      this.els.welcomeScreen.style.display = 'none';
+      const div = document.createElement('div');
+      div.className = 'sp-msg sp-msg-ai';
+      const reasoningEl = document.createElement('details');
+      reasoningEl.className = 'snn-reasoning-details';
+      reasoningEl.open = true;
+      reasoningEl.hidden = true;
+      reasoningEl.innerHTML = '<summary class="snn-reasoning-summary"><span class="snn-reasoning-label">Thinking...</span></summary><div class="snn-reasoning-content"></div>';
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'sp-msg-content';
+      div.append(reasoningEl, contentDiv);
+      this.els.chatMessages.appendChild(div);
+      live = this._agentLive = { div, reasoningEl, contentDiv, text: '', reasoning: '', frame: 0 };
+    }
+    return live;
+  }
 
-        // Use text rendering for speed during streaming, 
-        // then final markdown parse at the end
-        contentDiv.innerHTML = this.escapeHtml(chunk).replace(/\n/g, '<br>') + '<span class="sp-cursor">|</span>';
-        this.smartScrollToBottom();
-
-        // Adaptive speed: faster for longer content
-        const delay = content.length > 2000 ? 5 : (content.length > 500 ? 10 : 20);
-        setTimeout(renderChunk, delay);
-      };
-
-      renderChunk();
+  /** Repaint the live bubble at most once per frame — deltas arrive far faster. */
+  _paintAgentLive() {
+    const live = this._agentLive;
+    if (!live || live.frame) return;
+    live.frame = requestAnimationFrame(() => {
+      live.frame = 0;
+      if (live.reasoning) {
+        live.reasoningEl.hidden = false;
+        const box = live.reasoningEl.querySelector('.snn-reasoning-content');
+        box.textContent = live.reasoning;
+        box.scrollTop = box.scrollHeight;
+      }
+      if (live.text) {
+        live.contentDiv.innerHTML = this.parseMarkdown(live.text) + '<span class="sp-cursor">|</span>';
+      }
+      this.smartScrollToBottom();
     });
+  }
+
+  _onAgentStreamText(text) {
+    this._streamPartial = text;
+    // Whitespace-only text often precedes a tool call — not worth a bubble.
+    if (!this._agentLive && !text.trim()) return;
+    const live = this._agentLiveEl();
+    if (!live) return;
+    live.text = text;
+    this._paintAgentLive();
+  }
+
+  _onAgentStreamReasoning(reasoning) {
+    const live = this._agentLiveEl();
+    if (!live) return;
+    live.reasoning = reasoning;
+    this._paintAgentLive();
+  }
+
+  _onAgentStreamEnd({ hasToolCalls }) {
+    if (hasToolCalls) {
+      this._streamPartial = '';
+      this._discardAgentLive();
+    }
+  }
+
+  _discardAgentLive() {
+    const live = this._agentLive;
+    this._agentLive = null;
+    if (!live) return;
+    if (live.frame) cancelAnimationFrame(live.frame);
+    live.div.remove();
+  }
+
+  /**
+   * The reasoning box stays with the answer, collapsed. It is saved with
+   * the message too (see sendMessage), so a reload shows the same thing.
+   */
+  _collapseLiveReasoning(live) {
+    if (live.reasoningEl.hidden) { live.reasoningEl.remove(); return; }
+    live.reasoningEl.querySelector('.snn-reasoning-content').textContent = live.reasoning;
+    live.reasoningEl.open = false;
+  }
+
+  /** Collapsed "Thinking" box for a restored answer. */
+  _reasoningDetailsEl(text) {
+    const el = document.createElement('details');
+    el.className = 'snn-reasoning-details';
+    el.innerHTML = '<summary class="snn-reasoning-summary"><span class="snn-reasoning-label">Thinking...</span></summary><div class="snn-reasoning-content"></div>';
+    el.querySelector('.snn-reasoning-content').textContent = text;
+    return el;
+  }
+
+  /** Turn the live bubble into the finished answer. */
+  _finalizeAgentLive(content) {
+    this._streamPartial = '';
+    const live = this._agentLive;
+    this._agentLive = null;
+    if (!live || !live.div.isConnected) {
+      if (live?.frame) cancelAnimationFrame(live.frame);
+      this.renderFinalMessage(content);
+      return;
+    }
+    if (live.frame) cancelAnimationFrame(live.frame);
+    this._collapseLiveReasoning(live);
+    live.contentDiv.innerHTML = this.parseMarkdown(content);
+    this.renderMermaid(live.div);
+    this.addMsgActions(live.div, content);
+    this.addTokenInfo(live.div, this.lastTokenUsage);
+    this.smartScrollToBottom();
   }
 
   // ── Context Chip rendering ─────────────────────────────────────
@@ -4534,8 +4650,15 @@ class SNNSidePanel {
         // shows the instruction was deliberately abandoned (otherwise the
         // model re-runs the whole task). The user already sees the
         // "Interrupted" status chip — don't render a second bubble saying so.
-        if (msg.cancelled) continue;
-        this.addMessage('ai', msg.content, msg.tokenUsage);
+        //
+        // A run stopped mid-answer keeps the text that had already streamed
+        // in (partialText) — that part the user did see, so restore it.
+        if (msg.cancelled && !msg.partialText) continue;
+        this.addMessage('ai', msg.cancelled ? msg.partialText : msg.content, msg.tokenUsage);
+        if (msg.reasoning) {
+          const bubble = this.els.chatMessages.lastElementChild;
+          bubble?.prepend(this._reasoningDetailsEl(msg.reasoning));
+        }
       } else if (msg.role === 'agent-action') {
         // If no group is building yet, implicitly start one.
         // This handles edge cases where an action entry was saved
@@ -6057,6 +6180,11 @@ class SNNSidePanel {
         this._agentUI.addReasoningEntry(text, iteration);
       }
     };
+
+    // ── Live streaming callbacks ───────────────────────────────
+    this._agentLoop.onStreamText = (text) => this._onAgentStreamText(text);
+    this._agentLoop.onStreamReasoning = (text) => this._onAgentStreamReasoning(text);
+    this._agentLoop.onStreamEnd = (info) => this._onAgentStreamEnd(info);
 
     // ── Error retry handlers ───────────────────────────────────
     // Re-send the last user message verbatim. Previously this only showed
