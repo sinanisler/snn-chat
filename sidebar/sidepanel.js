@@ -2162,7 +2162,7 @@ class SNNSidePanel {
         signal: ctrl.signal
       });
       D.log('TTS generated', { model: model.id, voice, chars: script.length, bytes: blob.size });
-      this._ttsShowPlayer(msgDiv, blob, ext, `${model.name}${voice ? ' · ' + voice : ''}`);
+      this._ttsShowPlayer(msgDiv, blob, ext, `${model.name}${voice ? ' · ' + voice : ''}`, script, mode.label);
     } catch (err) {
       if (err.name !== 'AbortError') {
         D.warn('TTS generate failed', err);
@@ -2185,29 +2185,54 @@ class SNNSidePanel {
     const apiKey = this._getEffectiveApiKey(settings);
     if (!apiKey && !settings.localLlmEnabled) throw new Error('OpenRouter API key not set. Add it in Settings.');
     this._lastProviderIsLocalLlm = !!settings.localLlmEnabled;
-    const limit = Math.min(maxChars, 12000);
     const mode = snnTtsMode(settings.ttsMode);
-    const system = (settings.ttsPrompts?.[mode.id] || mode.prompt || SNN_TTS_DEFAULT_PROMPT).replace(/\{maxChars\}/g, String(limit));
+    const system = (settings.ttsPrompts?.[mode.id] || mode.prompt || SNN_TTS_DEFAULT_PROMPT).replace(/\{maxChars\}/g, String(maxChars));
     const res = await this._fetchOpenRouter(apiKey, {
       model: await this._getEffectiveModel(),
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: text }
       ],
-      max_tokens: Math.max(2048, Math.ceil(limit / 2)),
+      // No max_tokens: scripts can be as long as they need to be —
+      // synthesize() splits long text across requests — and a cap is what
+      // left reasoning models with an empty reply after thinking.
+      // Rewriting prose needs no deep thinking; keep reasoning models from
+      // burning the budget before they write the script. Ignored by
+      // models without reasoning.
+      ...(settings.localLlmEnabled ? {} : { reasoning: { effort: 'low' } }),
       stream: false
     }, signal, false, settings);
     const data = await res.json();
-    const out = this._stripMarkdownForTTS(data?.choices?.[0]?.message?.content || '');
+    const choice = data?.choices?.[0];
+    const out = this._ttsCleanScript(choice?.message?.content || '');
+    D.log('TTS script rewrite', { mode: mode.id, model: data?.model, finish: choice?.finish_reason, inChars: text.length, outChars: out.length });
     if (!out) {
-      D.warn('TTS script rewrite returned nothing — reading the answer as-is');
+      // Never fall back silently — the user would hear the original answer
+      // and reasonably conclude the mode did nothing.
+      this.showToast(`The chat model returned no script (${this.escapeHtml(choice?.finish_reason || 'empty reply')}) — reading the answer as-is.`, 'warning');
       return text;
     }
     return out;
   }
 
+  /**
+   * Markdown → plain speech text, minus the wrapper chatter models add
+   * around a script ("Here's your script:", "**Intro:**", "---", quotes),
+   * which a TTS voice would otherwise read out loud.
+   */
+  _ttsCleanScript(raw) {
+    let t = String(raw || '')
+      .replace(/^\s*[-*_]{3,}\s*$/gm, '')                       // horizontal rules
+      .replace(/^\s*\(?(sure|okay|ok|got it|here('|’)?s|here is)[^\n]{0,80}(script|version|take)[^\n]*\n/i, '') // preface line
+      .replace(/^\s*(\*\*|__)?\s*\[?(intro|outro|opening|closing|host|narrator|segment \d+|conclusion|wrap[- ]?up)\]?\s*:?\s*(\*\*|__)?\s*:?\s*$/gim, '') // label-only lines
+      .replace(/^\s*(\*\*|__)?(intro|outro|host|narrator)(\*\*|__)?\s*:\s*/gim, '')  // "Host: " prefixes
+      .replace(/^\s*#+\s.*$/gm, '');                             // markdown titles
+    t = this._stripMarkdownForTTS(t);
+    return t.replace(/^["“]+|["”]+$/g, '').trim();
+  }
+
   /** Put (or replace) the audio player + download link under a message. */
-  _ttsShowPlayer(msgDiv, blob, ext, label) {
+  _ttsShowPlayer(msgDiv, blob, ext, label, script = '', modeLabel = '') {
     const old = msgDiv.querySelector('.sp-tts-player');
     if (old) {
       URL.revokeObjectURL(old.dataset.url);
@@ -2223,7 +2248,11 @@ class SNNSidePanel {
       <div class="sp-tts-player-meta">
         <span>${this.escapeHtml(label)}</span>
         <a download="snn-audio-${stamp}.${ext}">⬇ Download .${ext}</a>
-      </div>`;
+      </div>
+      ${script ? `<details class="sp-tts-script">
+        <summary>Spoken script · ${this.escapeHtml(modeLabel)} · ${script.length.toLocaleString()} chars</summary>
+        <div>${this.escapeHtml(script)}</div>
+      </details>` : ''}`;
     const audio = wrap.querySelector('audio');
     audio.src = url;
     wrap.querySelector('a').href = url;
@@ -3810,7 +3839,7 @@ class SNNSidePanel {
           <div class="sp-field" id="s-tts-prompt-field">
             <label>System Prompt for this mode</label>
             <textarea id="s-tts-prompt" rows="9"></textarea>
-            <small>Your chat model rewrites the answer with this prompt before it's spoken. Each mode keeps its own prompt. <code>{maxChars}</code> is replaced with the speech model's input limit.</small>
+            <small>Your chat model rewrites the answer with this prompt before it's spoken. Each mode keeps its own prompt. Scripts can be any length — long audio is generated in parts and joined into one file.</small>
             <button class="sp-btn sp-btn-secondary" id="s-tts-prompt-reset" style="margin-top:6px">Reset to default</button>
           </div>
         </div>

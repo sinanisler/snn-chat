@@ -32,10 +32,10 @@ const SNN_TTS_DEFAULT_MAX_CHARS = 4000;
 // Rules every rewrite needs regardless of style: TTS voices read symbols
 // and markup literally, and the script must fit the model's input limit.
 const SNN_TTS_SPOKEN_RULES = `
+- Every word you output will be spoken. No preface ("Here's your script"), no title, no section labels like "Intro:" or "Host:", no stage directions, no quotation marks around the whole script.
 - Write only what should be spoken: no markdown, headings, bullet points, emojis, URLs, code or tables.
 - Say numbers, symbols, units and abbreviations the way a person would say them out loud.
 - Write in the same language as the original text.
-- Keep the script under {maxChars} characters.
 
 Output only the script.`;
 
